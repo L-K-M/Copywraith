@@ -56,21 +56,9 @@ Tauri dependency guide:
 
 - https://v2.tauri.app/start/prerequisites/
 
-### Important local dependency
+### UI dependency
 
-This project uses a local file dependency:
-
-- `@lkmc/system7-ui` -> `file:../system7-ui`
-
-So you must have the sibling directory available:
-
-```text
-/work/GitHub/
-  ├── Copywraith/
-  └── system7-ui/
-```
-
-If `../system7-ui` is missing, `npm install` will fail.
+`@lkmc/system7-ui` is installed from npm during `npm install`.
 
 ## Installation
 
@@ -196,8 +184,8 @@ This exposes port `3742` and persists server data in Docker volume `copywraith-d
 
 ## Quick troubleshooting
 
-- **`npm install` fails with system7-ui not found**
-  - ensure `../system7-ui` exists next to this repo
+- **`npm install` fails with registry/package errors**
+  - verify network access and npm registry settings
 - **Tauri fails to launch webview**
   - verify OS prerequisites from Tauri docs
 - **Entries not syncing**
