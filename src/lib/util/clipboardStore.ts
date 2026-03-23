@@ -6,8 +6,22 @@ export const entries = writable<ClipboardEntry[]>([]);
 export const isLoading = writable(false);
 export const filterText = writable('');
 export const starredOnly = writable(false);
+export const selectedEntryId = writable<string | null>(null);
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function syncSelection(list: ClipboardEntry[]) {
+	const selectedId = get(selectedEntryId);
+
+	if (list.length === 0) {
+		selectedEntryId.set(null);
+		return;
+	}
+
+	if (!selectedId || !list.some((entry) => entry.id === selectedId)) {
+		selectedEntryId.set(list[0].id);
+	}
+}
 
 export async function loadEntries() {
 	isLoading.set(true);
@@ -21,6 +35,7 @@ export async function loadEntries() {
 			search: filter || undefined
 		});
 		entries.set(result);
+		syncSelection(result);
 	} catch (e) {
 		console.error('Failed to load entries:', e);
 	} finally {
@@ -31,8 +46,31 @@ export async function loadEntries() {
 export function debouncedLoad() {
 	if (debounceTimer) clearTimeout(debounceTimer);
 	debounceTimer = setTimeout(() => {
+		selectedEntryId.set(null);
 		loadEntries();
 	}, 150);
+}
+
+export function selectEntry(id: string) {
+	selectedEntryId.set(id);
+}
+
+export function moveSelection(delta: number) {
+	const list = get(entries);
+	if (list.length === 0) return;
+
+	const selectedId = get(selectedEntryId);
+	let index = list.findIndex((entry) => entry.id === selectedId);
+	if (index === -1) index = 0;
+
+	const nextIndex = Math.max(0, Math.min(list.length - 1, index + delta));
+	selectedEntryId.set(list[nextIndex].id);
+}
+
+export async function pasteSelectedEntry() {
+	const selectedId = get(selectedEntryId);
+	if (!selectedId) return;
+	await pasteEntry(selectedId);
 }
 
 export async function toggleStar(id: string) {
@@ -49,7 +87,11 @@ export async function toggleStar(id: string) {
 export async function deleteEntry(id: string) {
 	try {
 		await TauriService.deleteEntry(id);
-		entries.update((list) => list.filter((e) => e.id !== id));
+		entries.update((list) => {
+			const updated = list.filter((entry) => entry.id !== id);
+			syncSelection(updated);
+			return updated;
+		});
 	} catch (e) {
 		console.error('Failed to delete entry:', e);
 	}

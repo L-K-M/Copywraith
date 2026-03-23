@@ -154,9 +154,16 @@ Notes:
 
 ## Docker (server)
 
-From `server/`:
+From repo root (recommended):
 
 ```bash
+docker compose up --build
+```
+
+Alternatively from `server/`:
+
+```bash
+cd server
 docker compose up --build
 ```
 

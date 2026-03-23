@@ -10,7 +10,7 @@
 		{entryCount} item{entryCount !== 1 ? 's' : ''}{starredLabel}
 	</span>
 	<span class="status-hint">
-		Click to paste &middot; Opt+Click for plaintext
+		Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
 	</span>
 </div>
 

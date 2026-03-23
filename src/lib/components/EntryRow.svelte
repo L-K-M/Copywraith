@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ClipboardEntry } from '$lib/types';
 	import { toggleStar, pasteEntry, pasteEntryPlaintext, deleteEntry } from '$lib/util/clipboardStore';
-	import { Button, BalloonHelp } from '@lkmc/system7-ui';
+	import { BalloonHelp } from '@lkmc/system7-ui';
 
 	function formatTime(dateStr: string): string {
 		const date = new Date(dateStr);
@@ -30,9 +30,28 @@
 		}
 	}
 
-	let { entry, onpreview }: { entry: ClipboardEntry; onpreview?: (entry: ClipboardEntry) => void } = $props();
+	let {
+		entry,
+		selected = false,
+		onselect,
+		onpreview
+	}: {
+		entry: ClipboardEntry;
+		selected?: boolean;
+		onselect?: (id: string) => void;
+		onpreview?: (entry: ClipboardEntry) => void;
+	} = $props();
+
+	let rowElement: HTMLTableRowElement | null = null;
+
+	$effect(() => {
+		if (selected && rowElement) {
+			rowElement.scrollIntoView({ block: 'nearest' });
+		}
+	});
 
 	function handleClick(e: MouseEvent) {
+		onselect?.(entry.id);
 		if (e.altKey) {
 			pasteEntryPlaintext(entry.id);
 		} else {
@@ -48,39 +67,57 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {
+			onselect?.(entry.id);
 			pasteEntry(entry.id);
 		}
 		// Space shows preview
 		if (e.key === ' ') {
 			e.preventDefault();
+			onselect?.(entry.id);
 			onpreview?.(entry);
 		}
 	}
 
+	function handleFocus() {
+		onselect?.(entry.id);
+	}
+
 	function handleStarClick(e: MouseEvent) {
+		e.preventDefault();
 		e.stopPropagation();
 		toggleStar(entry.id);
 	}
 
 	function handleDeleteClick(e: MouseEvent) {
+		e.preventDefault();
 		e.stopPropagation();
 		deleteEntry(entry.id);
+	}
+
+	function stopRowClick(e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
 	}
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <tr
 	class="entry-row"
+	class:selected={selected}
+	bind:this={rowElement}
 	onclick={handleClick}
 	ondblclick={handleDblClick}
+	onfocus={handleFocus}
 	onkeydown={handleKeydown}
 	tabindex="0"
 	role="button"
 >
 	<td class="col-star">
 		<button
+			type="button"
 			class="star-btn"
 			class:starred={entry.starred}
+			onmousedown={stopRowClick}
 			onclick={handleStarClick}
 			title={entry.starred ? 'Unstar' : 'Star'}
 		>
@@ -107,7 +144,13 @@
 		</BalloonHelp>
 	</td>
 	<td class="col-actions">
-		<button class="delete-btn" onclick={handleDeleteClick} title="Delete">
+		<button
+			type="button"
+			class="delete-btn"
+			onmousedown={stopRowClick}
+			onclick={handleDeleteClick}
+			title="Delete"
+		>
 			\u2715
 		</button>
 	</td>
@@ -120,6 +163,11 @@
 	}
 
 	.entry-row:hover {
+		background: var(--system7-color-highlight, #000);
+		color: var(--system7-color-highlight-text, #fff);
+	}
+
+	.entry-row.selected {
 		background: var(--system7-color-highlight, #000);
 		color: var(--system7-color-highlight-text, #fff);
 	}

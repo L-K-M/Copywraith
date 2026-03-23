@@ -1,6 +1,14 @@
 <script lang="ts">
-	import { filterText, starredOnly, debouncedLoad } from '$lib/util/clipboardStore';
-	import { Checkbox } from '@lkmc/system7-ui';
+	import {
+		filterText,
+		starredOnly,
+		debouncedLoad,
+		moveSelection,
+		pasteSelectedEntry
+	} from '$lib/util/clipboardStore';
+	import { Button, Checkbox } from '@lkmc/system7-ui';
+
+	let { onsettings }: { onsettings?: () => void } = $props();
 
 	let filterInput: HTMLInputElement;
 
@@ -21,6 +29,24 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			moveSelection(1);
+			return;
+		}
+
+		if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			moveSelection(-1);
+			return;
+		}
+
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			pasteSelectedEntry();
+			return;
+		}
+
 		if (e.key === 'Escape') {
 			if ($filterText) {
 				filterText.set('');
@@ -49,6 +75,7 @@
 		>
 			Starred only
 		</Checkbox>
+		<Button onclick={onsettings}>Settings</Button>
 	</div>
 </div>
 
@@ -72,6 +99,9 @@
 	}
 
 	.filter-options {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		flex-shrink: 0;
 		white-space: nowrap;
 	}

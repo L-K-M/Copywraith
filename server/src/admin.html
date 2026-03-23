@@ -78,7 +78,8 @@
     flex-wrap: wrap;
   }
 
-  .toolbar input[type="text"] {
+  .toolbar .search-input,
+  .toolbar .api-key-input {
     flex: 1;
     min-width: 200px;
     padding: 3px 6px;
@@ -88,6 +89,20 @@
     border-right-color: #fff;
     border-bottom-color: #fff;
     background: #fff;
+  }
+
+  .toolbar .search-input {
+    min-width: 260px;
+  }
+
+  .toolbar .api-key-input {
+    flex: 0 0 220px;
+    min-width: 160px;
+  }
+
+  .toolbar .api-key-label {
+    font-size: 11px;
+    white-space: nowrap;
   }
 
   .toolbar select {
@@ -103,17 +118,22 @@
     font-family: var(--font);
     font-size: 11px;
     padding: 3px 12px;
-    border: 2px solid var(--border);
-    border-radius: 4px;
+    border: 2px solid #000;
+    border-top-color: #fff;
+    border-left-color: #fff;
+    border-right-color: #555;
+    border-bottom-color: #555;
+    border-radius: 0;
     background: #fff;
     cursor: pointer;
-    box-shadow: 1px 1px 0 rgba(0,0,0,0.2);
+    box-shadow: none;
   }
 
   button:active, .btn:active {
-    background: var(--highlight);
-    color: var(--highlight-text);
-    box-shadow: none;
+    border-top-color: #555;
+    border-left-color: #555;
+    border-right-color: #fff;
+    border-bottom-color: #fff;
   }
 
   button.primary {
@@ -349,7 +369,7 @@
     </div>
 
     <div class="toolbar">
-      <input type="text" id="search-input" placeholder="Search entries..." oninput="debouncedLoad()">
+      <input class="search-input" type="text" id="search-input" placeholder="Search entries..." oninput="debouncedLoad()">
       <select id="type-filter" onchange="loadEntries()">
         <option value="">All types</option>
         <option value="text">Text</option>
@@ -358,6 +378,15 @@
         <option value="image">Image</option>
         <option value="file">File</option>
       </select>
+      <label class="api-key-label" for="api-key-input">API key</label>
+      <input
+        class="api-key-input"
+        type="password"
+        id="api-key-input"
+        placeholder="Optional bearer token"
+        autocomplete="off"
+        oninput="handleApiKeyChange(event)"
+      >
       <label class="checkbox">
         <input type="checkbox" id="starred-filter" onchange="loadEntries()">
         Starred only
@@ -416,12 +445,43 @@
 <script>
 const API = '/api';
 const PAGE_SIZE = 50;
+const API_KEY_STORAGE = 'copywraith_admin_api_key';
 
 let currentOffset = 0;
 let totalEntries = 0;
 let hasMore = false;
 let pendingDeleteId = null;
 let debounceTimer = null;
+let apiKey = '';
+
+function initApiKey() {
+  const saved = localStorage.getItem(API_KEY_STORAGE) || '';
+  apiKey = saved;
+  const input = document.getElementById('api-key-input');
+  if (input) {
+    input.value = saved;
+  }
+}
+
+function handleApiKeyChange(event) {
+  apiKey = event.target.value.trim();
+  localStorage.setItem(API_KEY_STORAGE, apiKey);
+}
+
+function buildHeaders(additional = {}) {
+  const headers = { ...additional };
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+  return headers;
+}
+
+async function apiFetch(path, options = {}) {
+  const isAbsolute = path.startsWith('http://') || path.startsWith('https://');
+  const url = isAbsolute ? path : `${API}${path}`;
+  const headers = buildHeaders(options.headers || {});
+  return fetch(url, { ...options, headers });
+}
 
 function debouncedLoad() {
   clearTimeout(debounceTimer);
@@ -444,7 +504,7 @@ async function loadEntries() {
   if (starredOnly) params.set('starred_only', 'true');
 
   try {
-    const resp = await fetch(`${API}/entries?${params}`);
+    const resp = await apiFetch(`/entries?${params}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
 
@@ -527,7 +587,7 @@ function escHtml(s) {
 // Star / unstar
 async function toggleStar(id, starred) {
   try {
-    const resp = await fetch(`${API}/entries/${id}`, {
+    const resp = await apiFetch(`/entries/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ starred })
@@ -548,7 +608,7 @@ function askDelete(id) {
 async function confirmDelete() {
   if (!pendingDeleteId) return;
   try {
-    const resp = await fetch(`${API}/entries/${pendingDeleteId}`, { method: 'DELETE' });
+    const resp = await apiFetch(`/entries/${pendingDeleteId}`, { method: 'DELETE' });
     if (!resp.ok && resp.status !== 204) throw new Error(`HTTP ${resp.status}`);
     closeConfirm();
     loadEntries();
@@ -566,7 +626,7 @@ function closeConfirm() {
 // Detail view
 async function showDetail(id) {
   try {
-    const resp = await fetch(`${API}/entries/${id}`);
+    const resp = await apiFetch(`/entries/${id}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const entry = await resp.json();
 
@@ -651,7 +711,7 @@ function nextPage() {
 // Stats
 async function updateStats() {
   try {
-    const resp = await fetch(`${API}/health`);
+    const resp = await apiFetch('/health');
     if (!resp.ok) return;
     const data = await resp.json();
     document.getElementById('stats-total').textContent = `${data.entries_count} entries`;
@@ -683,6 +743,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Initial load
+initApiKey();
 loadEntries();
 </script>
 </body>

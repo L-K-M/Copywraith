@@ -9,6 +9,8 @@
 	import type { ClipboardEntry } from '$lib/types';
 	import {
 		loadEntries,
+		moveSelection,
+		pasteSelectedEntry,
 		starredOnly
 	} from '$lib/util/clipboardStore';
 
@@ -89,14 +91,46 @@
 	}
 
 	function handleGlobalKeydown(e: KeyboardEvent) {
+		const target = e.target;
+		const isInputTarget =
+			target instanceof HTMLElement &&
+			(target.tagName === 'INPUT' ||
+				target.tagName === 'TEXTAREA' ||
+				target.tagName === 'SELECT' ||
+				target.isContentEditable);
+
 		// Escape hides the popup
 		if (e.key === 'Escape') {
 			windowManager.close();
+			return;
 		}
+
 		// Cmd+, opens settings
 		if (e.key === ',' && (e.metaKey || e.ctrlKey)) {
 			e.preventDefault();
 			showSettings = true;
+			return;
+		}
+
+		if (isInputTarget) {
+			return;
+		}
+
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			moveSelection(1);
+			return;
+		}
+
+		if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			moveSelection(-1);
+			return;
+		}
+
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			pasteSelectedEntry();
 		}
 	}
 </script>
@@ -123,7 +157,7 @@
 		{/if}
 
 		<main class="app-content">
-			<FilterBar bind:this={filterBar} />
+			<FilterBar bind:this={filterBar} onsettings={handleSettingsOpen} />
 			<EntryList onpreview={(entry) => { previewEntry = entry; }} />
 			<StatusBar />
 		</main>

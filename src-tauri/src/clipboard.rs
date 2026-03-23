@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use copywraith_core::content::{hash_bytes, hash_text};
@@ -42,9 +43,10 @@ pub fn start_monitoring(
 
 /// Handle a clipboard change by reading current clipboard contents and storing them.
 ///
-/// Priority order: Files > Image > HTML > RTF > Text
-/// We pick the richest content type available. If files are present, we store
-/// them as a file list. If an image is present, we store the image. For
+/// Priority order: Image > File > HTML > RTF > Text
+/// We pick the richest content type available. If an image is present, we store
+/// the image so the UI can render a thumbnail preview. If files are present, we
+/// store them as a file list. For
 /// text-based content, we prefer HTML > RTF > plain text.
 fn handle_clipboard_change(
     app: &tauri::AppHandle,
@@ -52,27 +54,8 @@ fn handle_clipboard_change(
     storage: &Arc<LocalStorage>,
     sync_client: &Arc<SyncClient>,
 ) {
-    // Check for files first (highest priority)
-    if clipboard.has_files().unwrap_or(false) {
-        if let Ok(files) = clipboard.read_files() {
-            if !files.is_empty() {
-                let file_list = files.join("\n");
-                let content_hash = hash_text(&file_list);
-                store_entry(
-                    app,
-                    storage,
-                    sync_client,
-                    ContentType::File,
-                    Some(&file_list),
-                    None,
-                    &content_hash,
-                );
-                return;
-            }
-        }
-    }
-
-    // Check for image
+    // Check for image first so copied screenshots/files with image payload
+    // are stored as image entries and shown with previews in the UI.
     if clipboard.has_image().unwrap_or(false) {
         if let Ok(b64) = clipboard.read_image_base64() {
             if !b64.is_empty() {
@@ -91,6 +74,43 @@ fn handle_clipboard_change(
                         return;
                     }
                 }
+            }
+        }
+    }
+
+    // Check for files
+    if clipboard.has_files().unwrap_or(false) {
+        if let Ok(files) = clipboard.read_files() {
+            if !files.is_empty() {
+                // Some apps copy image files without native image payload.
+                // In that case, attempt to read the first image path and store
+                // it as an image entry so previews work as expected.
+                if let Some(bytes) = read_first_image_file(&files) {
+                    let content_hash = hash_bytes(&bytes);
+                    store_entry(
+                        app,
+                        storage,
+                        sync_client,
+                        ContentType::Image,
+                        None,
+                        Some(&bytes),
+                        &content_hash,
+                    );
+                    return;
+                }
+
+                let file_list = files.join("\n");
+                let content_hash = hash_text(&file_list);
+                store_entry(
+                    app,
+                    storage,
+                    sync_client,
+                    ContentType::File,
+                    Some(&file_list),
+                    None,
+                    &content_hash,
+                );
+                return;
             }
         }
     }
@@ -184,4 +204,46 @@ fn store_entry(
             );
         }
     }
+}
+
+fn read_first_image_file(files: &[String]) -> Option<Vec<u8>> {
+    const MAX_IMAGE_FILE_BYTES: u64 = 32 * 1024 * 1024;
+
+    for file_path in files {
+        let path = Path::new(file_path);
+        if !is_supported_image_path(path) {
+            continue;
+        }
+
+        let Ok(metadata) = std::fs::metadata(path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_IMAGE_FILE_BYTES {
+            continue;
+        }
+
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if bytes.is_empty() {
+            continue;
+        }
+
+        if copywraith_core::content::detect_image_format(&bytes).is_some() {
+            return Some(bytes);
+        }
+    }
+
+    None
+}
+
+fn is_supported_image_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff"
+    )
 }
