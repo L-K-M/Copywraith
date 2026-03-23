@@ -129,6 +129,25 @@ impl LocalStorage {
         }))
     }
 
+    pub fn has_content_hash(&self, content_hash: &str) -> anyhow::Result<bool> {
+        let db = self.db.lock().unwrap();
+        let exists: i64 = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM entries WHERE content_hash = ?1)",
+            params![content_hash],
+            |row| row.get(0),
+        )?;
+        Ok(exists != 0)
+    }
+
+    pub fn set_starred(&self, id: &str, starred: bool) -> anyhow::Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE entries SET starred = ?1 WHERE id = ?2",
+            params![if starred { 1 } else { 0 }, id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_entries(
         &self,
         limit: u32,
@@ -147,10 +166,7 @@ impl LocalStorage {
 
         if let Some(q) = search {
             if !q.is_empty() {
-                conditions.push(format!(
-                    "text_content LIKE ?{}",
-                    param_values.len() + 1
-                ));
+                conditions.push(format!("text_content LIKE ?{}", param_values.len() + 1));
                 param_values.push(Box::new(format!("%{}%", q)));
             }
         }
@@ -192,10 +208,12 @@ impl LocalStorage {
                     blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                     source_app: row.get(5)?,
                     starred: row.get::<_, i32>(6)? != 0,
-                    created_at: row.get::<_, String>(7)?
+                    created_at: row
+                        .get::<_, String>(7)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
-                    updated_at: row.get::<_, String>(8)?
+                    updated_at: row
+                        .get::<_, String>(8)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                 })
@@ -322,10 +340,12 @@ impl LocalStorage {
                     blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                     source_app: row.get(5)?,
                     starred: row.get::<_, i32>(6)? != 0,
-                    created_at: row.get::<_, String>(7)?
+                    created_at: row
+                        .get::<_, String>(7)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
-                    updated_at: row.get::<_, String>(8)?
+                    updated_at: row
+                        .get::<_, String>(8)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                 })
@@ -337,10 +357,7 @@ impl LocalStorage {
 
     pub fn mark_synced(&self, id: &str) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
-        db.execute(
-            "UPDATE entries SET synced = 1 WHERE id = ?1",
-            params![id],
-        )?;
+        db.execute("UPDATE entries SET synced = 1 WHERE id = ?1", params![id])?;
         Ok(())
     }
 

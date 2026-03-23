@@ -6,6 +6,7 @@ mod storage;
 mod sync;
 
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
@@ -44,6 +45,9 @@ pub fn run() {
             // Register global shortcuts
             register_shortcuts(&app_handle);
 
+            // Start periodic two-way sync loop (push unsynced + pull remote)
+            start_sync_loop(app_handle.clone(), storage.clone(), sync_client.clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -63,31 +67,37 @@ fn register_shortcuts(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::ShortcutState;
 
     let app_handle = app.clone();
-    app.global_shortcut().on_shortcut("CmdOrCtrl+Shift+V", move |_app, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-            let _ = toggle_popup(&app_handle, false);
-        }
-    }).unwrap_or_else(|e| {
-        log::warn!("Failed to register CmdOrCtrl+Shift+V: {}", e);
-    });
+    app.global_shortcut()
+        .on_shortcut("CmdOrCtrl+Shift+V", move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = toggle_popup(&app_handle, false);
+            }
+        })
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to register CmdOrCtrl+Shift+V: {}", e);
+        });
 
     let app_handle = app.clone();
-    app.global_shortcut().on_shortcut("CmdOrCtrl+Shift+B", move |_app, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-            let _ = toggle_popup(&app_handle, true);
-        }
-    }).unwrap_or_else(|e| {
-        log::warn!("Failed to register CmdOrCtrl+Shift+B: {}", e);
-    });
+    app.global_shortcut()
+        .on_shortcut("CmdOrCtrl+Shift+B", move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = toggle_popup(&app_handle, true);
+            }
+        })
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to register CmdOrCtrl+Shift+B: {}", e);
+        });
 
     let app_handle = app.clone();
-    app.global_shortcut().on_shortcut("CmdOrCtrl+Shift+Alt+V", move |_app, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-            paste::paste_most_recent_plaintext(&app_handle);
-        }
-    }).unwrap_or_else(|e| {
-        log::warn!("Failed to register CmdOrCtrl+Shift+Alt+V: {}", e);
-    });
+    app.global_shortcut()
+        .on_shortcut("CmdOrCtrl+Shift+Alt+V", move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                paste::paste_most_recent_plaintext(&app_handle);
+            }
+        })
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to register CmdOrCtrl+Shift+Alt+V: {}", e);
+        });
 }
 
 fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {
@@ -103,4 +113,33 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
         }
     }
     Ok(())
+}
+
+fn start_sync_loop(
+    app: tauri::AppHandle,
+    storage: Arc<storage::LocalStorage>,
+    sync_client: Arc<sync::SyncClient>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+
+        loop {
+            interval.tick().await;
+
+            // Push local unsynced entries first
+            sync_client.sync_unsynced_entries(&storage).await;
+
+            // Then pull entries created on other devices
+            match sync_client.pull_new_entries(&storage).await {
+                Ok(pulled) if pulled > 0 => {
+                    let _ = app.emit("clipboard-updated", ());
+                    log::info!("Pulled {} new entries from server", pulled);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    log::debug!("Pull sync failed: {}", e);
+                }
+            }
+        }
+    });
 }

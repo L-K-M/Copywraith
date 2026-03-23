@@ -59,10 +59,7 @@ async fn create_entry(
     Ok((
         status,
         Json(CreateEntryResponse {
-            entry: EntryResponse {
-                blob_url,
-                entry,
-            },
+            entry: EntryResponse { blob_url, entry },
             created,
         }),
     ))
@@ -88,10 +85,7 @@ async fn list_entries(
                 .blob_hash
                 .as_ref()
                 .map(|_| format!("/api/entries/{}/blob", e.id));
-            EntryResponse {
-                blob_url,
-                entry: e,
-            }
+            EntryResponse { blob_url, entry: e }
         })
         .collect();
 
@@ -106,20 +100,14 @@ async fn get_entry(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<EntryResponse>, AppError> {
-    let entry = state
-        .storage
-        .get_entry(&id)?
-        .ok_or(AppError::NotFound)?;
+    let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
 
     let blob_url = entry
         .blob_hash
         .as_ref()
         .map(|_| format!("/api/entries/{}/blob", entry.id));
 
-    Ok(Json(EntryResponse {
-        blob_url,
-        entry,
-    }))
+    Ok(Json(EntryResponse { blob_url, entry }))
 }
 
 async fn update_entry(
@@ -131,20 +119,14 @@ async fn update_entry(
         state.storage.update_entry_starred(&id, starred)?;
     }
 
-    let entry = state
-        .storage
-        .get_entry(&id)?
-        .ok_or(AppError::NotFound)?;
+    let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
 
     let blob_url = entry
         .blob_hash
         .as_ref()
         .map(|_| format!("/api/entries/{}/blob", entry.id));
 
-    Ok(Json(EntryResponse {
-        blob_url,
-        entry,
-    }))
+    Ok(Json(EntryResponse { blob_url, entry }))
 }
 
 async fn delete_entry(
@@ -163,16 +145,10 @@ async fn get_blob(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let entry = state
-        .storage
-        .get_entry(&id)?
-        .ok_or(AppError::NotFound)?;
+    let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
 
     let hash = entry.blob_hash.ok_or(AppError::NotFound)?;
-    let data = state
-        .storage
-        .get_blob(&hash)?
-        .ok_or(AppError::NotFound)?;
+    let data = state.storage.get_blob(&hash)?.ok_or(AppError::NotFound)?;
 
     let content_type = match entry.content_type {
         ContentType::Image => {

@@ -31,10 +31,13 @@ pub fn start_monitoring(
     // Listen for the single generic clipboard change event
     // The plugin emits this for ALL clipboard changes (text, image, html, files, etc.)
     let app_clone = app.clone();
-    app.listen("plugin:clipboard://clipboard-monitor/update", move |_event| {
-        let clipboard = app_clone.state::<Clipboard>();
-        handle_clipboard_change(&app_clone, &clipboard, &storage, &sync_client);
-    });
+    app.listen(
+        "plugin:clipboard://clipboard-monitor/update",
+        move |_event| {
+            let clipboard = app_clone.state::<Clipboard>();
+            handle_clipboard_change(&app_clone, &clipboard, &storage, &sync_client);
+        },
+    );
 }
 
 /// Handle a clipboard change by reading current clipboard contents and storing them.
@@ -174,7 +177,11 @@ fn store_entry(
             let _ = app.emit("clipboard-reordered", ());
         }
         Err(e) => {
-            log::error!("Failed to store clipboard entry ({:?}): {}", content_type, e);
+            log::error!(
+                "Failed to store clipboard entry ({:?}): {}",
+                content_type,
+                e
+            );
         }
     }
 }

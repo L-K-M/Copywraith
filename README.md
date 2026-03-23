@@ -16,7 +16,7 @@ Implemented today:
 - Floating popup UI with retro System 7 styling
 - Star/unstar, delete, search/filter
 - Global shortcuts for opening popup and quick plaintext paste
-- Optional background sync from desktop to server
+- Two-way background sync (push local unsynced + pull remote updates)
 - Server REST API + embedded admin web UI
 
 Planned later:
@@ -32,7 +32,7 @@ Planned later:
 4. Entry is normalized and deduplicated by hash
 5. Entry is stored in local SQLite + blob store
 6. UI receives `clipboard-updated` event and refreshes list
-7. If server URL is configured, entry is pushed to `POST /api/entries`
+7. Background sync loop pushes unsynced entries and pulls entries from other devices
 
 ## Repository layout
 
@@ -127,7 +127,10 @@ In the desktop popup:
 - set `Server URL` to your server (for example `http://localhost:3742`)
 - save
 
-After that, newly captured entries are synced in the background.
+After that, sync runs in both directions (roughly every 5 seconds):
+
+- device -> server: unsynced local entries are uploaded
+- server -> device: new entries from other devices are pulled into local history
 
 ## Hotkeys
 

@@ -71,7 +71,7 @@
 		<div class="content-display">
 			{#if entry.content_type === 'image' && entry.image_base64}
 				<div class="image-container">
-					<img src="data:image/png;base64,{entry.image_base64}" alt="Clipboard image" />
+					<img src="data:image/png;base64,{entry.image_base64}" alt="Clipboard preview" />
 				</div>
 			{:else if entry.full_text}
 				<pre class="text-content">{entry.full_text}</pre>

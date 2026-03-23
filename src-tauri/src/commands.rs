@@ -58,18 +58,12 @@ pub async fn get_entries(
 
 #[tauri::command]
 pub async fn toggle_star(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    state
-        .storage
-        .toggle_star(&id)
-        .map_err(|e| e.to_string())
+    state.storage.toggle_star(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn delete_entry(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    state
-        .storage
-        .delete_entry(&id)
-        .map_err(|e| e.to_string())
+    state.storage.delete_entry(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -130,10 +124,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 }
 
 #[tauri::command]
-pub async fn update_settings(
-    state: State<'_, AppState>,
-    settings: Settings,
-) -> Result<(), String> {
+pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
     state
         .storage
         .save_settings(&settings)

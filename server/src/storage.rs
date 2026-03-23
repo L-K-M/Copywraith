@@ -227,13 +227,15 @@ impl Storage {
         };
 
         // Count total
-        let count_sql = format!("SELECT COUNT(*) FROM entries e {} {}", fts_join, where_clause);
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM entries e {} {}",
+            fts_join, where_clause
+        );
         let total: u64 = {
             let mut stmt = db.prepare(&count_sql)?;
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params_vec.iter().map(|p| p.as_ref()).collect();
-            stmt.query_row(param_refs.as_slice(), |row| row.get::<_, i64>(0))?
-                as u64
+            stmt.query_row(param_refs.as_slice(), |row| row.get::<_, i64>(0))? as u64
         };
 
         // Fetch entries
@@ -269,10 +271,12 @@ impl Storage {
                     blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                     source_app: row.get(5)?,
                     starred: row.get::<_, i32>(6)? != 0,
-                    created_at: row.get::<_, String>(7)?
+                    created_at: row
+                        .get::<_, String>(7)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
-                    updated_at: row.get::<_, String>(8)?
+                    updated_at: row
+                        .get::<_, String>(8)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                 })
@@ -334,8 +338,7 @@ impl Storage {
 
     pub fn count_entries(&self) -> anyhow::Result<u64> {
         let db = self.db.lock().unwrap();
-        let count: i64 =
-            db.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
+        let count: i64 = db.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
         Ok(count as u64)
     }
 }
