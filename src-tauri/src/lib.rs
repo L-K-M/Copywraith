@@ -42,8 +42,9 @@ pub fn run() {
             // Start clipboard monitoring
             clipboard::start_monitoring(app_handle.clone(), storage.clone(), sync_client.clone());
 
-            // Register global shortcuts
-            register_shortcuts(&app_handle);
+            // Register global shortcuts from saved settings
+            let settings = storage.get_settings();
+            register_shortcuts(&app_handle, &settings);
 
             // Start periodic two-way sync loop (push unsynced + pull remote)
             start_sync_loop(app_handle.clone(), storage.clone(), sync_client.clone());
@@ -58,46 +59,60 @@ pub fn run() {
             commands::paste_entry_plaintext,
             commands::get_settings,
             commands::update_settings,
+            commands::reregister_shortcuts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running copywraith");
 }
 
-fn register_shortcuts(app: &tauri::AppHandle) {
+pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
     use tauri_plugin_global_shortcut::ShortcutState;
 
-    let app_handle = app.clone();
-    app.global_shortcut()
-        .on_shortcut("CmdOrCtrl+Shift+V", move |_app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                let _ = toggle_popup(&app_handle, false);
-            }
-        })
-        .unwrap_or_else(|e| {
-            log::warn!("Failed to register CmdOrCtrl+Shift+V: {}", e);
-        });
+    // Unregister all existing shortcuts first
+    let _ = app.global_shortcut().unregister_all();
 
-    let app_handle = app.clone();
-    app.global_shortcut()
-        .on_shortcut("CmdOrCtrl+Shift+B", move |_app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                let _ = toggle_popup(&app_handle, true);
-            }
-        })
-        .unwrap_or_else(|e| {
-            log::warn!("Failed to register CmdOrCtrl+Shift+B: {}", e);
-        });
+    let shortcut_toggle = &settings.shortcut_toggle_popup;
+    let shortcut_starred = &settings.shortcut_starred_popup;
+    let shortcut_plaintext = &settings.shortcut_paste_plaintext;
 
-    let app_handle = app.clone();
-    app.global_shortcut()
-        .on_shortcut("CmdOrCtrl+Shift+Alt+V", move |_app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                paste::paste_most_recent_plaintext(&app_handle);
-            }
-        })
-        .unwrap_or_else(|e| {
-            log::warn!("Failed to register CmdOrCtrl+Shift+Alt+V: {}", e);
-        });
+    if !shortcut_toggle.is_empty() {
+        let app_handle = app.clone();
+        app.global_shortcut()
+            .on_shortcut(shortcut_toggle.as_str(), move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    let _ = toggle_popup(&app_handle, false);
+                }
+            })
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to register {}: {}", shortcut_toggle, e);
+            });
+    }
+
+    if !shortcut_starred.is_empty() {
+        let app_handle = app.clone();
+        app.global_shortcut()
+            .on_shortcut(shortcut_starred.as_str(), move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    let _ = toggle_popup(&app_handle, true);
+                }
+            })
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to register {}: {}", shortcut_starred, e);
+            });
+    }
+
+    if !shortcut_plaintext.is_empty() {
+        let app_handle = app.clone();
+        app.global_shortcut()
+            .on_shortcut(shortcut_plaintext.as_str(), move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    paste::paste_most_recent_plaintext(&app_handle);
+                }
+            })
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to register {}: {}", shortcut_plaintext, e);
+            });
+    }
 }
 
 fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {

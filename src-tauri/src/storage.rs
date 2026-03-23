@@ -363,6 +363,7 @@ impl LocalStorage {
 
     pub fn get_settings(&self) -> Settings {
         let db = self.db.lock().unwrap();
+        let defaults = Settings::default();
         let server_url = db
             .query_row(
                 "SELECT value FROM settings WHERE key = 'server_url'",
@@ -377,9 +378,33 @@ impl LocalStorage {
                 |row| row.get::<_, String>(0),
             )
             .unwrap_or_default();
+        let shortcut_toggle_popup = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'shortcut_toggle_popup'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or(defaults.shortcut_toggle_popup);
+        let shortcut_starred_popup = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'shortcut_starred_popup'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or(defaults.shortcut_starred_popup);
+        let shortcut_paste_plaintext = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'shortcut_paste_plaintext'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or(defaults.shortcut_paste_plaintext);
         Settings {
             server_url,
             api_key,
+            shortcut_toggle_popup,
+            shortcut_starred_popup,
+            shortcut_paste_plaintext,
         }
     }
 
@@ -392,6 +417,18 @@ impl LocalStorage {
         db.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('api_key', ?1)",
             params![settings.api_key],
+        )?;
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_toggle_popup', ?1)",
+            params![settings.shortcut_toggle_popup],
+        )?;
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_starred_popup', ?1)",
+            params![settings.shortcut_starred_popup],
+        )?;
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_paste_plaintext', ?1)",
+            params![settings.shortcut_paste_plaintext],
         )?;
         Ok(())
     }

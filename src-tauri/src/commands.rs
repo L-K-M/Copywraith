@@ -131,6 +131,16 @@ pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> 
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn reregister_shortcuts(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let settings = state.storage.get_settings();
+    crate::register_shortcuts(&app, &settings);
+    Ok(())
+}
+
 /// Simple HTML tag stripping
 fn strip_html(html: &str) -> String {
     let mut result = String::with_capacity(html.len());

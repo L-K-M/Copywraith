@@ -15,4 +15,7 @@ export interface ClipboardEntry {
 export interface Settings {
 	server_url: string;
 	api_key: string;
+	shortcut_toggle_popup: string;
+	shortcut_starred_popup: string;
+	shortcut_paste_plaintext: string;
 }

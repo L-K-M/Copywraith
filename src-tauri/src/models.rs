@@ -19,6 +19,9 @@ pub struct EntryForFrontend {
 pub struct Settings {
     pub server_url: String,
     pub api_key: String,
+    pub shortcut_toggle_popup: String,
+    pub shortcut_starred_popup: String,
+    pub shortcut_paste_plaintext: String,
 }
 
 impl Default for Settings {
@@ -26,6 +29,9 @@ impl Default for Settings {
         Self {
             server_url: String::new(),
             api_key: String::new(),
+            shortcut_toggle_popup: "CmdOrCtrl+Shift+V".to_string(),
+            shortcut_starred_popup: "CmdOrCtrl+Shift+B".to_string(),
+            shortcut_paste_plaintext: "CmdOrCtrl+Shift+Alt+V".to_string(),
         }
     }
 }

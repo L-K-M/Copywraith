@@ -420,6 +420,7 @@
     </div>
     <div class="content" id="modal-content"></div>
     <div class="actions">
+      <button id="modal-download-btn" onclick="downloadModalEntry()">Download</button>
       <button onclick="closeModal()">Close</button>
     </div>
   </div>
@@ -453,6 +454,7 @@ let hasMore = false;
 let pendingDeleteId = null;
 let debounceTimer = null;
 let apiKey = '';
+let currentModalEntryId = null;
 
 function initApiKey() {
   const saved = localStorage.getItem(API_KEY_STORAGE) || '';
@@ -532,7 +534,7 @@ function renderEntries(entries) {
       <th style="width:60px">Type</th>
       <th>Content</th>
       <th style="width:130px">Created</th>
-      <th style="width:80px">Actions</th>
+      <th style="width:110px">Actions</th>
     </tr></thead><tbody>`;
 
   for (const entry of entries) {
@@ -549,6 +551,7 @@ function renderEntries(entries) {
       <td>${escHtml(created)}</td>
       <td>
         <button onclick="showDetail('${entry.id}')" style="font-size:10px;padding:1px 6px">View</button>
+        <button onclick="downloadEntry('${entry.id}')" style="font-size:10px;padding:1px 6px">\u2913</button>
         <button onclick="askDelete('${entry.id}')" style="font-size:10px;padding:1px 6px">Del</button>
       </td>
     </tr>`;
@@ -560,7 +563,7 @@ function renderEntries(entries) {
 
 function getPreview(entry) {
   if (entry.content_type === 'image' && entry.blob_url) {
-    return `<img class="img-preview" src="${API}${entry.blob_url}" alt="clipboard image">`;
+    return `<img class="img-preview" src="${entry.blob_url}" alt="clipboard image">`;
   }
   if (entry.text_content) {
     const text = entry.text_content;
@@ -635,6 +638,7 @@ async function showDetail(id) {
     const content = document.getElementById('modal-content');
 
     title.textContent = `Entry: ${entry.id.substring(0, 12)}...`;
+    currentModalEntryId = entry.id;
 
     let html = `<div class="meta">
       <span>Type: <strong>${escHtml(entry.content_type)}</strong></span>
@@ -648,7 +652,7 @@ async function showDetail(id) {
     }
 
     if (entry.content_type === 'image' && entry.blob_url) {
-      html += `<img class="img-full" src="${API}${entry.blob_url}" alt="clipboard image">`;
+      html += `<img class="img-full" src="${entry.blob_url}" alt="clipboard image">`;
       if (entry.blob_size) {
         html += `<div class="meta" style="margin-top:4px"><span>Size: ${formatSize(entry.blob_size)}</span></div>`;
       }
@@ -667,6 +671,52 @@ async function showDetail(id) {
 
 function closeModal() {
   document.getElementById('detail-modal').style.display = 'none';
+  currentModalEntryId = null;
+}
+
+// Download entry content
+async function downloadEntry(id) {
+  try {
+    const resp = await apiFetch(`/entries/${id}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const entry = await resp.json();
+    triggerDownload(entry);
+  } catch (e) {
+    showError(`Failed to download entry: ${e.message}`);
+  }
+}
+
+function downloadModalEntry() {
+  if (currentModalEntryId) downloadEntry(currentModalEntryId);
+}
+
+function triggerDownload(entry) {
+  if (entry.content_type === 'image' && entry.blob_url) {
+    // Download the blob directly
+    const a = document.createElement('a');
+    a.href = entry.blob_url;
+    a.download = `clipboard-${entry.id.substring(0, 8)}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } else if (entry.text_content) {
+    // Download as text file with appropriate extension
+    const ext = entry.content_type === 'html' ? 'html'
+              : entry.content_type === 'rtf' ? 'rtf'
+              : 'txt';
+    const mime = entry.content_type === 'html' ? 'text/html'
+               : entry.content_type === 'rtf' ? 'application/rtf'
+               : 'text/plain';
+    const blob = new Blob([entry.text_content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `clipboard-${entry.id.substring(0, 8)}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 }
 
 function formatSize(bytes) {

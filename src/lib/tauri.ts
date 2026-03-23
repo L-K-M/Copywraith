@@ -39,4 +39,8 @@ export class TauriService {
 	static async updateSettings(settings: Settings): Promise<void> {
 		await invoke('update_settings', { settings });
 	}
+
+	static async reregisterShortcuts(): Promise<void> {
+		await invoke('reregister_shortcuts');
+	}
 }

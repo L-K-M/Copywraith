@@ -214,18 +214,18 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 12px;
+		font-size: 13px;
 	}
 
 	.image-preview {
-		height: 28px;
+		height: 48px;
 		display: flex;
 		align-items: center;
 	}
 
 	.image-preview img {
-		max-height: 28px;
-		max-width: 120px;
+		max-height: 48px;
+		max-width: 180px;
 		image-rendering: auto;
 	}
 

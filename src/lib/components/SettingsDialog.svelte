@@ -9,12 +9,18 @@
 
 	let serverUrl = $state('');
 	let apiKey = $state('');
+	let shortcutTogglePopup = $state('CmdOrCtrl+Shift+V');
+	let shortcutStarredPopup = $state('CmdOrCtrl+Shift+B');
+	let shortcutPastePlaintext = $state('CmdOrCtrl+Shift+Alt+V');
 
 	onMount(async () => {
 		try {
 			const settings = await TauriService.getSettings();
 			serverUrl = settings.server_url;
 			apiKey = settings.api_key;
+			shortcutTogglePopup = settings.shortcut_toggle_popup;
+			shortcutStarredPopup = settings.shortcut_starred_popup;
+			shortcutPastePlaintext = settings.shortcut_paste_plaintext;
 		} catch (e) {
 			console.error('Failed to load settings:', e);
 		}
@@ -24,8 +30,12 @@
 		try {
 			await TauriService.updateSettings({
 				server_url: serverUrl,
-				api_key: apiKey
+				api_key: apiKey,
+				shortcut_toggle_popup: shortcutTogglePopup,
+				shortcut_starred_popup: shortcutStarredPopup,
+				shortcut_paste_plaintext: shortcutPastePlaintext
 			});
+			await TauriService.reregisterShortcuts();
 			notify('success', 'Settings saved');
 			onclose();
 		} catch (e) {
@@ -58,6 +68,46 @@
 			/>
 		</div>
 
+		<div class="section-divider"></div>
+		<div class="section-label">Keyboard Shortcuts</div>
+
+		<div class="s7-form-group">
+			<label for="shortcut-toggle">Toggle Popup</label>
+			<input
+				id="shortcut-toggle"
+				type="text"
+				class="s7-input"
+				placeholder="CmdOrCtrl+Shift+V"
+				bind:value={shortcutTogglePopup}
+			/>
+		</div>
+
+		<div class="s7-form-group">
+			<label for="shortcut-starred">Starred Popup</label>
+			<input
+				id="shortcut-starred"
+				type="text"
+				class="s7-input"
+				placeholder="CmdOrCtrl+Shift+B"
+				bind:value={shortcutStarredPopup}
+			/>
+		</div>
+
+		<div class="s7-form-group">
+			<label for="shortcut-plaintext">Paste as Plaintext</label>
+			<input
+				id="shortcut-plaintext"
+				type="text"
+				class="s7-input"
+				placeholder="CmdOrCtrl+Shift+Alt+V"
+				bind:value={shortcutPastePlaintext}
+			/>
+		</div>
+
+		<div class="shortcut-hint">
+			Use format: CmdOrCtrl+Shift+Key. Leave empty to disable.
+		</div>
+
 		<div class="s7-actions">
 			<Button onclick={onclose}>Cancel</Button>
 			<Button variant="primary" onclick={handleSave}>Save</Button>
@@ -77,5 +127,22 @@
 		font-size: 12px;
 		font-weight: bold;
 		margin-bottom: 2px;
+	}
+
+	.section-divider {
+		border-top: 1px solid #ccc;
+		margin: 4px 0 0 0;
+	}
+
+	.section-label {
+		font-size: 12px;
+		font-weight: bold;
+		color: #333;
+	}
+
+	.shortcut-hint {
+		font-size: 10px;
+		color: #888;
+		line-height: 1.3;
 	}
 </style>
