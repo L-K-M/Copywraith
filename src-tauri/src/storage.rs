@@ -1,0 +1,381 @@
+use std::path::Path;
+use std::sync::Mutex;
+
+use chrono::Utc;
+use copywraith_core::models::{ClipboardEntry, ContentType};
+use rusqlite::{params, Connection};
+use ulid::Ulid;
+
+use crate::models::Settings;
+
+pub struct LocalStorage {
+    db: Mutex<Connection>,
+    blob_dir: std::path::PathBuf,
+}
+
+impl LocalStorage {
+    pub fn new(data_dir: &Path) -> anyhow::Result<Self> {
+        let db_path = data_dir.join("copywraith.db");
+        let blob_dir = data_dir.join("blobs");
+        std::fs::create_dir_all(&blob_dir)?;
+
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode=WAL;
+
+            CREATE TABLE IF NOT EXISTS entries (
+                id TEXT PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                text_content TEXT,
+                blob_hash TEXT,
+                blob_size INTEGER,
+                content_hash TEXT NOT NULL,
+                source_app TEXT,
+                starred INTEGER DEFAULT 0,
+                synced INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_entries_starred ON entries(starred) WHERE starred = 1;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_content_hash ON entries(content_hash);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            ",
+        )?;
+
+        Ok(Self {
+            db: Mutex::new(conn),
+            blob_dir,
+        })
+    }
+
+    pub fn insert_entry(
+        &self,
+        content_type: ContentType,
+        text_content: Option<&str>,
+        blob_data: Option<&[u8]>,
+        content_hash: &str,
+        source_app: Option<&str>,
+    ) -> anyhow::Result<Option<ClipboardEntry>> {
+        let db = self.db.lock().unwrap();
+
+        // Check for duplicate
+        let existing_id: Option<String> = db
+            .query_row(
+                "SELECT id FROM entries WHERE content_hash = ?1",
+                params![content_hash],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(id) = existing_id {
+            let now = Utc::now();
+            db.execute(
+                "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
+                params![now.to_rfc3339(), id],
+            )?;
+            return Ok(None); // Duplicate, moved to top
+        }
+
+        let (blob_hash, blob_size) = if let Some(data) = blob_data {
+            let hash = copywraith_core::content::hash_bytes(data);
+            let size = data.len() as u64;
+
+            let blob_path = self.blob_dir.join(&hash);
+            if !blob_path.exists() {
+                std::fs::write(&blob_path, data)?;
+            }
+
+            (Some(hash), Some(size))
+        } else {
+            (None, None)
+        };
+
+        let now = Utc::now();
+        let id = Ulid::new().to_string();
+
+        db.execute(
+            "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, synced, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, ?9)",
+            params![
+                id,
+                content_type.as_str(),
+                text_content,
+                blob_hash,
+                blob_size.map(|s| s as i64),
+                content_hash,
+                source_app,
+                now.to_rfc3339(),
+                now.to_rfc3339(),
+            ],
+        )?;
+
+        Ok(Some(ClipboardEntry {
+            id,
+            content_type,
+            text_content: text_content.map(|s| s.to_string()),
+            blob_hash,
+            blob_size,
+            source_app: source_app.map(|s| s.to_string()),
+            starred: false,
+            created_at: now,
+            updated_at: now,
+        }))
+    }
+
+    pub fn get_entries(
+        &self,
+        limit: u32,
+        offset: u32,
+        starred_only: bool,
+        search: Option<&str>,
+    ) -> anyhow::Result<Vec<ClipboardEntry>> {
+        let db = self.db.lock().unwrap();
+
+        let mut conditions = Vec::new();
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if starred_only {
+            conditions.push("starred = 1".to_string());
+        }
+
+        if let Some(q) = search {
+            if !q.is_empty() {
+                conditions.push(format!(
+                    "text_content LIKE ?{}",
+                    param_values.len() + 1
+                ));
+                param_values.push(Box::new(format!("%{}%", q)));
+            }
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!(
+            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+             FROM entries {}
+             ORDER BY updated_at DESC
+             LIMIT ?{} OFFSET ?{}",
+            where_clause,
+            param_values.len() + 1,
+            param_values.len() + 2,
+        );
+
+        param_values.push(Box::new(limit as i64));
+        param_values.push(Box::new(offset as i64));
+
+        let mut stmt = db.prepare(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let entries = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok(ClipboardEntry {
+                    id: row.get(0)?,
+                    content_type: serde_json::from_str::<ContentType>(&format!(
+                        "\"{}\"",
+                        row.get::<_, String>(1)?
+                    ))
+                    .unwrap_or(ContentType::Text),
+                    text_content: row.get(2)?,
+                    blob_hash: row.get(3)?,
+                    blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
+                    source_app: row.get(5)?,
+                    starred: row.get::<_, i32>(6)? != 0,
+                    created_at: row.get::<_, String>(7)?
+                        .parse()
+                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: row.get::<_, String>(8)?
+                        .parse()
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
+    pub fn get_entry(&self, id: &str) -> anyhow::Result<Option<ClipboardEntry>> {
+        let db = self.db.lock().unwrap();
+        let entry = db
+            .query_row(
+                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+                 FROM entries WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(ClipboardEntry {
+                        id: row.get(0)?,
+                        content_type: serde_json::from_str::<ContentType>(&format!(
+                            "\"{}\"",
+                            row.get::<_, String>(1)?
+                        ))
+                        .unwrap_or(ContentType::Text),
+                        text_content: row.get(2)?,
+                        blob_hash: row.get(3)?,
+                        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
+                        source_app: row.get(5)?,
+                        starred: row.get::<_, i32>(6)? != 0,
+                        created_at: row.get::<_, String>(7)?
+                            .parse()
+                            .unwrap_or_else(|_| Utc::now()),
+                        updated_at: row.get::<_, String>(8)?
+                            .parse()
+                            .unwrap_or_else(|_| Utc::now()),
+                    })
+                },
+            )
+            .ok();
+        Ok(entry)
+    }
+
+    pub fn toggle_star(&self, id: &str) -> anyhow::Result<bool> {
+        let db = self.db.lock().unwrap();
+        let current: i32 = db.query_row(
+            "SELECT starred FROM entries WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let new_value = if current == 0 { 1 } else { 0 };
+        db.execute(
+            "UPDATE entries SET starred = ?1 WHERE id = ?2",
+            params![new_value, id],
+        )?;
+        Ok(new_value == 1)
+    }
+
+    pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {
+        let db = self.db.lock().unwrap();
+        let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        let blob_path = self.blob_dir.join(hash);
+        if blob_path.exists() {
+            Ok(Some(std::fs::read(&blob_path)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_most_recent_entry(&self) -> anyhow::Result<Option<ClipboardEntry>> {
+        let db = self.db.lock().unwrap();
+        let entry = db
+            .query_row(
+                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+                 FROM entries ORDER BY updated_at DESC LIMIT 1",
+                [],
+                |row| {
+                    Ok(ClipboardEntry {
+                        id: row.get(0)?,
+                        content_type: serde_json::from_str::<ContentType>(&format!(
+                            "\"{}\"",
+                            row.get::<_, String>(1)?
+                        ))
+                        .unwrap_or(ContentType::Text),
+                        text_content: row.get(2)?,
+                        blob_hash: row.get(3)?,
+                        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
+                        source_app: row.get(5)?,
+                        starred: row.get::<_, i32>(6)? != 0,
+                        created_at: row.get::<_, String>(7)?
+                            .parse()
+                            .unwrap_or_else(|_| Utc::now()),
+                        updated_at: row.get::<_, String>(8)?
+                            .parse()
+                            .unwrap_or_else(|_| Utc::now()),
+                    })
+                },
+            )
+            .ok();
+        Ok(entry)
+    }
+
+    pub fn get_unsynced_entries(&self) -> anyhow::Result<Vec<ClipboardEntry>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+             FROM entries WHERE synced = 0 ORDER BY created_at ASC LIMIT 50",
+        )?;
+
+        let entries = stmt
+            .query_map([], |row| {
+                Ok(ClipboardEntry {
+                    id: row.get(0)?,
+                    content_type: serde_json::from_str::<ContentType>(&format!(
+                        "\"{}\"",
+                        row.get::<_, String>(1)?
+                    ))
+                    .unwrap_or(ContentType::Text),
+                    text_content: row.get(2)?,
+                    blob_hash: row.get(3)?,
+                    blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
+                    source_app: row.get(5)?,
+                    starred: row.get::<_, i32>(6)? != 0,
+                    created_at: row.get::<_, String>(7)?
+                        .parse()
+                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: row.get::<_, String>(8)?
+                        .parse()
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
+    pub fn mark_synced(&self, id: &str) -> anyhow::Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE entries SET synced = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_settings(&self) -> Settings {
+        let db = self.db.lock().unwrap();
+        let server_url = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'server_url'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_default();
+        let api_key = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'api_key'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_default();
+        Settings {
+            server_url,
+            api_key,
+        }
+    }
+
+    pub fn save_settings(&self, settings: &Settings) -> anyhow::Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url', ?1)",
+            params![settings.server_url],
+        )?;
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('api_key', ?1)",
+            params![settings.api_key],
+        )?;
+        Ok(())
+    }
+}

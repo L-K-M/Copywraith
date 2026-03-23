@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+target/
+build/
+.svelte-kit/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tauri
+src-tauri/gen/
+
+# Logs
+*.log
+
+# Lock files (keep Cargo.lock for apps)
+# Cargo.lock is committed for binary crates
+
+# Data
+*.db
+*.db-wal
+*.db-shm
+data/
+blobs/

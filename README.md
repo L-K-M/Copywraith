@@ -1,0 +1,202 @@
+# Copywraith
+
+Copywraith is a local-first clipboard manager with:
+
+- a Tauri desktop client (Svelte 5 + Rust backend), and
+- a Rust/Axum server for durable, searchable clipboard history.
+
+The desktop app watches your clipboard, stores entries in a local SQLite cache, and can optionally sync those entries to the server.
+
+## Current status
+
+Implemented today:
+
+- Clipboard capture for `text`, `html`, `rtf`, `image`, and `file`
+- Content-hash deduplication (SHA-256)
+- Floating popup UI with retro System 7 styling
+- Star/unstar, delete, search/filter
+- Global shortcuts for opening popup and quick plaintext paste
+- Optional background sync from desktop to server
+- Server REST API + embedded admin web UI
+
+Planned later:
+
+- Android/mobile client
+- Stronger server auth model (the client can send a bearer token, but server-side validation is not enforced yet)
+
+## Architecture at a glance
+
+1. **Clipboard change happens on desktop**
+2. Tauri Rust backend receives `plugin:clipboard://clipboard-monitor/update`
+3. Backend reads clipboard content (files/image/html/rtf/text in priority order)
+4. Entry is normalized and deduplicated by hash
+5. Entry is stored in local SQLite + blob store
+6. UI receives `clipboard-updated` event and refreshes list
+7. If server URL is configured, entry is pushed to `POST /api/entries`
+
+## Repository layout
+
+```text
+.
+├── crates/copywraith-core/   # Shared models, API types, hashing/content helpers
+├── server/                   # Axum API + SQLite/blob persistence + embedded admin UI
+├── src-tauri/                # Tauri Rust backend (monitoring, commands, sync, shortcuts)
+├── src/                      # Svelte popup frontend
+├── ARCHITECTURE.md
+└── IMPLEMENTATION.md
+```
+
+## Prerequisites
+
+- Rust toolchain (stable; project currently builds with Rust 1.83+)
+- Node.js + npm
+- Tauri v2 system dependencies for your OS
+
+Tauri dependency guide:
+
+- https://v2.tauri.app/start/prerequisites/
+
+### Important local dependency
+
+This project uses a local file dependency:
+
+- `@lkmc/system7-ui` -> `file:../system7-ui`
+
+So you must have the sibling directory available:
+
+```text
+/work/GitHub/
+  ├── Copywraith/
+  └── system7-ui/
+```
+
+If `../system7-ui` is missing, `npm install` will fail.
+
+## Installation
+
+From the repository root:
+
+```bash
+npm install
+```
+
+Optional sanity checks:
+
+```bash
+cargo check --workspace
+cargo test --workspace
+npm run build
+```
+
+## Running Copywraith
+
+### 1) Start the server
+
+From repository root:
+
+```bash
+cargo run -p copywraith-server
+```
+
+Server defaults:
+
+- API base: `http://localhost:3742/api`
+- Admin UI: `http://localhost:3742/`
+
+Environment variables:
+
+- `COPYWRAITH_DATA_DIR` (default `./data`)
+- `PORT` (default `3742`)
+- `RUST_LOG`
+
+### 2) Start the desktop app
+
+From repository root:
+
+```bash
+npx tauri dev
+```
+
+The popup window starts hidden. Use the hotkeys below to open it.
+
+### 3) Configure sync (optional)
+
+In the desktop popup:
+
+- press `Cmd+,` (or `Ctrl+,`) to open Settings
+- set `Server URL` to your server (for example `http://localhost:3742`)
+- save
+
+After that, newly captured entries are synced in the background.
+
+## Hotkeys
+
+- `Cmd/Ctrl + Shift + V` -> toggle popup
+- `Cmd/Ctrl + Shift + B` -> popup with starred-only filter enabled
+- `Cmd/Ctrl + Shift + Alt + V` -> paste most recent item as plaintext
+
+Inside the list:
+
+- `Click` -> paste selected entry
+- `Alt + Click` -> paste as plaintext
+- `Double-click` or `Space` on focused row -> open entry preview dialog
+- `Enter` on focused row -> paste
+
+## Server API
+
+Base URL: `/api`
+
+- `GET /health`
+- `POST /entries`
+- `GET /entries`
+- `GET /entries/{id}`
+- `PATCH /entries/{id}`
+- `DELETE /entries/{id}`
+- `GET /entries/{id}/blob`
+
+Notes:
+
+- `GET /entries` supports pagination/filtering/search via query params
+  - `limit`, `offset`, `content_type`, `starred_only`, `search`
+- Deduplication is based on `content_hash`
+- Binary payloads are stored on disk in a blob directory keyed by hash
+
+## Docker (server)
+
+From `server/`:
+
+```bash
+docker compose up --build
+```
+
+This exposes port `3742` and persists server data in Docker volume `copywraith-data`.
+
+## Data and persistence
+
+- Desktop client keeps its own SQLite + blob cache in Tauri app data directory
+- Server keeps SQLite + blobs under `COPYWRAITH_DATA_DIR` (default `./data`)
+- Both desktop and server deduplicate by content hash
+
+## Platform notes
+
+- Clipboard monitoring works via `tauri-plugin-clipboard`
+- Paste simulation is currently implemented for macOS (via `osascript`)
+- On non-macOS platforms, writing to clipboard works, but simulated keystroke paste is not fully implemented yet
+
+## Development notes
+
+- Frontend dev server port is `1420` (Tauri expects this)
+- SvelteKit is static-adapter based and runs client-side (`ssr = false`)
+- Main docs:
+  - `ARCHITECTURE.md`
+  - `IMPLEMENTATION.md`
+
+## Quick troubleshooting
+
+- **`npm install` fails with system7-ui not found**
+  - ensure `../system7-ui` exists next to this repo
+- **Tauri fails to launch webview**
+  - verify OS prerequisites from Tauri docs
+- **Entries not syncing**
+  - check Settings -> `Server URL`
+  - verify server is reachable and running on expected port

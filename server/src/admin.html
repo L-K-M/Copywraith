@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Copywraith Admin</title>
+<style>
+  /* System 7 inspired palette */
+  :root {
+    --bg: #ddd;
+    --window-bg: #fff;
+    --border: #000;
+    --highlight: #000;
+    --highlight-text: #fff;
+    --muted: #888;
+    --font: "Chicago", "Geneva", "Charcoal", "Lucida Grande", "Helvetica Neue", sans-serif;
+    --font-mono: "Monaco", "Courier New", monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--font);
+    font-size: 12px;
+    background: var(--bg);
+    color: #000;
+    min-height: 100vh;
+  }
+
+  /* Window chrome */
+  .window {
+    background: var(--window-bg);
+    border: 2px solid var(--border);
+    margin: 16px auto;
+    max-width: 900px;
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.3);
+  }
+
+  .title-bar {
+    background: #fff;
+    border-bottom: 2px solid var(--border);
+    padding: 2px 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 24px;
+    background-image: repeating-linear-gradient(
+      0deg, transparent, transparent 1px, #000 1px, #000 2px, transparent 2px, transparent 3px
+    );
+  }
+
+  .title-bar-text {
+    background: #fff;
+    padding: 0 8px;
+    font-weight: bold;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .title-bar .close-box {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #000;
+    background: #fff;
+    flex-shrink: 0;
+  }
+
+  .content {
+    padding: 12px;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .toolbar input[type="text"] {
+    flex: 1;
+    min-width: 200px;
+    padding: 3px 6px;
+    font-family: var(--font);
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-right-color: #fff;
+    border-bottom-color: #fff;
+    background: #fff;
+  }
+
+  .toolbar select {
+    padding: 2px 4px;
+    font-family: var(--font);
+    font-size: 11px;
+    border: 1px solid var(--border);
+    background: #fff;
+  }
+
+  /* Buttons */
+  button, .btn {
+    font-family: var(--font);
+    font-size: 11px;
+    padding: 3px 12px;
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    box-shadow: 1px 1px 0 rgba(0,0,0,0.2);
+  }
+
+  button:active, .btn:active {
+    background: var(--highlight);
+    color: var(--highlight-text);
+    box-shadow: none;
+  }
+
+  button.primary {
+    border-width: 3px;
+    font-weight: bold;
+  }
+
+  button:disabled {
+    color: var(--muted);
+    cursor: default;
+  }
+
+  /* Checkbox */
+  label.checkbox {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+
+  /* Table */
+  .entries-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid var(--border);
+    font-size: 11px;
+  }
+
+  .entries-table th {
+    background: #eee;
+    border: 1px solid var(--border);
+    padding: 3px 6px;
+    text-align: left;
+    font-weight: bold;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .entries-table td {
+    border: 1px solid #ccc;
+    padding: 3px 6px;
+    vertical-align: top;
+  }
+
+  .entries-table tr:hover td {
+    background: #f0f0f0;
+  }
+
+  .entries-table tr.selected td {
+    background: var(--highlight);
+    color: var(--highlight-text);
+  }
+
+  /* Content preview */
+  .preview {
+    max-width: 400px;
+    max-height: 2.8em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .preview-expanded {
+    max-height: none;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .type-badge {
+    display: inline-block;
+    padding: 1px 5px;
+    border: 1px solid var(--border);
+    font-size: 10px;
+    text-transform: uppercase;
+    background: #eee;
+  }
+
+  .star-btn {
+    border: none;
+    background: transparent;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 2px;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  .star-btn:active {
+    background: transparent;
+    color: inherit;
+  }
+
+  /* Image preview */
+  .img-preview {
+    max-width: 120px;
+    max-height: 60px;
+    border: 1px solid #ccc;
+    image-rendering: pixelated;
+  }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex;
+    gap: 16px;
+    padding: 6px 0;
+    font-size: 11px;
+    color: var(--muted);
+    border-top: 1px solid #ccc;
+    margin-top: 12px;
+  }
+
+  .stats-bar span {
+    white-space: nowrap;
+  }
+
+  /* Pagination */
+  .pagination {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 0;
+    font-size: 11px;
+  }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .modal {
+    background: var(--window-bg);
+    border: 2px solid var(--border);
+    box-shadow: 4px 4px 0 rgba(0,0,0,0.3);
+    max-width: 600px;
+    width: 90%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .modal .content {
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .modal pre {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: #f5f5f5;
+    border: 1px inset;
+    padding: 8px;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+
+  .modal .actions {
+    padding: 8px 12px;
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    border-top: 1px solid #ccc;
+  }
+
+  .modal .meta {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .modal .meta span {
+    display: inline-block;
+    margin-right: 12px;
+  }
+
+  .modal .img-full {
+    max-width: 100%;
+    border: 1px solid #ccc;
+  }
+
+  /* Loading spinner */
+  .loading {
+    text-align: center;
+    padding: 24px;
+    color: var(--muted);
+  }
+
+  .error-msg {
+    background: #fff;
+    border: 2px solid #000;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .error-msg .icon { font-weight: bold; }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 32px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<div class="window">
+  <div class="title-bar">
+    <div class="close-box"></div>
+    <span class="title-bar-text">Copywraith Server Admin</span>
+  </div>
+
+  <div class="content">
+    <div id="error-banner" style="display:none" class="error-msg">
+      <span class="icon">!</span>
+      <span id="error-text"></span>
+      <button onclick="hideError()" style="margin-left:auto;font-size:10px;padding:1px 6px;">OK</button>
+    </div>
+
+    <div class="toolbar">
+      <input type="text" id="search-input" placeholder="Search entries..." oninput="debouncedLoad()">
+      <select id="type-filter" onchange="loadEntries()">
+        <option value="">All types</option>
+        <option value="text">Text</option>
+        <option value="html">HTML</option>
+        <option value="rtf">RTF</option>
+        <option value="image">Image</option>
+        <option value="file">File</option>
+      </select>
+      <label class="checkbox">
+        <input type="checkbox" id="starred-filter" onchange="loadEntries()">
+        Starred only
+      </label>
+      <button onclick="loadEntries()">Refresh</button>
+    </div>
+
+    <div id="entries-container">
+      <div class="loading">Loading...</div>
+    </div>
+
+    <div class="pagination" id="pagination" style="display:none">
+      <button id="prev-btn" onclick="prevPage()" disabled>&lt; Prev</button>
+      <span id="page-info"></span>
+      <button id="next-btn" onclick="nextPage()">Next &gt;</button>
+    </div>
+
+    <div class="stats-bar" id="stats-bar">
+      <span id="stats-total">--</span>
+      <span id="stats-version">--</span>
+    </div>
+  </div>
+</div>
+
+<!-- Detail modal -->
+<div id="detail-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="title-bar">
+      <div class="close-box" onclick="closeModal()" style="cursor:pointer"></div>
+      <span class="title-bar-text" id="modal-title">Entry Detail</span>
+    </div>
+    <div class="content" id="modal-content"></div>
+    <div class="actions">
+      <button onclick="closeModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm delete modal -->
+<div id="confirm-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeConfirm()">
+  <div class="modal" style="max-width:320px">
+    <div class="title-bar">
+      <div class="close-box" onclick="closeConfirm()" style="cursor:pointer"></div>
+      <span class="title-bar-text">Confirm Delete</span>
+    </div>
+    <div class="content">
+      <p>Are you sure you want to delete this entry? This cannot be undone.</p>
+    </div>
+    <div class="actions">
+      <button onclick="closeConfirm()">Cancel</button>
+      <button class="primary" id="confirm-delete-btn" onclick="confirmDelete()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/api';
+const PAGE_SIZE = 50;
+
+let currentOffset = 0;
+let totalEntries = 0;
+let hasMore = false;
+let pendingDeleteId = null;
+let debounceTimer = null;
+
+function debouncedLoad() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    currentOffset = 0;
+    loadEntries();
+  }, 300);
+}
+
+async function loadEntries() {
+  const search = document.getElementById('search-input').value.trim();
+  const contentType = document.getElementById('type-filter').value;
+  const starredOnly = document.getElementById('starred-filter').checked;
+
+  const params = new URLSearchParams();
+  params.set('limit', PAGE_SIZE);
+  params.set('offset', currentOffset);
+  if (search) params.set('search', search);
+  if (contentType) params.set('content_type', contentType);
+  if (starredOnly) params.set('starred_only', 'true');
+
+  try {
+    const resp = await fetch(`${API}/entries?${params}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+
+    totalEntries = data.total;
+    hasMore = data.has_more;
+    renderEntries(data.entries);
+    updatePagination();
+    updateStats();
+  } catch (e) {
+    showError(`Failed to load entries: ${e.message}`);
+  }
+}
+
+function renderEntries(entries) {
+  const container = document.getElementById('entries-container');
+
+  if (entries.length === 0) {
+    container.innerHTML = '<div class="empty-state">No clipboard entries found.</div>';
+    return;
+  }
+
+  let html = `<table class="entries-table">
+    <thead><tr>
+      <th style="width:30px"></th>
+      <th style="width:60px">Type</th>
+      <th>Content</th>
+      <th style="width:130px">Created</th>
+      <th style="width:80px">Actions</th>
+    </tr></thead><tbody>`;
+
+  for (const entry of entries) {
+    const star = entry.starred ? '\u2605' : '\u2606';
+    const starTitle = entry.starred ? 'Unstar' : 'Star';
+    const type = entry.content_type;
+    const created = formatDate(entry.created_at);
+    const preview = getPreview(entry);
+
+    html += `<tr>
+      <td><button class="star-btn" title="${starTitle}" onclick="toggleStar('${entry.id}', ${!entry.starred})">${star}</button></td>
+      <td><span class="type-badge">${escHtml(type)}</span></td>
+      <td><div class="preview" onclick="showDetail('${entry.id}')" style="cursor:pointer">${preview}</div></td>
+      <td>${escHtml(created)}</td>
+      <td>
+        <button onclick="showDetail('${entry.id}')" style="font-size:10px;padding:1px 6px">View</button>
+        <button onclick="askDelete('${entry.id}')" style="font-size:10px;padding:1px 6px">Del</button>
+      </td>
+    </tr>`;
+  }
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function getPreview(entry) {
+  if (entry.content_type === 'image' && entry.blob_url) {
+    return `<img class="img-preview" src="${API}${entry.blob_url}" alt="clipboard image">`;
+  }
+  if (entry.text_content) {
+    const text = entry.text_content;
+    const short = text.length > 200 ? text.substring(0, 200) + '...' : text;
+    return escHtml(short);
+  }
+  if (entry.content_type === 'file') return '[File]';
+  if (entry.content_type === 'image') return '[Image]';
+  return '[Empty]';
+}
+
+function formatDate(iso) {
+  if (!iso) return '--';
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Star / unstar
+async function toggleStar(id, starred) {
+  try {
+    const resp = await fetch(`${API}/entries/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starred })
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    loadEntries();
+  } catch (e) {
+    showError(`Failed to update entry: ${e.message}`);
+  }
+}
+
+// Delete
+function askDelete(id) {
+  pendingDeleteId = id;
+  document.getElementById('confirm-modal').style.display = 'flex';
+}
+
+async function confirmDelete() {
+  if (!pendingDeleteId) return;
+  try {
+    const resp = await fetch(`${API}/entries/${pendingDeleteId}`, { method: 'DELETE' });
+    if (!resp.ok && resp.status !== 204) throw new Error(`HTTP ${resp.status}`);
+    closeConfirm();
+    loadEntries();
+  } catch (e) {
+    closeConfirm();
+    showError(`Failed to delete entry: ${e.message}`);
+  }
+}
+
+function closeConfirm() {
+  pendingDeleteId = null;
+  document.getElementById('confirm-modal').style.display = 'none';
+}
+
+// Detail view
+async function showDetail(id) {
+  try {
+    const resp = await fetch(`${API}/entries/${id}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const entry = await resp.json();
+
+    const modal = document.getElementById('detail-modal');
+    const title = document.getElementById('modal-title');
+    const content = document.getElementById('modal-content');
+
+    title.textContent = `Entry: ${entry.id.substring(0, 12)}...`;
+
+    let html = `<div class="meta">
+      <span>Type: <strong>${escHtml(entry.content_type)}</strong></span>
+      <span>Starred: ${entry.starred ? 'Yes' : 'No'}</span>
+      <span>Created: ${escHtml(formatDate(entry.created_at))}</span>
+      <span>Updated: ${escHtml(formatDate(entry.updated_at))}</span>
+    </div>`;
+
+    if (entry.source_app) {
+      html += `<div class="meta"><span>Source: ${escHtml(entry.source_app)}</span></div>`;
+    }
+
+    if (entry.content_type === 'image' && entry.blob_url) {
+      html += `<img class="img-full" src="${API}${entry.blob_url}" alt="clipboard image">`;
+      if (entry.blob_size) {
+        html += `<div class="meta" style="margin-top:4px"><span>Size: ${formatSize(entry.blob_size)}</span></div>`;
+      }
+    } else if (entry.text_content) {
+      html += `<pre>${escHtml(entry.text_content)}</pre>`;
+    } else {
+      html += `<div class="empty-state">No displayable content</div>`;
+    }
+
+    content.innerHTML = html;
+    modal.style.display = 'flex';
+  } catch (e) {
+    showError(`Failed to load entry: ${e.message}`);
+  }
+}
+
+function closeModal() {
+  document.getElementById('detail-modal').style.display = 'none';
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// Pagination
+function updatePagination() {
+  const pag = document.getElementById('pagination');
+  const prevBtn = document.getElementById('prev-btn');
+  const nextBtn = document.getElementById('next-btn');
+  const info = document.getElementById('page-info');
+
+  if (totalEntries <= PAGE_SIZE) {
+    pag.style.display = 'none';
+    return;
+  }
+
+  pag.style.display = 'flex';
+  prevBtn.disabled = currentOffset === 0;
+  nextBtn.disabled = !hasMore;
+
+  const from = currentOffset + 1;
+  const to = Math.min(currentOffset + PAGE_SIZE, totalEntries);
+  info.textContent = `${from}-${to} of ${totalEntries}`;
+}
+
+function prevPage() {
+  currentOffset = Math.max(0, currentOffset - PAGE_SIZE);
+  loadEntries();
+}
+
+function nextPage() {
+  if (hasMore) {
+    currentOffset += PAGE_SIZE;
+    loadEntries();
+  }
+}
+
+// Stats
+async function updateStats() {
+  try {
+    const resp = await fetch(`${API}/health`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    document.getElementById('stats-total').textContent = `${data.entries_count} entries`;
+    document.getElementById('stats-version').textContent = `v${data.version}`;
+  } catch (_) {}
+}
+
+// Error handling
+function showError(msg) {
+  document.getElementById('error-text').textContent = msg;
+  document.getElementById('error-banner').style.display = 'flex';
+}
+
+function hideError() {
+  document.getElementById('error-banner').style.display = 'none';
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeModal();
+    closeConfirm();
+  }
+  // Focus search on /
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    document.getElementById('search-input').focus();
+  }
+});
+
+// Initial load
+loadEntries();
+</script>
+</body>
+</html>
