@@ -67,6 +67,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+		max-height: min(760px, calc(100dvh - 180px));
+		overflow-y: auto;
+		overflow-x: hidden;
+		padding-right: 2px;
 	}
 
 	.meta {
@@ -89,6 +93,8 @@
 
 	.img-full {
 		max-width: 100%;
+		max-height: min(56dvh, 620px);
+		object-fit: contain;
 		border: 1px solid #ccc;
 	}
 
@@ -100,7 +106,7 @@
 		background: #f5f5f5;
 		border: 1px inset;
 		padding: 8px;
-		max-height: 400px;
+		max-height: min(46dvh, 520px);
 		overflow-y: auto;
 		margin: 0;
 	}

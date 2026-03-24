@@ -77,7 +77,7 @@
 		</button>
 	</td>
 	<td class="col-type">
-		<span class="type-icon-wrap" title={entry.content_type.toUpperCase()}>
+		<div class="type-icon-wrap" title={entry.content_type.toUpperCase()}>
 			{#if entry.content_type === 'text'}
 				<TextFileIcon size={20} alt="Text" />
 			{:else if entry.content_type === 'html'}
@@ -89,7 +89,7 @@
 			{:else}
 				<GenericFileIcon size={20} alt="File" />
 			{/if}
-		</span>
+		</div>
 	</td>
 	<td class="col-content">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -105,7 +105,7 @@
 	<td class="col-date">{formatDate(entry.created_at)}</td>
 	<td class="col-actions">
 		<div class="action-group">
-			<BalloonHelp message="View entry" delay={350}>
+			<BalloonHelp message="View entry" delay={350} position="bottom">
 				<button
 					type="button"
 					class="action-btn"
@@ -116,7 +116,7 @@
 					<EditIcon size={16} alt="" />
 				</button>
 			</BalloonHelp>
-			<BalloonHelp message="Download entry" delay={350}>
+			<BalloonHelp message="Download entry" delay={350} position="bottom">
 				<button
 					type="button"
 					class="action-btn"
@@ -127,7 +127,7 @@
 					<DownloadIcon size={16} alt="" />
 				</button>
 			</BalloonHelp>
-			<BalloonHelp message="Delete entry" delay={350}>
+			<BalloonHelp message="Delete entry" delay={350} position="bottom">
 				<button
 					type="button"
 					class="action-btn"
@@ -145,6 +145,10 @@
 <style>
 	tr:hover td {
 		background: #f0f0f0;
+	}
+
+	tr:hover .col-actions {
+		z-index: 5;
 	}
 
 	td {
@@ -172,17 +176,18 @@
 	.col-type {
 		width: 72px;
 		text-align: center;
-		display: flex;
-		align-items: center;
+		padding-top: 3px !important;
+		padding-bottom: 3px !important;
 	}
 
 	.type-icon-wrap {
-		display: inline-flex;
+		display: flex;
 		align-items: center;
 		justify-content: center;
 		width: 20px;
 		height: 20px;
 		line-height: 0;
+		margin: 0 auto;
 	}
 
 	.col-content {
@@ -217,12 +222,22 @@
 	.col-actions {
 		width: 132px;
 		white-space: nowrap;
+		overflow: visible !important;
+		position: relative;
+		z-index: 2;
 	}
 
 	.action-group {
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		overflow: visible;
+	}
+
+	.action-group :global(.balloon-container) {
+		position: relative;
+		overflow: visible;
+		z-index: 20;
 	}
 
 	.action-btn {
