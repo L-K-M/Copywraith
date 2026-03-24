@@ -170,22 +170,19 @@
 	}
 
 	.col-type {
-		width: 92px;
+		width: 72px;
 		text-align: center;
+		display: flex;
+		align-items: center;
 	}
 
 	.type-icon-wrap {
-		display: flex;
+		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 24px;
-		height: 24px;
+		width: 20px;
+		height: 20px;
 		line-height: 0;
-		margin: 0 auto;
-	}
-
-	.type-icon-wrap :global(.sys7-icon) {
-		transform: translateY(4px);
 	}
 
 	.col-content {
