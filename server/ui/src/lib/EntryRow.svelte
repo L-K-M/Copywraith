@@ -1,5 +1,6 @@
 <script lang="ts">
 	import {
+		BalloonHelp,
 		CodeFileIcon,
 		DocumentFileIcon,
 		DownloadIcon,
@@ -104,33 +105,39 @@
 	<td class="col-date">{formatDate(entry.created_at)}</td>
 	<td class="col-actions">
 		<div class="action-group">
-			<button
-				type="button"
-				class="action-btn"
-				onclick={() => onview(entry.id)}
-				title="View"
-				aria-label="View"
-			>
-				<EditIcon size={16} alt="" />
-			</button>
-			<button
-				type="button"
-				class="action-btn"
-				onclick={() => ondownload(entry.id)}
-				title="Download"
-				aria-label="Download"
-			>
-				<DownloadIcon size={16} alt="" />
-			</button>
-			<button
-				type="button"
-				class="action-btn"
-				onclick={() => ondelete(entry.id)}
-				title="Delete"
-				aria-label="Delete"
-			>
-				<TrashIcon size={16} alt="" />
-			</button>
+			<BalloonHelp message="View entry" delay={350}>
+				<button
+					type="button"
+					class="action-btn"
+					onclick={() => onview(entry.id)}
+					title="View"
+					aria-label="View"
+				>
+					<EditIcon size={16} alt="" />
+				</button>
+			</BalloonHelp>
+			<BalloonHelp message="Download entry" delay={350}>
+				<button
+					type="button"
+					class="action-btn"
+					onclick={() => ondownload(entry.id)}
+					title="Download"
+					aria-label="Download"
+				>
+					<DownloadIcon size={16} alt="" />
+				</button>
+			</BalloonHelp>
+			<BalloonHelp message="Delete entry" delay={350}>
+				<button
+					type="button"
+					class="action-btn"
+					onclick={() => ondelete(entry.id)}
+					title="Delete"
+					aria-label="Delete"
+				>
+					<TrashIcon size={16} alt="" />
+				</button>
+			</BalloonHelp>
 		</div>
 	</td>
 </tr>
@@ -178,7 +185,7 @@
 	}
 
 	.type-icon-wrap :global(.sys7-icon) {
-		transform: translateY(2px);
+		transform: translateY(4px);
 	}
 
 	.col-content {

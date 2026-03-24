@@ -57,6 +57,7 @@ fn handle_clipboard_change(
     sync_client: &Arc<SyncClient>,
 ) {
     let plain_text = read_plain_text(clipboard);
+    let source_app = detect_source_app_name();
 
     // Check for image first so copied screenshots/files with image payload
     // are stored as image entries and shown with previews in the UI.
@@ -74,6 +75,7 @@ fn handle_clipboard_change(
                             None,
                             Some(&bytes),
                             &content_hash,
+                            source_app.as_deref(),
                         );
                         return;
                     }
@@ -99,6 +101,7 @@ fn handle_clipboard_change(
                         None,
                         Some(&bytes),
                         &content_hash,
+                        source_app.as_deref(),
                     );
                     return;
                 }
@@ -113,6 +116,7 @@ fn handle_clipboard_change(
                     Some(&file_list),
                     None,
                     &content_hash,
+                    source_app.as_deref(),
                 );
                 return;
             }
@@ -134,6 +138,7 @@ fn handle_clipboard_change(
                             Some(text),
                             None,
                             &content_hash,
+                            source_app.as_deref(),
                         );
                         return;
                     }
@@ -148,6 +153,7 @@ fn handle_clipboard_change(
                     Some(&html),
                     None,
                     &content_hash,
+                    source_app.as_deref(),
                 );
                 return;
             }
@@ -167,6 +173,7 @@ fn handle_clipboard_change(
                     Some(&rtf),
                     None,
                     &content_hash,
+                    source_app.as_deref(),
                 );
                 return;
             }
@@ -184,6 +191,7 @@ fn handle_clipboard_change(
             Some(&text),
             None,
             &content_hash,
+            source_app.as_deref(),
         );
     }
 }
@@ -209,6 +217,33 @@ fn should_prefer_plain_text_for_html(html: &str) -> bool {
         || lower.contains("mso-")
 }
 
+#[cfg(target_os = "macos")]
+fn detect_source_app_name() -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg("tell application \"System Events\" to get name of first process whose frontmost is true")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let app_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if app_name.is_empty() {
+        None
+    } else {
+        Some(app_name)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_source_app_name() -> Option<String> {
+    None
+}
+
 /// Store a clipboard entry in local storage and trigger server sync.
 fn store_entry(
     app: &tauri::AppHandle,
@@ -218,8 +253,9 @@ fn store_entry(
     text_content: Option<&str>,
     blob_content: Option<&[u8]>,
     content_hash: &str,
+    source_app: Option<&str>,
 ) {
-    match storage.insert_entry(content_type, text_content, blob_content, content_hash, None) {
+    match storage.insert_entry(content_type, text_content, blob_content, content_hash, source_app) {
         Ok(Some(entry)) => {
             let _ = app.emit("clipboard-updated", &entry);
             // Trigger background sync
