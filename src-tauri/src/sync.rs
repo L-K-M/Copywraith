@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use copywraith_core::api_types::{CreateEntryRequest, EntryResponse, ListEntriesResponse};
 use copywraith_core::content::{bytes_to_base64, hash_bytes, hash_text};
@@ -71,9 +72,16 @@ struct PullState {
     last_seen_server_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct EndpointHeartbeat {
+    endpoint: ServerEndpoint,
+    observed_at: Instant,
+}
+
 pub struct SyncClient {
     http: reqwest::Client,
     pull_state: Mutex<PullState>,
+    last_responding_endpoint: Mutex<Option<EndpointHeartbeat>>,
 }
 
 impl SyncClient {
@@ -86,7 +94,28 @@ impl SyncClient {
                 initialized: persisted_cursor.is_some(),
                 last_seen_server_id: persisted_cursor,
             }),
+            last_responding_endpoint: Mutex::new(None),
         }
+    }
+
+    fn note_responding_endpoint(&self, endpoint: &ServerEndpoint) {
+        let mut status = self.last_responding_endpoint.lock().unwrap();
+        *status = Some(EndpointHeartbeat {
+            endpoint: endpoint.clone(),
+            observed_at: Instant::now(),
+        });
+    }
+
+    fn recent_responding_status(&self) -> Option<SyncEndpointStatus> {
+        const MAX_STATUS_AGE: Duration = Duration::from_secs(30);
+
+        let status = self.last_responding_endpoint.lock().unwrap();
+        let heartbeat = status.as_ref()?;
+        if heartbeat.observed_at.elapsed() > MAX_STATUS_AGE {
+            return None;
+        }
+
+        Some(SyncEndpointStatus::online(&heartbeat.endpoint))
     }
 
     pub async fn sync_unsynced_entries(&self, storage: &LocalStorage) {
@@ -176,9 +205,13 @@ impl SyncClient {
                 .fetch_entries_page_with_fallback(&server_urls, &api_key, PAGE_SIZE, offset)
                 .await?
             else {
+                let endpoint_status = self
+                    .recent_responding_status()
+                    .unwrap_or_else(SyncEndpointStatus::unreachable);
+
                 return Ok(PullSyncResult {
                     pulled,
-                    endpoint_status: SyncEndpointStatus::unreachable(),
+                    endpoint_status,
                 });
             };
 
@@ -238,6 +271,7 @@ impl SyncClient {
         let endpoint_status = active_endpoint
             .as_ref()
             .map(SyncEndpointStatus::online)
+            .or_else(|| self.recent_responding_status())
             .unwrap_or_else(SyncEndpointStatus::unreachable);
 
         Ok(PullSyncResult {
@@ -262,8 +296,13 @@ impl SyncClient {
             }
 
             match request.send().await {
-                Ok(response) if response.status().is_success() => return true,
                 Ok(response) => {
+                    self.note_responding_endpoint(endpoint);
+
+                    if response.status().is_success() {
+                        return true;
+                    }
+
                     if index + 1 < server_urls.len() {
                         log::debug!(
                             "Server {} returned {} when syncing entry {}; trying fallback",
@@ -310,8 +349,6 @@ impl SyncClient {
         page_size: u32,
         offset: u32,
     ) -> anyhow::Result<Option<(ListEntriesResponse, usize)>> {
-        let mut parse_error: Option<anyhow::Error> = None;
-
         for (index, endpoint) in server_urls.iter().enumerate() {
             let url = format!(
                 "{}/api/entries?limit={}&offset={}",
@@ -339,6 +376,8 @@ impl SyncClient {
                 }
             };
 
+            self.note_responding_endpoint(endpoint);
+
             if !response.status().is_success() {
                 if index + 1 < server_urls.len() {
                     log::debug!(
@@ -359,24 +398,16 @@ impl SyncClient {
             match response.json::<ListEntriesResponse>().await {
                 Ok(page) => return Ok(Some((page, index))),
                 Err(e) => {
-                    let error_message = e.to_string();
-                    parse_error = Some(e.into());
-                    if index + 1 < server_urls.len() {
-                        log::warn!(
-                            "Failed to parse entries response from {}: {} (trying fallback)",
-                            endpoint.url,
-                            error_message
-                        );
-                    }
+                    log::warn!(
+                        "Failed to parse entries response from {}: {}",
+                        endpoint.url,
+                        e
+                    );
                 }
             }
         }
 
-        if let Some(err) = parse_error {
-            Err(err)
-        } else {
-            Ok(None)
-        }
+        Ok(None)
     }
 
     async fn ingest_remote_entry(
