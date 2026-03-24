@@ -150,16 +150,30 @@ fn start_sync_loop(
 
             // Then pull entries created on other devices
             match sync_client.pull_new_entries(&storage).await {
-                Ok(pulled) if pulled > 0 => {
-                    let _ = app.emit("clipboard-updated", ());
-                    log::info!("Pulled {} new entries from server", pulled);
-                    current_interval = BASE_INTERVAL_SECS; // Reset on success
-                }
-                Ok(_) => {
-                    current_interval = BASE_INTERVAL_SECS; // Reset on success (even if no new entries)
+                Ok(result) => {
+                    let _ = app.emit("sync-endpoint-status", &result.endpoint_status);
+
+                    if result.pulled > 0 {
+                        let _ = app.emit("clipboard-updated", ());
+                        log::info!("Pulled {} new entries from server", result.pulled);
+                    }
+
+                    if result.endpoint_status.state == "unreachable" {
+                        current_interval = (current_interval * 2).min(MAX_INTERVAL_SECS);
+                    } else {
+                        current_interval = BASE_INTERVAL_SECS;
+                    }
                 }
                 Err(e) => {
                     log::debug!("Pull sync failed: {}", e);
+                    let _ = app.emit(
+                        "sync-endpoint-status",
+                        sync::SyncEndpointStatus {
+                            state: "unreachable".to_string(),
+                            role: None,
+                            url: None,
+                        },
+                    );
                     // Exponential backoff on failure, capped at MAX_INTERVAL_SECS
                     current_interval = (current_interval * 2).min(MAX_INTERVAL_SECS);
                 }

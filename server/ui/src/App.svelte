@@ -52,10 +52,10 @@
 
 	const columns = [
 		{ key: 'star', label: '', width: '30px' },
-		{ key: 'type', label: 'Type', width: '60px' },
+		{ key: 'type', label: 'Type', width: '92px' },
 		{ key: 'content', label: 'Content' },
-		{ key: 'created', label: 'Created', width: '130px' },
-		{ key: 'actions', label: 'Actions', width: '110px' }
+		{ key: 'created', label: 'Created', width: '190px' },
+		{ key: 'actions', label: 'Actions', width: '132px' }
 	];
 
 	onMount(() => {
@@ -316,27 +316,33 @@
 
 <style>
 	.window {
-		max-width: 960px;
+		max-width: 1180px;
 		margin: 16px auto;
 		border: 2px solid #000;
 		box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
 		background: #fff;
 		display: flex;
 		flex-direction: column;
-		min-height: calc(100vh - 32px);
+		width: min(1180px, calc(100vw - 32px));
+		height: calc(100dvh - 32px);
+		max-height: calc(100dvh - 32px);
+		box-sizing: border-box;
+		overflow: hidden;
 	}
 
 	.content {
-		padding: 12px;
+		padding: 0;
 		flex: 1;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
 	}
 
 	.toolbar {
 		display: flex;
 		gap: 8px;
-		margin-bottom: 12px;
+		padding: 12px;
 		align-items: center;
 		flex-wrap: wrap;
 	}
@@ -347,7 +353,7 @@
 	}
 
 	.api-key-label {
-		font-size: 11px;
+		font-size: 18px;
 		white-space: nowrap;
 	}
 
@@ -358,9 +364,20 @@
 
 	.table-container {
 		flex: 1;
-		min-height: 300px;
+		min-height: 0;
 		display: flex;
 		flex-direction: column;
+		overflow: auto;
+	}
+
+	.table-container :global(th) {
+		font-size: 18px !important;
+		line-height: 1.4 !important;
+	}
+
+	.table-container :global(td) {
+		font-size: 22px !important;
+		line-height: 1.4 !important;
 	}
 
 	.pagination {
@@ -368,21 +385,22 @@
 		gap: 8px;
 		align-items: center;
 		justify-content: center;
-		padding: 8px 0;
+		padding: 10px 12px;
+		border-top: 1px solid #000;
 	}
 
 	.page-info {
-		font-size: 11px;
+		font-size: 14px;
 	}
 
 	.stats-bar {
 		display: flex;
 		gap: 16px;
-		padding: 6px 0;
-		font-size: 11px;
+		padding: 10px 12px;
+		font-size: 14px;
 		color: #888;
 		border-top: 1px solid #ccc;
-		margin-top: 8px;
+		margin-top: 0;
 	}
 
 	.stats-bar span {

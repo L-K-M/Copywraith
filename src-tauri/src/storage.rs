@@ -365,9 +365,22 @@ impl LocalStorage {
     pub fn get_settings(&self) -> Settings {
         let db = self.db.lock().unwrap();
         let defaults = Settings::default();
-        let server_url = db
+        let server_url_primary = db
             .query_row(
-                "SELECT value FROM settings WHERE key = 'server_url'",
+                "SELECT value FROM settings WHERE key = 'server_url_primary'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .or_else(|_| {
+                // Backward compatibility for older clients that only stored one server URL.
+                db.query_row("SELECT value FROM settings WHERE key = 'server_url'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+            })
+            .unwrap_or_default();
+        let server_url_fallback = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'server_url_fallback'",
                 [],
                 |row| row.get::<_, String>(0),
             )
@@ -401,7 +414,8 @@ impl LocalStorage {
             )
             .unwrap_or(defaults.shortcut_paste_plaintext);
         Settings {
-            server_url,
+            server_url_primary,
+            server_url_fallback,
             api_key,
             shortcut_toggle_popup,
             shortcut_starred_popup,
@@ -412,8 +426,16 @@ impl LocalStorage {
     pub fn save_settings(&self, settings: &Settings) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
         db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url_primary', ?1)",
+            params![settings.server_url_primary],
+        )?;
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url_fallback', ?1)",
+            params![settings.server_url_fallback],
+        )?;
+        db.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url', ?1)",
-            params![settings.server_url],
+            params![settings.server_url_primary],
         )?;
         db.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('api_key', ?1)",

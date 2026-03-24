@@ -6,6 +6,7 @@
 	import { WindowManager } from '$lib/windowManager';
 	import { windowFocused } from '$lib/util/windowState';
 	import { notifications } from '$lib/util/notifications';
+	import { syncEndpointStatus, type SyncEndpointStatus } from '$lib/util/syncStatusStore';
 	import type { ClipboardEntry } from '$lib/types';
 	import {
 		loadEntries,
@@ -34,6 +35,7 @@
 	let unlistenClipboardUpdated: UnlistenFn;
 	let unlistenClipboardReordered: UnlistenFn;
 	let unlistenPopupShow: UnlistenFn;
+	let unlistenSyncEndpointStatus: UnlistenFn;
 
 	onMount(async () => {
 		// Load initial entries
@@ -63,6 +65,25 @@
 			}, 50);
 		});
 
+		unlistenSyncEndpointStatus = await listen<SyncEndpointStatus>(
+			'sync-endpoint-status',
+			(event) => {
+				const payload = event.payload;
+				const state =
+					payload.state === 'online' ||
+					payload.state === 'disabled' ||
+					payload.state === 'unreachable'
+						? payload.state
+						: 'unreachable';
+
+				syncEndpointStatus.set({
+					state,
+					role: payload.role ?? null,
+					url: payload.url ?? null
+				});
+			}
+		);
+
 		// Clipboard monitoring is started from the Rust backend via
 		// Clipboard::start_monitor(), so no need to call startListening() here.
 	});
@@ -72,6 +93,7 @@
 		unlistenClipboardUpdated?.();
 		unlistenClipboardReordered?.();
 		unlistenPopupShow?.();
+		unlistenSyncEndpointStatus?.();
 	});
 
 	function handleWindowClose() {

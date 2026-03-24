@@ -3,8 +3,68 @@ use std::sync::Mutex;
 use copywraith_core::api_types::{CreateEntryRequest, EntryResponse, ListEntriesResponse};
 use copywraith_core::content::{bytes_to_base64, hash_bytes, hash_text};
 use copywraith_core::models::{ClipboardEntry, ContentType};
+use serde::Serialize;
 
-use crate::storage::LocalStorage;
+use crate::{models::Settings, storage::LocalStorage};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncEndpointStatus {
+    pub state: String,
+    pub role: Option<String>,
+    pub url: Option<String>,
+}
+
+pub struct PullSyncResult {
+    pub pulled: usize,
+    pub endpoint_status: SyncEndpointStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointRole {
+    Primary,
+    Fallback,
+}
+
+impl EndpointRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            EndpointRole::Primary => "primary",
+            EndpointRole::Fallback => "fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ServerEndpoint {
+    role: EndpointRole,
+    url: String,
+}
+
+impl SyncEndpointStatus {
+    fn disabled() -> Self {
+        Self {
+            state: "disabled".to_string(),
+            role: None,
+            url: None,
+        }
+    }
+
+    fn unreachable() -> Self {
+        Self {
+            state: "unreachable".to_string(),
+            role: None,
+            url: None,
+        }
+    }
+
+    fn online(endpoint: &ServerEndpoint) -> Self {
+        Self {
+            state: "online".to_string(),
+            role: Some(endpoint.role.as_str().to_string()),
+            url: Some(endpoint.url.clone()),
+        }
+    }
+}
 
 struct PullState {
     initialized: bool,
@@ -45,7 +105,8 @@ impl SyncClient {
 
     pub async fn sync_entry(&self, entry: &ClipboardEntry, storage: &LocalStorage) {
         let settings = storage.get_settings();
-        if settings.server_url.is_empty() {
+        let server_urls = configured_server_urls(&settings);
+        if server_urls.is_empty() {
             return; // No server configured, skip sync
         }
 
@@ -75,43 +136,29 @@ impl SyncClient {
             content_hash,
         };
 
-        let url = format!("{}/api/entries", settings.server_url.trim_end_matches('/'));
+        let synced = self
+            .push_entry_with_fallback(&server_urls, &settings.api_key, &req, &entry.id)
+            .await;
 
-        let mut request = self.http.post(&url).json(&req);
-
-        if !settings.api_key.is_empty() {
-            request = request.header("Authorization", format!("Bearer {}", settings.api_key));
-        }
-
-        match request.send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    if let Err(e) = storage.mark_synced(&entry.id) {
-                        log::error!("Failed to mark entry as synced: {}", e);
-                    }
-                } else {
-                    log::warn!(
-                        "Server returned {} when syncing entry {}",
-                        resp.status(),
-                        entry.id
-                    );
-                }
-            }
-            Err(e) => {
-                log::debug!("Failed to sync entry to server (will retry): {}", e);
+        if synced {
+            if let Err(e) = storage.mark_synced(&entry.id) {
+                log::error!("Failed to mark entry as synced: {}", e);
             }
         }
     }
 
-    pub async fn pull_new_entries(&self, storage: &LocalStorage) -> anyhow::Result<usize> {
+    pub async fn pull_new_entries(&self, storage: &LocalStorage) -> anyhow::Result<PullSyncResult> {
         const PAGE_SIZE: u32 = 100;
 
         let settings = storage.get_settings();
-        if settings.server_url.is_empty() {
-            return Ok(0);
+        let mut server_urls = configured_server_urls(&settings);
+        if server_urls.is_empty() {
+            return Ok(PullSyncResult {
+                pulled: 0,
+                endpoint_status: SyncEndpointStatus::disabled(),
+            });
         }
 
-        let base_url = settings.server_url.trim_end_matches('/').to_string();
         let api_key = settings.api_key;
 
         let (initialized, last_seen_server_id) = {
@@ -122,32 +169,26 @@ impl SyncClient {
         let mut offset = 0;
         let mut pulled = 0usize;
         let mut cursor_after_sync: Option<String> = None;
+        let mut active_endpoint: Option<ServerEndpoint> = None;
 
         loop {
-            let url = format!(
-                "{}/api/entries?limit={}&offset={}",
-                base_url, PAGE_SIZE, offset
-            );
-
-            let mut request = self.http.get(&url);
-            if !api_key.is_empty() {
-                request = request.header("Authorization", format!("Bearer {}", api_key));
-            }
-
-            let response = match request.send().await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    log::debug!("Failed to fetch entries from server: {}", e);
-                    return Ok(pulled);
-                }
+            let Some((page, used_index)) = self
+                .fetch_entries_page_with_fallback(&server_urls, &api_key, PAGE_SIZE, offset)
+                .await?
+            else {
+                return Ok(PullSyncResult {
+                    pulled,
+                    endpoint_status: SyncEndpointStatus::unreachable(),
+                });
             };
 
-            if !response.status().is_success() {
-                log::warn!("Server returned {} when pulling entries", response.status());
-                return Ok(pulled);
+            if used_index > 0 {
+                server_urls.swap(0, used_index);
             }
 
-            let page: ListEntriesResponse = response.json().await?;
+            if active_endpoint.is_none() {
+                active_endpoint = Some(server_urls[0].clone());
+            }
 
             if page.entries.is_empty() {
                 break;
@@ -166,7 +207,7 @@ impl SyncClient {
                 }
 
                 match self
-                    .ingest_remote_entry(&base_url, &api_key, remote, storage)
+                    .ingest_remote_entry(&server_urls, &api_key, remote, storage)
                     .await
                 {
                     Ok(true) => pulled += 1,
@@ -194,12 +235,153 @@ impl SyncClient {
             }
         }
 
-        Ok(pulled)
+        let endpoint_status = active_endpoint
+            .as_ref()
+            .map(SyncEndpointStatus::online)
+            .unwrap_or_else(SyncEndpointStatus::unreachable);
+
+        Ok(PullSyncResult {
+            pulled,
+            endpoint_status,
+        })
+    }
+
+    async fn push_entry_with_fallback(
+        &self,
+        server_urls: &[ServerEndpoint],
+        api_key: &str,
+        req: &CreateEntryRequest,
+        entry_id: &str,
+    ) -> bool {
+        for (index, endpoint) in server_urls.iter().enumerate() {
+            let url = format!("{}/api/entries", endpoint.url);
+            let mut request = self.http.post(&url).json(req);
+
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+
+            match request.send().await {
+                Ok(response) if response.status().is_success() => return true,
+                Ok(response) => {
+                    if index + 1 < server_urls.len() {
+                        log::debug!(
+                            "Server {} returned {} when syncing entry {}; trying fallback",
+                            endpoint.url,
+                            response.status(),
+                            entry_id
+                        );
+                    } else {
+                        log::warn!(
+                            "Server {} returned {} when syncing entry {}",
+                            endpoint.url,
+                            response.status(),
+                            entry_id
+                        );
+                    }
+                }
+                Err(e) => {
+                    if index + 1 < server_urls.len() {
+                        log::debug!(
+                            "Failed syncing entry {} via {}: {} (trying fallback)",
+                            entry_id,
+                            endpoint.url,
+                            e
+                        );
+                    } else {
+                        log::debug!(
+                            "Failed syncing entry {} via {} (will retry): {}",
+                            entry_id,
+                            endpoint.url,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    async fn fetch_entries_page_with_fallback(
+        &self,
+        server_urls: &[ServerEndpoint],
+        api_key: &str,
+        page_size: u32,
+        offset: u32,
+    ) -> anyhow::Result<Option<(ListEntriesResponse, usize)>> {
+        let mut parse_error: Option<anyhow::Error> = None;
+
+        for (index, endpoint) in server_urls.iter().enumerate() {
+            let url = format!(
+                "{}/api/entries?limit={}&offset={}",
+                endpoint.url, page_size, offset
+            );
+
+            let mut request = self.http.get(&url);
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    if index + 1 < server_urls.len() {
+                        log::debug!(
+                            "Failed to fetch entries from {}: {} (trying fallback)",
+                            endpoint.url,
+                            e
+                        );
+                    } else {
+                        log::debug!("Failed to fetch entries from {}: {}", endpoint.url, e);
+                    }
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                if index + 1 < server_urls.len() {
+                    log::debug!(
+                        "Server {} returned {} when pulling entries; trying fallback",
+                        endpoint.url,
+                        response.status()
+                    );
+                } else {
+                    log::warn!(
+                        "Server {} returned {} when pulling entries",
+                        endpoint.url,
+                        response.status()
+                    );
+                }
+                continue;
+            }
+
+            match response.json::<ListEntriesResponse>().await {
+                Ok(page) => return Ok(Some((page, index))),
+                Err(e) => {
+                    let error_message = e.to_string();
+                    parse_error = Some(e.into());
+                    if index + 1 < server_urls.len() {
+                        log::warn!(
+                            "Failed to parse entries response from {}: {} (trying fallback)",
+                            endpoint.url,
+                            error_message
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(err) = parse_error {
+            Err(err)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn ingest_remote_entry(
         &self,
-        base_url: &str,
+        server_urls: &[ServerEndpoint],
         api_key: &str,
         remote: &EntryResponse,
         storage: &LocalStorage,
@@ -211,7 +393,7 @@ impl SyncClient {
                 if let Some(hash) = remote.entry.blob_hash.clone() {
                     hash
                 } else {
-                    let data = self.fetch_blob_data(base_url, api_key, remote).await?;
+                    let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
                     if data.is_empty() {
                         return Ok(false);
                     }
@@ -233,7 +415,7 @@ impl SyncClient {
         }
 
         if remote.entry.content_type == ContentType::Image && blob_data.is_none() {
-            let data = self.fetch_blob_data(base_url, api_key, remote).await?;
+            let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
             if data.is_empty() {
                 return Ok(false);
             }
@@ -285,39 +467,111 @@ impl SyncClient {
 
     async fn fetch_blob_data(
         &self,
-        base_url: &str,
+        server_urls: &[ServerEndpoint],
         api_key: &str,
         remote: &EntryResponse,
     ) -> anyhow::Result<Vec<u8>> {
-        let blob_url = remote
-            .blob_url
-            .as_deref()
-            .map(|url| resolve_url(base_url, url))
-            .unwrap_or_else(|| {
-                format!(
-                    "{}/api/entries/{}/blob",
-                    base_url.trim_end_matches('/'),
+        let mut last_error: Option<anyhow::Error> = None;
+
+        for (index, endpoint) in server_urls.iter().enumerate() {
+            let blob_url = remote
+                .blob_url
+                .as_deref()
+                .map(|url| resolve_url(&endpoint.url, url))
+                .unwrap_or_else(|| format!("{}/api/entries/{}/blob", endpoint.url, remote.entry.id));
+
+            let mut request = self.http.get(&blob_url);
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    last_error = Some(anyhow::anyhow!(
+                        "Failed to download blob for {} from {}: {}",
+                        remote.entry.id,
+                        endpoint.url,
+                        e
+                    ));
+
+                    if index + 1 < server_urls.len() {
+                        log::debug!(
+                            "Failed to download blob for {} via {}: {} (trying fallback)",
+                            remote.entry.id,
+                            endpoint.url,
+                            e
+                        );
+                    }
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                last_error = Some(anyhow::anyhow!(
+                    "Server {} returned {} when downloading blob for {}",
+                    endpoint.url,
+                    response.status(),
                     remote.entry.id
-                )
-            });
+                ));
 
-        let mut request = self.http.get(&blob_url);
-        if !api_key.is_empty() {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
+                if index + 1 < server_urls.len() {
+                    log::debug!(
+                        "Server {} returned {} for blob {}; trying fallback",
+                        endpoint.url,
+                        response.status(),
+                        remote.entry.id
+                    );
+                }
+                continue;
+            }
+
+            match response.bytes().await {
+                Ok(bytes) => return Ok(bytes.to_vec()),
+                Err(e) => {
+                    let error_message = e.to_string();
+                    last_error = Some(e.into());
+                    if index + 1 < server_urls.len() {
+                        log::debug!(
+                            "Failed reading blob bytes for {} from {}: {} (trying fallback)",
+                            remote.entry.id,
+                            endpoint.url,
+                            error_message
+                        );
+                    }
+                }
+            }
         }
 
-        let response = request.send().await?;
-        if !response.status().is_success() {
-            anyhow::bail!(
-                "Server returned {} when downloading blob for {}",
-                response.status(),
-                remote.entry.id
-            );
-        }
-
-        let bytes = response.bytes().await?;
-        Ok(bytes.to_vec())
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("Failed to download blob for {}", remote.entry.id)
+        }))
     }
+}
+
+fn configured_server_urls(settings: &Settings) -> Vec<ServerEndpoint> {
+    let mut urls: Vec<ServerEndpoint> = Vec::new();
+
+    for (raw, role) in [
+        (&settings.server_url_primary, EndpointRole::Primary),
+        (&settings.server_url_fallback, EndpointRole::Fallback),
+    ] {
+        let normalized = raw.trim().trim_end_matches('/');
+        if normalized.is_empty() {
+            continue;
+        }
+
+        if urls.iter().any(|existing| existing.url == normalized) {
+            continue;
+        }
+
+        urls.push(ServerEndpoint {
+            role,
+            url: normalized.to_string(),
+        });
+    }
+
+    urls
 }
 
 fn resolve_url(base_url: &str, maybe_relative: &str) -> String {

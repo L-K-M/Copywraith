@@ -1,4 +1,14 @@
 <script lang="ts">
+	import {
+		CodeFileIcon,
+		DocumentFileIcon,
+		DownloadIcon,
+		EditIcon,
+		GenericFileIcon,
+		ImageFileIcon,
+		TextFileIcon,
+		TrashIcon
+	} from '@lkmc/system7-ui';
 	import type { EntryResponse } from './types';
 
 	let {
@@ -24,13 +34,28 @@
 
 	function getPreview(entry: EntryResponse): string {
 		if (entry.text_content) {
-			return entry.text_content.length > 200
-				? entry.text_content.substring(0, 200) + '...'
-				: entry.text_content;
+			const text =
+				entry.content_type === 'html' ? htmlToPlainText(entry.text_content) : entry.text_content;
+			return text.length > 200 ? text.substring(0, 200) + '...' : text;
 		}
 		if (entry.content_type === 'file') return '[File]';
 		if (entry.content_type === 'image') return '[Image]';
 		return '[Empty]';
+	}
+
+	function htmlToPlainText(html: string): string {
+		return html
+			.replace(/<style[\s\S]*?<\/style>/gi, ' ')
+			.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+			.replace(/<[^>]+>/g, ' ')
+			.replace(/&nbsp;/gi, ' ')
+			.replace(/&amp;/gi, '&')
+			.replace(/&lt;/gi, '<')
+			.replace(/&gt;/gi, '>')
+			.replace(/&quot;/gi, '"')
+			.replace(/&#39;/gi, "'")
+			.replace(/\s+/g, ' ')
+			.trim();
 	}
 
 	function handleStarClick(e: MouseEvent) {
@@ -51,7 +76,19 @@
 		</button>
 	</td>
 	<td class="col-type">
-		<span class="type-badge">{entry.content_type.toUpperCase()}</span>
+		<span class="type-icon-wrap" title={entry.content_type.toUpperCase()}>
+			{#if entry.content_type === 'text'}
+				<TextFileIcon size={20} alt="Text" />
+			{:else if entry.content_type === 'html'}
+				<CodeFileIcon size={20} alt="HTML" />
+			{:else if entry.content_type === 'rtf'}
+				<DocumentFileIcon size={20} alt="RTF" />
+			{:else if entry.content_type === 'image'}
+				<ImageFileIcon size={20} alt="Image" />
+			{:else}
+				<GenericFileIcon size={20} alt="File" />
+			{/if}
+		</span>
 	</td>
 	<td class="col-content">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -66,9 +103,35 @@
 	</td>
 	<td class="col-date">{formatDate(entry.created_at)}</td>
 	<td class="col-actions">
-		<button class="action-btn" onclick={() => onview(entry.id)} title="View">View</button>
-		<button class="action-btn" onclick={() => ondownload(entry.id)} title="Download">{'\u2913'}</button>
-		<button class="action-btn" onclick={() => ondelete(entry.id)} title="Delete">Del</button>
+		<div class="action-group">
+			<button
+				type="button"
+				class="action-btn"
+				onclick={() => onview(entry.id)}
+				title="View"
+				aria-label="View"
+			>
+				<EditIcon size={16} alt="" />
+			</button>
+			<button
+				type="button"
+				class="action-btn"
+				onclick={() => ondownload(entry.id)}
+				title="Download"
+				aria-label="Download"
+			>
+				<DownloadIcon size={16} alt="" />
+			</button>
+			<button
+				type="button"
+				class="action-btn"
+				onclick={() => ondelete(entry.id)}
+				title="Delete"
+				aria-label="Delete"
+			>
+				<TrashIcon size={16} alt="" />
+			</button>
+		</div>
 	</td>
 </tr>
 
@@ -78,20 +141,20 @@
 	}
 
 	td {
-		vertical-align: top;
+		vertical-align: middle;
 	}
 
 	.col-star {
-		width: 30px;
+		width: 36px;
 		text-align: center;
 	}
 
 	.star-btn {
 		border: none;
 		background: transparent;
-		font-size: 14px;
+		font-size: 20px;
 		cursor: pointer;
-		padding: 0 2px;
+		padding: 2px 3px;
 		color: inherit;
 	}
 
@@ -100,16 +163,22 @@
 	}
 
 	.col-type {
-		width: 60px;
+		width: 92px;
+		text-align: center;
 	}
 
-	.type-badge {
-		display: inline-block;
-		padding: 1px 5px;
-		border: 1px solid currentColor;
-		font-size: 10px;
-		text-transform: uppercase;
-		opacity: 0.8;
+	.type-icon-wrap {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		line-height: 0;
+		margin: 0 auto;
+	}
+
+	.type-icon-wrap :global(.sys7-icon) {
+		transform: translateY(2px);
 	}
 
 	.col-content {
@@ -117,48 +186,62 @@
 	}
 
 	.preview {
-		max-width: 400px;
-		max-height: 2.8em;
+		max-width: 680px;
+		max-height: 3.2em;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-family: "Monaco", "Courier New", monospace;
-		font-size: 11px;
+		font-family: inherit;
+		font-size: inherit;
+		line-height: 1.4;
 		cursor: pointer;
 	}
 
 	.img-preview {
-		max-width: 120px;
-		max-height: 60px;
+		max-width: 150px;
+		max-height: 80px;
 		border: 1px solid #ccc;
 		image-rendering: auto;
 	}
 
 	.col-date {
-		width: 130px;
+		width: 190px;
 		white-space: nowrap;
-		font-size: 11px;
+		font-size: inherit;
 	}
 
 	.col-actions {
-		width: 110px;
+		width: 132px;
 		white-space: nowrap;
 	}
 
+	.action-group {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
 	.action-btn {
-		font-size: 10px;
-		padding: 1px 6px;
-		border: 1px solid #999;
-		background: #fff;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 28px;
+		padding: 0;
+		border: none;
+		background: transparent;
 		cursor: pointer;
-		margin-right: 2px;
+	}
+
+	.action-btn :global(.sys7-icon) {
+		image-rendering: pixelated;
 	}
 
 	.action-btn:hover {
-		background: #eee;
+		background: rgba(0, 0, 0, 0.08);
 	}
 
 	.action-btn:active {
-		background: #ddd;
+		background: rgba(0, 0, 0, 0.16);
 	}
 </style>

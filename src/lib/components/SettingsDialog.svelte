@@ -7,7 +7,8 @@
 
 	let { onclose }: { onclose: () => void } = $props();
 
-	let serverUrl = $state('');
+	let primaryServerUrl = $state('');
+	let fallbackServerUrl = $state('');
 	let apiKey = $state('');
 	let shortcutTogglePopup = $state('CmdOrCtrl+Shift+V');
 	let shortcutStarredPopup = $state('CmdOrCtrl+Shift+B');
@@ -16,7 +17,8 @@
 	onMount(async () => {
 		try {
 			const settings = await TauriService.getSettings();
-			serverUrl = settings.server_url;
+			primaryServerUrl = settings.server_url_primary;
+			fallbackServerUrl = settings.server_url_fallback;
 			apiKey = settings.api_key;
 			shortcutTogglePopup = settings.shortcut_toggle_popup;
 			shortcutStarredPopup = settings.shortcut_starred_popup;
@@ -29,7 +31,8 @@
 	async function handleSave() {
 		try {
 			await TauriService.updateSettings({
-				server_url: serverUrl,
+				server_url_primary: primaryServerUrl,
+				server_url_fallback: fallbackServerUrl,
 				api_key: apiKey,
 				shortcut_toggle_popup: shortcutTogglePopup,
 				shortcut_starred_popup: shortcutStarredPopup,
@@ -47,13 +50,24 @@
 <MovableDialog title="Settings" {onclose} width="380px">
 	<div class="settings-form">
 		<div class="s7-form-group">
-			<label for="server-url">Server URL</label>
+			<label for="primary-server-url">Primary Server URL</label>
 			<input
-				id="server-url"
+				id="primary-server-url"
 				type="text"
 				class="s7-input"
-				placeholder="https://your-server.example.com"
-				bind:value={serverUrl}
+				placeholder="http://192.168.1.5:3742"
+				bind:value={primaryServerUrl}
+			/>
+		</div>
+
+		<div class="s7-form-group">
+			<label for="fallback-server-url">Fallback Server URL</label>
+			<input
+				id="fallback-server-url"
+				type="text"
+				class="s7-input"
+				placeholder="http://100.64.0.10:3742"
+				bind:value={fallbackServerUrl}
 			/>
 		</div>
 

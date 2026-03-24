@@ -112,13 +112,15 @@ The popup window starts hidden. Use the hotkeys below to open it.
 In the desktop popup:
 
 - press `Cmd+,` (or `Ctrl+,`) to open Settings
-- set `Server URL` to your server (for example `http://localhost:3742`)
+- set `Primary Server URL` to the first address to try (for example `http://192.168.1.5:3742`)
+- optionally set `Fallback Server URL` as a backup address (for example a Tailscale IP)
 - save
 
 After that, sync runs in both directions (roughly every 5 seconds):
 
 - device -> server: unsynced local entries are uploaded
 - server -> device: new entries from other devices are pulled into local history
+- popup status bar shows the active sync endpoint (`Primary`/`Fallback`) and when configured endpoints are unreachable
 
 ## Hotkeys
 
@@ -196,5 +198,5 @@ This exposes port `3742` and persists server data in Docker volume `copywraith-d
 - **Tauri fails to launch webview**
   - verify OS prerequisites from Tauri docs
 - **Entries not syncing**
-  - check Settings -> `Server URL`
+  - check Settings -> `Primary Server URL` / `Fallback Server URL`
   - verify server is reachable and running on expected port

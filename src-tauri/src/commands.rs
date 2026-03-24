@@ -100,9 +100,14 @@ pub async fn paste_entry(
                 }
             }
         }
+        ContentType::Html => {
+            if let Some(text) = &entry.text_content {
+                let plaintext = strip_html(text);
+                paste::write_and_paste_text(&app, &plaintext);
+            }
+        }
         _ => {
             if let Some(text) = &entry.text_content {
-                // For HTML, we write the full HTML to clipboard
                 paste::write_and_paste_text(&app, text);
             }
         }

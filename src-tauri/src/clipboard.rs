@@ -47,13 +47,17 @@ pub fn start_monitoring(
 /// We pick the richest content type available. If an image is present, we store
 /// the image so the UI can render a thumbnail preview. If files are present, we
 /// store them as a file list. For
-/// text-based content, we prefer HTML > RTF > plain text.
+/// text-based content, we prefer HTML > RTF > plain text, except Office-style
+/// HTML wrappers where we prefer plain text to avoid storing raw `<html ...>`
+/// markup for normal text copies from Word.
 fn handle_clipboard_change(
     app: &tauri::AppHandle,
     clipboard: &Clipboard,
     storage: &Arc<LocalStorage>,
     sync_client: &Arc<SyncClient>,
 ) {
+    let plain_text = read_plain_text(clipboard);
+
     // Check for image first so copied screenshots/files with image payload
     // are stored as image entries and shown with previews in the UI.
     if clipboard.has_image().unwrap_or(false) {
@@ -118,7 +122,23 @@ fn handle_clipboard_change(
     // Check for HTML
     if clipboard.has_html().unwrap_or(false) {
         if let Ok(html) = clipboard.read_html() {
-            if !html.is_empty() {
+            if !html.trim().is_empty() {
+                if should_prefer_plain_text_for_html(&html) {
+                    if let Some(text) = plain_text.as_ref() {
+                        let content_hash = hash_text(text);
+                        store_entry(
+                            app,
+                            storage,
+                            sync_client,
+                            ContentType::Text,
+                            Some(text),
+                            None,
+                            &content_hash,
+                        );
+                        return;
+                    }
+                }
+
                 let content_hash = hash_text(&html);
                 store_entry(
                     app,
@@ -154,22 +174,39 @@ fn handle_clipboard_change(
     }
 
     // Fall back to plain text
-    if clipboard.has_text().unwrap_or(false) {
-        if let Ok(text) = clipboard.read_text() {
-            if !text.is_empty() {
-                let content_hash = hash_text(&text);
-                store_entry(
-                    app,
-                    storage,
-                    sync_client,
-                    ContentType::Text,
-                    Some(&text),
-                    None,
-                    &content_hash,
-                );
-            }
-        }
+    if let Some(text) = plain_text {
+        let content_hash = hash_text(&text);
+        store_entry(
+            app,
+            storage,
+            sync_client,
+            ContentType::Text,
+            Some(&text),
+            None,
+            &content_hash,
+        );
     }
+}
+
+fn read_plain_text(clipboard: &Clipboard) -> Option<String> {
+    if !clipboard.has_text().unwrap_or(false) {
+        return None;
+    }
+
+    let text = clipboard.read_text().ok()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+
+    Some(text)
+}
+
+fn should_prefer_plain_text_for_html(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    lower.contains("urn:schemas-microsoft-com:office:office")
+        || lower.contains("urn:schemas-microsoft-com:office:word")
+        || lower.contains("class=\"msonormal\"")
+        || lower.contains("mso-")
 }
 
 /// Store a clipboard entry in local storage and trigger server sync.
