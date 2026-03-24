@@ -6,17 +6,26 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use storage::Storage;
 
-/// Embedded admin UI (compiled into the binary)
-const ADMIN_HTML: &str = include_str!("admin.html");
+/// Fallback admin HTML embedded in the binary, used when ui/dist is not found.
+const FALLBACK_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Copywraith Admin</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:40px">
+<h2>Copywraith Server</h2>
+<p>The admin UI has not been built yet.</p>
+<p>Run <code>cd server/ui && npm install && npm run build</code> to build it.</p>
+<p><a href="/api/health">API Health Check</a></p>
+</body>
+</html>"#;
 
 pub struct AppState {
     pub storage: Storage,
@@ -46,12 +55,29 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
-        .route("/", get(admin_ui))
-        .nest("/api", api::router())
-        .layer(cors)
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+    // Resolve UI dist directory: check env var, then common relative paths
+    let ui_dir = resolve_ui_dir();
+
+    let app = if let Some(ref dist_path) = ui_dir {
+        tracing::info!("Serving admin UI from {}", dist_path.display());
+        let index_file = dist_path.join("index.html");
+        Router::new()
+            .nest("/api", api::router())
+            .fallback_service(
+                ServeDir::new(dist_path).fallback(ServeFile::new(index_file)),
+            )
+            .layer(cors)
+            .layer(TraceLayer::new_for_http())
+            .with_state(state)
+    } else {
+        tracing::warn!("Admin UI dist directory not found; serving fallback page");
+        Router::new()
+            .route("/", get(fallback_ui))
+            .nest("/api", api::router())
+            .layer(cors)
+            .layer(TraceLayer::new_for_http())
+            .with_state(state)
+    };
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -68,7 +94,30 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Serve the embedded admin UI
-async fn admin_ui() -> Html<&'static str> {
-    Html(ADMIN_HTML)
+/// Try to find the built UI dist directory.
+/// Checks: $COPYWRAITH_UI_DIR, then ./server/ui/dist, then ./ui/dist.
+fn resolve_ui_dir() -> Option<PathBuf> {
+    // Explicit env override
+    if let Ok(dir) = std::env::var("COPYWRAITH_UI_DIR") {
+        let p = PathBuf::from(dir);
+        if p.join("index.html").exists() {
+            return Some(p);
+        }
+    }
+
+    // Running from repo root: cargo run -p copywraith-server
+    let candidates = ["server/ui/dist", "ui/dist"];
+    for candidate in &candidates {
+        let p = PathBuf::from(candidate);
+        if p.join("index.html").exists() {
+            return Some(p);
+        }
+    }
+
+    None
+}
+
+/// Fallback when the UI dist hasn't been built
+async fn fallback_ui() -> axum::response::Html<&'static str> {
+    axum::response::Html(FALLBACK_HTML)
 }

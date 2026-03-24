@@ -30,6 +30,9 @@ src-tauri/gen/
 # Lock files (keep Cargo.lock for apps)
 # Cargo.lock is committed for binary crates
 
+# Server UI build output
+server/ui/dist/
+
 # Data
 *.db
 *.db-wal
