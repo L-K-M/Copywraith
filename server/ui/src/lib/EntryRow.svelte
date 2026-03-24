@@ -95,7 +95,9 @@
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="preview" onclick={() => onview(entry.id)}>
-			{#if entry.content_type === 'image' && entry.blob_url}
+			{#if entry.sensitive}
+				<span class="sensitive-content">[Sensitive content hidden]</span>
+			{:else if entry.content_type === 'image' && entry.blob_url}
 				<img class="img-preview" src={entry.blob_url} alt="Clipboard preview" />
 			{:else}
 				{getPreview(entry)}
@@ -212,6 +214,11 @@
 		max-height: 80px;
 		border: 1px solid #ccc;
 		image-rendering: auto;
+	}
+
+	.sensitive-content {
+		font-style: italic;
+		color: #888;
 	}
 
 	.col-date {

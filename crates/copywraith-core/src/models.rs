@@ -43,6 +43,8 @@ pub struct ClipboardEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_app: Option<String>,
     pub starred: bool,
+    #[serde(default)]
+    pub sensitive: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -50,6 +52,7 @@ pub struct ClipboardEntry {
 impl ClipboardEntry {
     pub fn new_text(text: String) -> Self {
         let now = Utc::now();
+        let sensitive = crate::sensitive::contains_sensitive_data(&text);
         Self {
             id: Ulid::new().to_string(),
             content_type: ContentType::Text,
@@ -58,6 +61,7 @@ impl ClipboardEntry {
             blob_size: None,
             source_app: None,
             starred: false,
+            sensitive,
             created_at: now,
             updated_at: now,
         }
@@ -65,6 +69,7 @@ impl ClipboardEntry {
 
     pub fn new_html(html: String) -> Self {
         let now = Utc::now();
+        let sensitive = crate::sensitive::contains_sensitive_data(&html);
         Self {
             id: Ulid::new().to_string(),
             content_type: ContentType::Html,
@@ -73,6 +78,7 @@ impl ClipboardEntry {
             blob_size: None,
             source_app: None,
             starred: false,
+            sensitive,
             created_at: now,
             updated_at: now,
         }
@@ -88,6 +94,7 @@ impl ClipboardEntry {
             blob_size: Some(blob_size),
             source_app: None,
             starred: false,
+            sensitive: false,
             created_at: now,
             updated_at: now,
         }

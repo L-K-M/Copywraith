@@ -6,6 +6,7 @@ export interface EntryResponse {
 	blob_size: number | null;
 	source_app: string | null;
 	starred: boolean;
+	sensitive: boolean;
 	created_at: string;
 	updated_at: string;
 	blob_url: string | null;

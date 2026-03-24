@@ -10,6 +10,7 @@ pub struct EntryForFrontend {
     pub full_text: Option<String>,
     pub has_image: bool,
     pub starred: bool,
+    pub sensitive: bool,
     pub created_at: String,
     pub updated_at: String,
     pub source_app: Option<String>,

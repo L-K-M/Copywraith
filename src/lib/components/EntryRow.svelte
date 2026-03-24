@@ -142,7 +142,9 @@
 		</button>
 	</td>
 	<td class="col-content">
-		{#if entry.has_image && imageData}
+		{#if entry.sensitive}
+			<div class="text-preview sensitive-content">[Sensitive content hidden]</div>
+		{:else if entry.has_image && imageData}
 			<div class="image-preview">
 				<img src="data:image/png;base64,{imageData}" alt="Copied screenshot" />
 			</div>
@@ -236,6 +238,11 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		font-size: 13px;
+	}
+
+	.sensitive-content {
+		font-style: italic;
+		opacity: 0.6;
 	}
 
 	.image-preview {

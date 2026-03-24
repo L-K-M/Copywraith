@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use chrono::Utc;
 use copywraith_core::content::{base64_to_bytes, hash_bytes};
 use copywraith_core::models::{ClipboardEntry, ContentType};
+use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection};
 use ulid::Ulid;
 
@@ -33,6 +34,7 @@ impl Storage {
                 content_hash TEXT NOT NULL,
                 source_app TEXT,
                 starred INTEGER DEFAULT 0,
+                sensitive INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -62,6 +64,16 @@ impl Storage {
             ",
         )?;
 
+        // Migration: add sensitive column if missing (existing databases)
+        let has_sensitive: bool = conn
+            .prepare("SELECT sensitive FROM entries LIMIT 0")
+            .is_ok();
+        if !has_sensitive {
+            conn.execute_batch(
+                "ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;",
+            )?;
+        }
+
         Ok(Self {
             db: Mutex::new(conn),
             blob_dir,
@@ -82,7 +94,7 @@ impl Storage {
         // Check for existing entry with same content hash
         let existing: Option<ClipboardEntry> = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries WHERE content_hash = ?1",
                 params![content_hash],
                 |row| {
@@ -94,8 +106,9 @@ impl Storage {
                         blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                         source_app: row.get(5)?,
                         starred: row.get::<_, i32>(6)? != 0,
-                        created_at: row.get::<_, String>(7)?.parse().unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(8)?.parse().unwrap_or_else(|_| Utc::now()),
+                        sensitive: row.get::<_, i32>(7)? != 0,
+                        created_at: row.get::<_, String>(8)?.parse().unwrap_or_else(|_| Utc::now()),
+                        updated_at: row.get::<_, String>(9)?.parse().unwrap_or_else(|_| Utc::now()),
                     })
                 },
             )
@@ -135,9 +148,13 @@ impl Storage {
         let id = Ulid::new().to_string();
         let starred = starred.unwrap_or(false);
 
+        let sensitive = text_content
+            .map(|t| contains_sensitive_data(t))
+            .unwrap_or(false);
+
         db.execute(
-            "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, sensitive, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 content_type.as_str(),
@@ -147,6 +164,7 @@ impl Storage {
                 content_hash,
                 source_app,
                 starred as i32,
+                sensitive as i32,
                 now.to_rfc3339(),
                 now.to_rfc3339(),
             ],
@@ -160,6 +178,7 @@ impl Storage {
             blob_size,
             source_app: source_app.map(|s| s.to_string()),
             starred,
+            sensitive,
             created_at: now,
             updated_at: now,
         };
@@ -171,7 +190,7 @@ impl Storage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries WHERE id = ?1",
                 params![id],
                 |row| {
@@ -183,8 +202,9 @@ impl Storage {
                         blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                         source_app: row.get(5)?,
                         starred: row.get::<_, i32>(6)? != 0,
-                        created_at: row.get::<_, String>(7)?.parse().unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(8)?.parse().unwrap_or_else(|_| Utc::now()),
+                        sensitive: row.get::<_, i32>(7)? != 0,
+                        created_at: row.get::<_, String>(8)?.parse().unwrap_or_else(|_| Utc::now()),
+                        updated_at: row.get::<_, String>(9)?.parse().unwrap_or_else(|_| Utc::now()),
                     })
                 },
             )
@@ -246,7 +266,7 @@ impl Storage {
 
         // Fetch entries
         let query_sql = format!(
-            "SELECT e.id, e.content_type, e.text_content, e.blob_hash, e.blob_size, e.source_app, e.starred, e.created_at, e.updated_at
+            "SELECT e.id, e.content_type, e.text_content, e.blob_hash, e.blob_size, e.source_app, e.starred, e.sensitive, e.created_at, e.updated_at
              FROM entries e {} {}
              ORDER BY e.updated_at DESC
              LIMIT ?{} OFFSET ?{}",
@@ -277,12 +297,13 @@ impl Storage {
                     blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                     source_app: row.get(5)?,
                     starred: row.get::<_, i32>(6)? != 0,
+                    sensitive: row.get::<_, i32>(7)? != 0,
                     created_at: row
-                        .get::<_, String>(7)?
+                        .get::<_, String>(8)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                     updated_at: row
-                        .get::<_, String>(8)?
+                        .get::<_, String>(9)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                 })

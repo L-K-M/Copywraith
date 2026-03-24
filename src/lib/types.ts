@@ -8,6 +8,7 @@ export interface ClipboardEntry {
 	has_image: boolean;
 	image_base64?: string | null;
 	starred: boolean;
+	sensitive: boolean;
 	created_at: string;
 	updated_at: string;
 	source_app: string | null;

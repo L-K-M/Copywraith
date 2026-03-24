@@ -42,7 +42,15 @@
 			</div>
 		{/if}
 
-		{#if entry.content_type === 'image' && entry.blob_url}
+		{#if entry.sensitive}
+			<div class="meta">
+				<span class="sensitive-label">Sensitive: Yes</span>
+			</div>
+		{/if}
+
+		{#if entry.sensitive}
+			<div class="sensitive-placeholder">[Sensitive content hidden]</div>
+		{:else if entry.content_type === 'image' && entry.blob_url}
 			<img class="img-full" src={entry.blob_url} alt="Clipboard content preview" />
 			{#if entry.blob_size}
 				<div class="meta size-meta">
@@ -115,6 +123,20 @@
 		text-align: center;
 		padding: 32px;
 		color: #888;
+	}
+
+	.sensitive-label {
+		color: #c44;
+		font-weight: bold;
+	}
+
+	.sensitive-placeholder {
+		text-align: center;
+		padding: 32px;
+		color: #888;
+		font-style: italic;
+		background: #f5f5f5;
+		border: 1px inset;
 	}
 
 	.actions {

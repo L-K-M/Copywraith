@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use copywraith_core::models::{ClipboardEntry, ContentType};
+use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection, OptionalExtension};
 use ulid::Ulid;
 
@@ -33,6 +34,7 @@ impl LocalStorage {
                 content_hash TEXT NOT NULL,
                 source_app TEXT,
                 starred INTEGER DEFAULT 0,
+                sensitive INTEGER DEFAULT 0,
                 synced INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -49,6 +51,16 @@ impl LocalStorage {
             );
             ",
         )?;
+
+        // Migration: add sensitive column if missing (existing databases)
+        let has_sensitive: bool = conn
+            .prepare("SELECT sensitive FROM entries LIMIT 0")
+            .is_ok();
+        if !has_sensitive {
+            conn.execute_batch(
+                "ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;",
+            )?;
+        }
 
         Ok(Self {
             db: Mutex::new(conn),
@@ -101,9 +113,13 @@ impl LocalStorage {
         let now = Utc::now();
         let id = Ulid::new().to_string();
 
+        let sensitive = text_content
+            .map(|t| contains_sensitive_data(t))
+            .unwrap_or(false);
+
         db.execute(
-            "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, synced, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, ?9)",
+            "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, 0, ?9, ?10)",
             params![
                 id,
                 content_type.as_str(),
@@ -112,6 +128,7 @@ impl LocalStorage {
                 blob_size.map(|s| s as i64),
                 content_hash,
                 source_app,
+                sensitive as i32,
                 now.to_rfc3339(),
                 now.to_rfc3339(),
             ],
@@ -125,6 +142,7 @@ impl LocalStorage {
             blob_size,
             source_app: source_app.map(|s| s.to_string()),
             starred: false,
+            sensitive,
             created_at: now,
             updated_at: now,
         }))
@@ -179,7 +197,7 @@ impl LocalStorage {
         };
 
         let sql = format!(
-            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
              FROM entries {}
              ORDER BY updated_at DESC
              LIMIT ?{} OFFSET ?{}",
@@ -209,12 +227,13 @@ impl LocalStorage {
                     blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                     source_app: row.get(5)?,
                     starred: row.get::<_, i32>(6)? != 0,
+                    sensitive: row.get::<_, i32>(7)? != 0,
                     created_at: row
-                        .get::<_, String>(7)?
+                        .get::<_, String>(8)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                     updated_at: row
-                        .get::<_, String>(8)?
+                        .get::<_, String>(9)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                 })
@@ -228,7 +247,7 @@ impl LocalStorage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries WHERE id = ?1",
                 params![id],
                 |row| {
@@ -244,10 +263,11 @@ impl LocalStorage {
                         blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                         source_app: row.get(5)?,
                         starred: row.get::<_, i32>(6)? != 0,
-                        created_at: row.get::<_, String>(7)?
+                        sensitive: row.get::<_, i32>(7)? != 0,
+                        created_at: row.get::<_, String>(8)?
                             .parse()
                             .unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(8)?
+                        updated_at: row.get::<_, String>(9)?
                             .parse()
                             .unwrap_or_else(|_| Utc::now()),
                     })
@@ -326,7 +346,7 @@ impl LocalStorage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries ORDER BY updated_at DESC LIMIT 1",
                 [],
                 |row| {
@@ -342,10 +362,11 @@ impl LocalStorage {
                         blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                         source_app: row.get(5)?,
                         starred: row.get::<_, i32>(6)? != 0,
-                        created_at: row.get::<_, String>(7)?
+                        sensitive: row.get::<_, i32>(7)? != 0,
+                        created_at: row.get::<_, String>(8)?
                             .parse()
                             .unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(8)?
+                        updated_at: row.get::<_, String>(9)?
                             .parse()
                             .unwrap_or_else(|_| Utc::now()),
                     })
@@ -358,7 +379,7 @@ impl LocalStorage {
     pub fn get_unsynced_entries(&self) -> anyhow::Result<Vec<ClipboardEntry>> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(
-            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, created_at, updated_at
+            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
              FROM entries WHERE synced = 0 ORDER BY created_at ASC LIMIT 50",
         )?;
 
@@ -376,12 +397,13 @@ impl LocalStorage {
                     blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
                     source_app: row.get(5)?,
                     starred: row.get::<_, i32>(6)? != 0,
+                    sensitive: row.get::<_, i32>(7)? != 0,
                     created_at: row
-                        .get::<_, String>(7)?
+                        .get::<_, String>(8)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                     updated_at: row
-                        .get::<_, String>(8)?
+                        .get::<_, String>(9)?
                         .parse()
                         .unwrap_or_else(|_| Utc::now()),
                 })

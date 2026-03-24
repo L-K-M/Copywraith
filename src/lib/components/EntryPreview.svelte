@@ -79,9 +79,17 @@
 			<span class="meta-label">Starred:</span>
 			<span class="meta-value">{entry.starred ? 'Yes' : 'No'}</span>
 		</div>
+		{#if entry.sensitive}
+			<div class="meta-row">
+				<span class="meta-label">Sensitive:</span>
+				<span class="meta-value sensitive-label">Yes</span>
+			</div>
+		{/if}
 
 		<div class="content-display">
-			{#if entry.has_image && imageData}
+			{#if entry.sensitive}
+				<div class="empty-content sensitive-content">[Sensitive content hidden]</div>
+			{:else if entry.has_image && imageData}
 				<div class="image-container">
 					<img src="data:image/png;base64,{imageData}" alt="Clipboard preview" />
 				</div>
@@ -165,6 +173,15 @@
 		text-align: center;
 		color: #888;
 		font-size: 11px;
+	}
+
+	.sensitive-content {
+		font-style: italic;
+	}
+
+	.sensitive-label {
+		color: #c44;
+		font-weight: bold;
 	}
 
 	.actions {

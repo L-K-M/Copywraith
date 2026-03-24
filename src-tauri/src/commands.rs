@@ -36,6 +36,7 @@ pub async fn get_entries(
                 full_text: e.text_content,
                 has_image: e.content_type == ContentType::Image && e.blob_hash.is_some(),
                 starred: e.starred,
+                sensitive: e.sensitive,
                 created_at: e.created_at.to_rfc3339(),
                 updated_at: e.updated_at.to_rfc3339(),
                 source_app: e.source_app,
