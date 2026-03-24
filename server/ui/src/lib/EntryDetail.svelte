@@ -43,7 +43,7 @@
 		{/if}
 
 		{#if entry.content_type === 'image' && entry.blob_url}
-			<img class="img-full" src={entry.blob_url} alt="clipboard image" />
+			<img class="img-full" src={entry.blob_url} alt="Clipboard content preview" />
 			{#if entry.blob_size}
 				<div class="meta size-meta">
 					<span>Size: {formatSize(entry.blob_size)}</span>

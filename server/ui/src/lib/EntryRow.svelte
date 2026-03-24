@@ -96,7 +96,7 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="preview" onclick={() => onview(entry.id)}>
 			{#if entry.content_type === 'image' && entry.blob_url}
-				<img class="img-preview" src={entry.blob_url} alt="clipboard image" />
+				<img class="img-preview" src={entry.blob_url} alt="Clipboard preview" />
 			{:else}
 				{getPreview(entry)}
 			{/if}
