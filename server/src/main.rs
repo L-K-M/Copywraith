@@ -6,8 +6,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::extract::State;
+use axum::Json;
 use axum::routing::get;
 use axum::Router;
+use serde::Serialize;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -29,6 +32,13 @@ const FALLBACK_HTML: &str = r#"<!DOCTYPE html>
 
 pub struct AppState {
     pub storage: Storage,
+    pub admin_api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminConfigResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
 }
 
 #[tokio::main]
@@ -48,7 +58,19 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&data_dir)?;
 
     let storage = Storage::new(&data_dir)?;
-    let state = Arc::new(AppState { storage });
+    let admin_api_key = std::env::var("COPYWRAITH_ADMIN_API_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if admin_api_key.is_some() {
+        tracing::info!("Admin API key loaded from environment");
+    }
+
+    let state = Arc::new(AppState {
+        storage,
+        admin_api_key,
+    });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -63,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         let index_file = dist_path.join("index.html");
         Router::new()
             .nest("/api", api::router())
+            .route("/admin-config", get(admin_config))
             .fallback_service(
                 ServeDir::new(dist_path).fallback(ServeFile::new(index_file)),
             )
@@ -74,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
             .route("/", get(fallback_ui))
             .nest("/api", api::router())
+            .route("/admin-config", get(admin_config))
             .layer(cors)
             .layer(TraceLayer::new_for_http())
             .with_state(state)
@@ -120,4 +144,10 @@ fn resolve_ui_dir() -> Option<PathBuf> {
 /// Fallback when the UI dist hasn't been built
 async fn fallback_ui() -> axum::response::Html<&'static str> {
     axum::response::Html(FALLBACK_HTML)
+}
+
+async fn admin_config(State(state): State<Arc<AppState>>) -> Json<AdminConfigResponse> {
+    Json(AdminConfigResponse {
+        api_key: state.admin_api_key.clone(),
+    })
 }

@@ -4,12 +4,19 @@ const API = '/api';
 
 let apiKey = '';
 
-export function setApiKey(key: string) {
-	apiKey = key;
-}
+export async function initializeApiKey(): Promise<void> {
+	try {
+		const resp = await fetch('/admin-config', { cache: 'no-store' });
+		if (!resp.ok) {
+			apiKey = '';
+			return;
+		}
 
-export function getApiKey(): string {
-	return apiKey;
+		const config = (await resp.json()) as { api_key?: string };
+		apiKey = (config.api_key ?? '').trim();
+	} catch {
+		apiKey = '';
+	}
 }
 
 function buildHeaders(extra: Record<string, string> = {}): Record<string, string> {

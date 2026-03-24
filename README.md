@@ -96,6 +96,7 @@ Environment variables:
 - `COPYWRAITH_DATA_DIR` (default `./data`)
 - `PORT` (default `3742`)
 - `RUST_LOG`
+- `COPYWRAITH_ADMIN_API_KEY` (optional bearer token; server admin UI reads it automatically)
 
 ### 2) Start the desktop app
 
@@ -170,6 +171,9 @@ docker compose up --build
 ```
 
 This exposes port `3742` and persists server data in Docker volume `copywraith-data`.
+
+To set an admin API key via startup environment (instead of typing it in the web UI), set
+`COPYWRAITH_ADMIN_API_KEY` before running `docker compose up`.
 
 ## Data and persistence
 

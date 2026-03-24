@@ -15,7 +15,6 @@
 	import EntryDetail from './lib/EntryDetail.svelte';
 
 	const PAGE_SIZE = 50;
-	const API_KEY_STORAGE = 'copywraith_admin_api_key';
 
 	// State
 	let entries: EntryResponse[] = $state([]);
@@ -29,11 +28,9 @@
 	let searchQuery = $state('');
 	let typeFilter = $state('');
 	let starredOnly = $state(false);
-	let apiKeyValue = $state('');
 
 	// Stats
-	let statsTotal = $state('--');
-	let statsVersion = $state('--');
+	let statsVersion = $state('v--');
 
 	// Modals
 	let detailEntry: EntryResponse | null = $state(null);
@@ -52,17 +49,17 @@
 
 	const columns = [
 		{ key: 'star', label: '', width: '30px' },
-		{ key: 'type', label: 'Type', width: '72px' },
+		{ key: 'type', label: 'Type', width: '56px' },
 		{ key: 'content', label: 'Content' },
 		{ key: 'created', label: 'Created', width: '190px' },
 		{ key: 'actions', label: 'Actions', width: '132px' }
 	];
 
 	onMount(() => {
-		const saved = localStorage.getItem(API_KEY_STORAGE) || '';
-		apiKeyValue = saved;
-		api.setApiKey(saved);
-		loadEntries();
+		void (async () => {
+			await api.initializeApiKey();
+			await loadEntries();
+		})();
 	});
 
 	async function loadEntries() {
@@ -90,7 +87,6 @@
 	async function updateStats() {
 		try {
 			const health = await api.fetchHealth();
-			statsTotal = `${health.entries_count} entries`;
 			statsVersion = `v${health.version}`;
 		} catch (_) {}
 	}
@@ -106,13 +102,6 @@
 	function handleFilterChange() {
 		currentOffset = 0;
 		loadEntries();
-	}
-
-	function handleApiKeyInput(e: Event) {
-		const val = (e.target as HTMLInputElement).value.trim();
-		apiKeyValue = val;
-		api.setApiKey(val);
-		localStorage.setItem(API_KEY_STORAGE, val);
 	}
 
 	async function handleToggleStar(id: string, currentStarred: boolean) {
@@ -242,15 +231,6 @@
 				bind:value={typeFilter}
 				onchange={handleFilterChange}
 			/>
-			<span class="api-key-label">API key</span>
-			<input
-				class="s7-input api-key-input"
-				type="password"
-				placeholder="Optional bearer token"
-				autocomplete="off"
-				value={apiKeyValue}
-				oninput={handleApiKeyInput}
-			/>
 			<Checkbox
 				label="Starred only"
 				bind:checked={starredOnly}
@@ -279,19 +259,21 @@
 			</DataTable>
 		</div>
 
-		{#if totalEntries > PAGE_SIZE}
+		<div class="footer-bar">
 			<div class="pagination">
-				<Button onclick={prevPage} disabled={currentOffset === 0}>&lt; Prev</Button>
+				<Button onclick={prevPage} disabled={currentOffset === 0 || totalEntries === 0}
+					>&lt; Prev</Button
+				>
 				<span class="page-info">
-					{currentOffset + 1}-{Math.min(currentOffset + PAGE_SIZE, totalEntries)} of {totalEntries}
+					{#if totalEntries === 0}
+						0 entries
+					{:else}
+						{currentOffset + 1}-{Math.min(currentOffset + PAGE_SIZE, totalEntries)} of {totalEntries}
+					{/if}
 				</span>
-				<Button onclick={nextPage} disabled={!hasMore}>Next &gt;</Button>
+				<Button onclick={nextPage} disabled={!hasMore || totalEntries === 0}>Next &gt;</Button>
 			</div>
-		{/if}
-
-		<div class="stats-bar">
-			<span>{statsTotal}</span>
-			<span>{statsVersion}</span>
+			<span class="footer-version">{statsVersion}</span>
 		</div>
 	</div>
 </div>
@@ -352,22 +334,13 @@
 		min-width: 200px;
 	}
 
-	.api-key-label {
-		font-size: 18px;
-		white-space: nowrap;
-	}
-
-	.api-key-input {
-		flex: 0 0 180px;
-		min-width: 140px;
-	}
-
 	.table-container {
 		flex: 1;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
 		overflow: auto;
+		border-top: 1px solid #000;
 	}
 
 	.table-container :global(th) {
@@ -380,30 +353,32 @@
 		line-height: 1.4 !important;
 	}
 
-	.pagination {
+	.footer-bar {
 		display: flex;
-		gap: 8px;
 		align-items: center;
-		justify-content: center;
+		justify-content: space-between;
+		gap: 12px;
 		padding: 10px 12px;
 		border-top: 1px solid #000;
 	}
 
-	.page-info {
-		font-size: 14px;
+	.pagination {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		justify-content: flex-start;
+		padding: 0;
 	}
 
-	.stats-bar {
-		display: flex;
-		gap: 16px;
-		padding: 10px 12px;
+	.page-info {
+		font-size: 18px;
+		line-height: 1;
+		white-space: nowrap;
+	}
+
+	.footer-version {
 		font-size: 14px;
 		color: #888;
-		border-top: 1px solid #ccc;
-		margin-top: 0;
-	}
-
-	.stats-bar span {
 		white-space: nowrap;
 	}
 </style>

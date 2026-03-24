@@ -174,20 +174,19 @@
 	}
 
 	.col-type {
-		width: 72px;
-		text-align: center;
-		padding-top: 3px !important;
-		padding-bottom: 3px !important;
+		width: 56px;
+		text-align: left;
+		padding: 3px 4px 3px 8px !important;
 	}
 
 	.type-icon-wrap {
-		display: flex;
+		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		width: 20px;
 		height: 20px;
 		line-height: 0;
-		margin: 0 auto;
+		margin: 0;
 	}
 
 	.col-content {
