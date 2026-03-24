@@ -72,7 +72,13 @@ pub async fn get_entry_image(
 
 #[tauri::command]
 pub async fn toggle_star(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    state.storage.toggle_star(&id).map_err(|e| e.to_string())
+    let starred = state.storage.toggle_star(&id).map_err(|e| e.to_string())?;
+
+    if let Some(entry) = state.storage.get_entry(&id).map_err(|e| e.to_string())? {
+        state.sync_client.sync_entry(&entry, &state.storage).await;
+    }
+
+    Ok(starred)
 }
 
 #[tauri::command]

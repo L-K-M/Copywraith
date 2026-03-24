@@ -155,7 +155,7 @@ fn start_sync_loop(
 
                     if result.pulled > 0 {
                         let _ = app.emit("clipboard-updated", ());
-                        log::info!("Pulled {} new entries from server", result.pulled);
+                        log::info!("Applied {} updates from server", result.pulled);
                     }
 
                     if result.endpoint_status.state == "unreachable" {

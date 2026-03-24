@@ -162,6 +162,7 @@ impl SyncClient {
             text_content: entry.text_content.clone(),
             blob_base64,
             source_app: entry.source_app.clone(),
+            starred: Some(entry.starred),
             content_hash,
         };
 
@@ -442,7 +443,10 @@ impl SyncClient {
         };
 
         if storage.has_content_hash(&content_hash)? {
-            return Ok(false);
+            return storage.apply_remote_star_state_by_content_hash(
+                &content_hash,
+                remote.entry.starred,
+            );
         }
 
         if remote.entry.content_type == ContentType::Image && blob_data.is_none() {

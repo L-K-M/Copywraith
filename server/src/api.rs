@@ -42,6 +42,7 @@ async fn create_entry(
         req.text_content.as_deref(),
         req.blob_base64.as_deref(),
         req.source_app.as_deref(),
+        req.starred,
         &req.content_hash,
     )?;
 

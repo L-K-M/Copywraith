@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use copywraith_core::models::{ClipboardEntry, ContentType};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use ulid::Ulid;
 
 use crate::models::Settings;
@@ -265,11 +265,46 @@ impl LocalStorage {
             |row| row.get(0),
         )?;
         let new_value = if current == 0 { 1 } else { 0 };
+        let now = Utc::now();
         db.execute(
-            "UPDATE entries SET starred = ?1 WHERE id = ?2",
-            params![new_value, id],
+            "UPDATE entries SET starred = ?1, synced = 0, updated_at = ?2 WHERE id = ?3",
+            params![new_value, now.to_rfc3339(), id],
         )?;
         Ok(new_value == 1)
+    }
+
+    pub fn apply_remote_star_state_by_content_hash(
+        &self,
+        content_hash: &str,
+        starred: bool,
+    ) -> anyhow::Result<bool> {
+        let db = self.db.lock().unwrap();
+        let target = if starred { 1 } else { 0 };
+
+        let row: Option<(i32, i32)> = db
+            .query_row(
+                "SELECT starred, synced FROM entries WHERE content_hash = ?1",
+                params![content_hash],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+
+        let Some((current_starred, synced)) = row else {
+            return Ok(false);
+        };
+
+        // Keep local pending changes if they have not been pushed yet.
+        if synced == 0 || current_starred == target {
+            return Ok(false);
+        }
+
+        let now = Utc::now();
+        let updated = db.execute(
+            "UPDATE entries SET starred = ?1, updated_at = ?2 WHERE content_hash = ?3 AND synced = 1",
+            params![target, now.to_rfc3339(), content_hash],
+        )?;
+
+        Ok(updated > 0)
     }
 
     pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {

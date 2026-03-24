@@ -74,6 +74,7 @@ impl Storage {
         text_content: Option<&str>,
         blob_base64: Option<&str>,
         source_app: Option<&str>,
+        starred: Option<bool>,
         content_hash: &str,
     ) -> anyhow::Result<(ClipboardEntry, bool)> {
         let db = self.db.lock().unwrap();
@@ -103,10 +104,12 @@ impl Storage {
         if let Some(mut entry) = existing {
             // Update timestamp to bring to top
             let now = Utc::now();
+            let next_starred = starred.unwrap_or(entry.starred);
+            entry.starred = next_starred;
             entry.updated_at = now;
             db.execute(
-                "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
-                params![now.to_rfc3339(), entry.id],
+                "UPDATE entries SET updated_at = ?1, starred = ?2 WHERE id = ?3",
+                params![now.to_rfc3339(), next_starred as i32, entry.id],
             )?;
             return Ok((entry, false));
         }
@@ -130,10 +133,11 @@ impl Storage {
 
         let now = Utc::now();
         let id = Ulid::new().to_string();
+        let starred = starred.unwrap_or(false);
 
         db.execute(
             "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 id,
                 content_type.as_str(),
@@ -142,6 +146,7 @@ impl Storage {
                 blob_size.map(|s| s as i64),
                 content_hash,
                 source_app,
+                starred as i32,
                 now.to_rfc3339(),
                 now.to_rfc3339(),
             ],
@@ -154,7 +159,7 @@ impl Storage {
             blob_hash,
             blob_size,
             source_app: source_app.map(|s| s.to_string()),
-            starred: false,
+            starred,
             created_at: now,
             updated_at: now,
         };

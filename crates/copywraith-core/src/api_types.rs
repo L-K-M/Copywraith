@@ -13,6 +13,8 @@ pub struct CreateEntryRequest {
     pub blob_base64: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starred: Option<bool>,
     pub content_hash: String,
 }
 
