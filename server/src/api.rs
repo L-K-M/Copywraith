@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
@@ -35,8 +35,11 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
 
 async fn create_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<CreateEntryRequest>,
 ) -> Result<(StatusCode, Json<CreateEntryResponse>), AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+
     let (entry, created) = state.storage.create_entry(
         req.content_type,
         req.text_content.as_deref(),
@@ -68,8 +71,11 @@ async fn create_entry(
 
 async fn list_entries(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<ListEntriesParams>,
 ) -> Result<Json<ListEntriesResponse>, AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+
     let limit = copywraith_core::api_types::clamp_limit(params.limit);
     let (entries, total) = state.storage.list_entries(
         limit,
@@ -100,8 +106,11 @@ async fn list_entries(
 
 async fn get_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<EntryResponse>, AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+
     let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
 
     let blob_url = entry
@@ -114,9 +123,12 @@ async fn get_entry(
 
 async fn update_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<UpdateEntryRequest>,
 ) -> Result<Json<EntryResponse>, AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+
     if let Some(starred) = req.starred {
         state.storage.update_entry_starred(&id, starred)?;
     }
@@ -133,8 +145,11 @@ async fn update_entry(
 
 async fn delete_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+
     let deleted = state.storage.delete_entry(&id)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -145,8 +160,11 @@ async fn delete_entry(
 
 async fn get_blob(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+
     let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
 
     let hash = entry.blob_hash.ok_or(AppError::NotFound)?;
@@ -178,6 +196,7 @@ async fn get_blob(
 
 #[derive(Debug)]
 enum AppError {
+    Unauthorized,
     NotFound,
     Internal(anyhow::Error),
 }
@@ -191,6 +210,7 @@ impl From<anyhow::Error> for AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {:?}", err);
@@ -202,5 +222,26 @@ impl IntoResponse for AppError {
         };
 
         (status, Json(ErrorResponse { error: message })).into_response()
+    }
+}
+
+fn ensure_authorized(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
+    let Some(expected) = state.admin_api_key.as_deref() else {
+        return Ok(());
+    };
+
+    let header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+
+    let token = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "));
+
+    if token == Some(expected) {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized)
     }
 }

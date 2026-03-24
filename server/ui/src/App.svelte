@@ -301,7 +301,7 @@
 		max-width: 1180px;
 		margin: 16px auto 0;
 		border: 2px solid #000;
-		box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3), 0 10px 30px rgba(0, 0, 0, 0.3);
+		box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3), 0 10px 200px rgba(0, 0, 0, 0.6);
 		background: #fff;
 		display: flex;
 		flex-direction: column;

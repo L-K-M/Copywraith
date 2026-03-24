@@ -22,7 +22,7 @@ Implemented today:
 Planned later:
 
 - Android/mobile client
-- Stronger server auth model (the client can send a bearer token, but server-side validation is not enforced yet)
+- Expanded auth model beyond single bearer token
 
 ## Architecture at a glance
 
@@ -97,6 +97,8 @@ Environment variables:
 - `PORT` (default `3742`)
 - `RUST_LOG`
 - `COPYWRAITH_ADMIN_API_KEY` (optional bearer token; server admin UI reads it automatically)
+
+Tip: copy `.env.example` to `.env` and adjust values for local/docker runs.
 
 ### 2) Start the desktop app
 

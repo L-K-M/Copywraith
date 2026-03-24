@@ -187,6 +187,8 @@
 		height: 20px;
 		line-height: 0;
 		margin: 0;
+		position: relative;
+		top: 5px;
 	}
 
 	.col-content {
