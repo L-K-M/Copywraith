@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "test": "cargo test --workspace"
+    "test": "cargo test --workspace",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@lkmc/system7-ui": "^0.1.9",

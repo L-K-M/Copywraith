@@ -165,6 +165,11 @@ From repo root (recommended):
 docker compose up --build
 ```
 
+```bash
+sudo docker compose build --no-cache copywraith-server
+sudo docker compose up
+```
+
 Alternatively from `server/`:
 
 ```bash
@@ -193,9 +198,6 @@ To set an admin API key via startup environment (instead of typing it in the web
 
 - Frontend dev server port is `1420` (Tauri expects this)
 - SvelteKit is static-adapter based and runs client-side (`ssr = false`)
-- Main docs:
-  - `ARCHITECTURE.md`
-  - `IMPLEMENTATION.md`
 
 ## Quick troubleshooting
 
