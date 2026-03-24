@@ -17,7 +17,7 @@ Implemented today:
 - Star/unstar, delete, search/filter
 - Global shortcuts for opening popup and quick plaintext paste
 - Two-way background sync (push local unsynced + pull remote updates)
-- Server REST API + embedded admin web UI
+- Server REST API + Svelte admin web UI
 
 Planned later:
 
@@ -39,7 +39,7 @@ Planned later:
 ```text
 .
 ├── crates/copywraith-core/   # Shared models, API types, hashing/content helpers
-├── server/                   # Axum API + SQLite/blob persistence + embedded admin UI
+├── server/                   # Axum API + SQLite/blob persistence + Svelte admin UI
 ├── src-tauri/                # Tauri Rust backend (monitoring, commands, sync, shortcuts)
 ├── src/                      # Svelte popup frontend
 ├── ARCHITECTURE.md
