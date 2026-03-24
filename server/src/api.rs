@@ -69,15 +69,16 @@ async fn list_entries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListEntriesParams>,
 ) -> Result<Json<ListEntriesResponse>, AppError> {
+    let limit = copywraith_core::api_types::clamp_limit(params.limit);
     let (entries, total) = state.storage.list_entries(
-        params.limit,
+        limit,
         params.offset,
         params.content_type,
         params.starred_only,
         params.search.as_deref(),
     )?;
 
-    let has_more = (params.offset + params.limit) < total as u32;
+    let has_more = (params.offset + limit) < total as u32;
     let entries = entries
         .into_iter()
         .map(|e| {

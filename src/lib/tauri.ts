@@ -24,6 +24,10 @@ export class TauriService {
 		return await invoke('delete_entry', { id });
 	}
 
+	static async getEntryImage(id: string): Promise<string | null> {
+		return await invoke('get_entry_image', { id });
+	}
+
 	static async pasteEntry(id: string): Promise<void> {
 		await invoke('paste_entry', { id });
 	}

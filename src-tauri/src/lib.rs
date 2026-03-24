@@ -30,7 +30,7 @@ pub fn run() {
             let storage =
                 Arc::new(storage::LocalStorage::new(&data_dir).expect("failed to init storage"));
 
-            let sync_client = Arc::new(sync::SyncClient::new());
+            let sync_client = Arc::new(sync::SyncClient::new(&storage));
 
             let state = AppState {
                 storage: storage.clone(),
@@ -53,6 +53,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_entries,
+            commands::get_entry_image,
             commands::toggle_star,
             commands::delete_entry,
             commands::paste_entry,
@@ -136,10 +137,13 @@ fn start_sync_loop(
     sync_client: Arc<sync::SyncClient>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        const BASE_INTERVAL_SECS: u64 = 5;
+        const MAX_INTERVAL_SECS: u64 = 120;
+
+        let mut current_interval = BASE_INTERVAL_SECS;
 
         loop {
-            interval.tick().await;
+            tokio::time::sleep(Duration::from_secs(current_interval)).await;
 
             // Push local unsynced entries first
             sync_client.sync_unsynced_entries(&storage).await;
@@ -149,10 +153,15 @@ fn start_sync_loop(
                 Ok(pulled) if pulled > 0 => {
                     let _ = app.emit("clipboard-updated", ());
                     log::info!("Pulled {} new entries from server", pulled);
+                    current_interval = BASE_INTERVAL_SECS; // Reset on success
                 }
-                Ok(_) => {}
+                Ok(_) => {
+                    current_interval = BASE_INTERVAL_SECS; // Reset on success (even if no new entries)
+                }
                 Err(e) => {
                     log::debug!("Pull sync failed: {}", e);
+                    // Exponential backoff on failure, capped at MAX_INTERVAL_SECS
+                    current_interval = (current_interval * 2).min(MAX_INTERVAL_SECS);
                 }
             }
         }

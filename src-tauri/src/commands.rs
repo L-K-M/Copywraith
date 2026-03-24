@@ -29,22 +29,12 @@ pub async fn get_entries(
         .map(|e| {
             let preview = e.preview(200);
 
-            // For images, include base64 thumbnail
-            let image_base64 = if e.content_type == ContentType::Image {
-                e.blob_hash
-                    .as_ref()
-                    .and_then(|hash| state.storage.get_blob(hash).ok().flatten())
-                    .map(|data| BASE64.encode(&data))
-            } else {
-                None
-            };
-
             EntryForFrontend {
                 id: e.id,
                 content_type: e.content_type,
                 preview,
                 full_text: e.text_content,
-                image_base64,
+                has_image: e.content_type == ContentType::Image && e.blob_hash.is_some(),
                 starred: e.starred,
                 created_at: e.created_at.to_rfc3339(),
                 updated_at: e.updated_at.to_rfc3339(),
@@ -54,6 +44,30 @@ pub async fn get_entries(
         .collect();
 
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_entry_image(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, String> {
+    let entry = state
+        .storage
+        .get_entry(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Entry not found")?;
+
+    if entry.content_type != ContentType::Image {
+        return Ok(None);
+    }
+
+    let image_base64 = entry
+        .blob_hash
+        .as_ref()
+        .and_then(|hash| state.storage.get_blob(hash).ok().flatten())
+        .map(|data| BASE64.encode(&data));
+
+    Ok(image_base64)
 }
 
 #[tauri::command]

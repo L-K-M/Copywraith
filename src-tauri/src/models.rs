@@ -8,7 +8,7 @@ pub struct EntryForFrontend {
     pub content_type: ContentType,
     pub preview: String,
     pub full_text: Option<String>,
-    pub image_base64: Option<String>,
+    pub has_image: bool,
     pub starred: bool,
     pub created_at: String,
     pub updated_at: String,

@@ -38,6 +38,7 @@ impl Storage {
             );
 
             CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries(updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_entries_starred ON entries(starred) WHERE starred = 1;
             CREATE INDEX IF NOT EXISTS idx_entries_content_type ON entries(content_type);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_content_hash ON entries(content_hash);

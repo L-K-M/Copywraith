@@ -2,6 +2,8 @@
 	import type { ClipboardEntry } from '$lib/types';
 	import { toggleStar, pasteEntry, pasteEntryPlaintext, deleteEntry } from '$lib/util/clipboardStore';
 	import { BalloonHelp } from '@lkmc/system7-ui';
+	import { TauriService } from '$lib/tauri';
+	import { onMount } from 'svelte';
 
 	function formatTime(dateStr: string): string {
 		const date = new Date(dateStr);
@@ -43,6 +45,21 @@
 	} = $props();
 
 	let rowElement: HTMLTableRowElement | null = null;
+	let imageData: string | null = $state(null);
+	let imageLoading = $state(false);
+
+	// Lazy-load image data only for image entries
+	onMount(() => {
+		if (entry.has_image) {
+			imageLoading = true;
+			TauriService.getEntryImage(entry.id).then((data) => {
+				imageData = data;
+				imageLoading = false;
+			}).catch(() => {
+				imageLoading = false;
+			});
+		}
+	});
 
 	$effect(() => {
 		if (selected && rowElement) {
@@ -125,10 +142,14 @@
 		</button>
 	</td>
 	<td class="col-content">
-		{#if entry.content_type === 'image' && entry.image_base64}
+		{#if entry.has_image && imageData}
 			<div class="image-preview">
-				<img src="data:image/png;base64,{entry.image_base64}" alt="Copied screenshot" />
+				<img src="data:image/png;base64,{imageData}" alt="Copied screenshot" />
 			</div>
+		{:else if entry.has_image && imageLoading}
+			<div class="text-preview">[Loading image...]</div>
+		{:else if entry.has_image}
+			<div class="text-preview">[Image]</div>
 		{:else}
 			<div class="text-preview">
 				{entry.preview}

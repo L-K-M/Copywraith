@@ -17,12 +17,14 @@ pub struct SyncClient {
 }
 
 impl SyncClient {
-    pub fn new() -> Self {
+    pub fn new(storage: &LocalStorage) -> Self {
+        // Restore persisted sync cursor so we don't re-scan the entire server on restart
+        let persisted_cursor = storage.get_sync_cursor();
         Self {
             http: reqwest::Client::new(),
             pull_state: Mutex::new(PullState {
-                initialized: false,
-                last_seen_server_id: None,
+                initialized: persisted_cursor.is_some(),
+                last_seen_server_id: persisted_cursor,
             }),
         }
     }
@@ -184,8 +186,12 @@ impl SyncClient {
 
         if let Some(cursor) = cursor_after_sync {
             let mut state = self.pull_state.lock().unwrap();
-            state.last_seen_server_id = Some(cursor);
+            state.last_seen_server_id = Some(cursor.clone());
             state.initialized = true;
+            // Persist cursor so it survives app restarts
+            if let Err(e) = storage.save_sync_cursor(&cursor) {
+                log::warn!("Failed to persist sync cursor: {}", e);
+            }
         }
 
         Ok(pulled)

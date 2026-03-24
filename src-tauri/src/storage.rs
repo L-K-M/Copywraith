@@ -41,6 +41,7 @@ impl LocalStorage {
             CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries(updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_entries_starred ON entries(starred) WHERE starred = 1;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_content_hash ON entries(content_hash);
+            CREATE INDEX IF NOT EXISTS idx_entries_synced ON entries(synced) WHERE synced = 0;
 
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -429,6 +430,26 @@ impl LocalStorage {
         db.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_paste_plaintext', ?1)",
             params![settings.shortcut_paste_plaintext],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_sync_cursor(&self) -> Option<String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT value FROM settings WHERE key = 'sync_last_seen_server_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .filter(|s| !s.is_empty())
+    }
+
+    pub fn save_sync_cursor(&self, cursor: &str) -> anyhow::Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_last_seen_server_id', ?1)",
+            params![cursor],
         )?;
         Ok(())
     }

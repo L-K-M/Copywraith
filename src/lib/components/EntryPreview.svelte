@@ -2,8 +2,20 @@
 	import type { ClipboardEntry } from '$lib/types';
 	import { pasteEntry, pasteEntryPlaintext, toggleStar, deleteEntry } from '$lib/util/clipboardStore';
 	import { MovableDialog, Button } from '@lkmc/system7-ui';
+	import { TauriService } from '$lib/tauri';
+	import { onMount } from 'svelte';
 
 	let { entry, onclose }: { entry: ClipboardEntry; onclose: () => void } = $props();
+
+	let imageData: string | null = $state(null);
+
+	onMount(() => {
+		if (entry.has_image) {
+			TauriService.getEntryImage(entry.id).then((data) => {
+				imageData = data;
+			}).catch(() => {});
+		}
+	});
 
 	function formatDateTime(dateStr: string): string {
 		const date = new Date(dateStr);
@@ -47,7 +59,7 @@
 	}
 </script>
 
-<MovableDialog title="Entry Preview" onclose={onclose} width={420}>
+<MovableDialog title="Entry Preview" onclose={onclose} width="420px">
 	<div class="preview-content">
 		<div class="meta-row">
 			<span class="meta-label">Type:</span>
@@ -69,10 +81,12 @@
 		</div>
 
 		<div class="content-display">
-			{#if entry.content_type === 'image' && entry.image_base64}
+			{#if entry.has_image && imageData}
 				<div class="image-container">
-					<img src="data:image/png;base64,{entry.image_base64}" alt="Clipboard preview" />
+					<img src="data:image/png;base64,{imageData}" alt="Clipboard preview" />
 				</div>
+			{:else if entry.has_image}
+				<div class="empty-content">Loading image...</div>
 			{:else if entry.full_text}
 				<pre class="text-content">{entry.full_text}</pre>
 			{:else if entry.preview}

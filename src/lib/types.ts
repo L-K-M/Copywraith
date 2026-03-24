@@ -5,7 +5,8 @@ export interface ClipboardEntry {
 	content_type: ContentType;
 	preview: string;
 	full_text: string | null;
-	image_base64: string | null;
+	has_image: boolean;
+	image_base64?: string | null;
 	starred: boolean;
 	created_at: string;
 	updated_at: string;
