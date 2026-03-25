@@ -1,7 +1,39 @@
 import type { EntryResponse, ListEntriesResponse, HealthResponse, AuthStatusResponse } from './types';
 
-const API = '/api';
+let API_BASE = '/api';
 const SESSION_KEY = 'copywraith_password';
+
+function normalizeBase(base: string): string {
+	if (!base) return '/api';
+	return base.endsWith('/') ? base.slice(0, -1) : base;
+}
+
+function apiUrl(path: string): string {
+	const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+	return `${API_BASE}${normalizedPath}`;
+}
+
+function candidateApiBases(): string[] {
+	const candidates = new Set<string>();
+
+	// Default root API path for direct host:port access.
+	candidates.add('/api');
+
+	// Prefix-aware API path for reverse proxies serving Copywraith under a subpath.
+	const path = typeof window !== 'undefined' ? window.location.pathname : '/';
+	const trimmedPath = path.replace(/\/+$/, '');
+	if (trimmedPath && trimmedPath !== '/') {
+		const slashIdx = trimmedPath.lastIndexOf('/');
+		const withoutFile = trimmedPath.endsWith('.html') && slashIdx >= 0
+			? trimmedPath.slice(0, slashIdx)
+			: trimmedPath;
+		if (withoutFile && withoutFile !== '/') {
+			candidates.add(`${withoutFile}/api`);
+		}
+	}
+
+	return Array.from(candidates).map(normalizeBase);
+}
 
 // ---------------------------------------------------------------------------
 // Session management
@@ -37,13 +69,27 @@ function buildHeaders(extra: Record<string, string> = {}): Record<string, string
 // ---------------------------------------------------------------------------
 
 export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
-	const resp = await fetch(`${API}/auth/status`, { cache: 'no-store' });
-	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-	return resp.json();
+	let lastError: Error | null = null;
+	for (const base of candidateApiBases()) {
+		try {
+			const resp = await fetch(`${base}/auth/status`, { cache: 'no-store' });
+			if (!resp.ok) {
+				lastError = new Error(`HTTP ${resp.status} from ${base}/auth/status`);
+				continue;
+			}
+			API_BASE = normalizeBase(base);
+			return resp.json();
+		} catch (e: any) {
+			const reason = e?.message ? `: ${e.message}` : '';
+			lastError = new Error(`Request failed for ${base}/auth/status${reason}`);
+		}
+	}
+
+	throw lastError || new Error('Could not reach auth status endpoint');
 }
 
 export async function setupPassword(password: string): Promise<void> {
-	const resp = await fetch(`${API}/auth/setup`, {
+	const resp = await fetch(apiUrl('/auth/setup'), {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ password })
@@ -56,7 +102,7 @@ export async function setupPassword(password: string): Promise<void> {
 }
 
 export async function unlockServer(password: string): Promise<void> {
-	const resp = await fetch(`${API}/auth/unlock`, {
+	const resp = await fetch(apiUrl('/auth/unlock'), {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ password })
@@ -70,7 +116,7 @@ export async function unlockServer(password: string): Promise<void> {
 }
 
 export async function lockServer(): Promise<void> {
-	const resp = await fetch(`${API}/auth/lock`, {
+	const resp = await fetch(apiUrl('/auth/lock'), {
 		method: 'POST',
 		headers: buildHeaders()
 	});
@@ -79,7 +125,7 @@ export async function lockServer(): Promise<void> {
 }
 
 export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
-	const resp = await fetch(`${API}/auth/change-password`, {
+	const resp = await fetch(apiUrl('/auth/change-password'), {
 		method: 'POST',
 		headers: buildHeaders({ 'Content-Type': 'application/json' }),
 		body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
@@ -109,7 +155,7 @@ export async function fetchEntries(params: {
 	if (params.content_type) sp.set('content_type', params.content_type);
 	if (params.starred_only) sp.set('starred_only', 'true');
 
-	const resp = await fetch(`${API}/entries?${sp}`, { headers: buildHeaders() });
+	const resp = await fetch(`${apiUrl('/entries')}?${sp}`, { headers: buildHeaders() });
 	if (resp.status === 401) {
 		clearSession();
 		throw new Error('Unauthorized');
@@ -119,7 +165,7 @@ export async function fetchEntries(params: {
 }
 
 export async function fetchEntry(id: string): Promise<EntryResponse> {
-	const resp = await fetch(`${API}/entries/${id}`, { headers: buildHeaders() });
+	const resp = await fetch(apiUrl(`/entries/${id}`), { headers: buildHeaders() });
 	if (resp.status === 401) {
 		clearSession();
 		throw new Error('Unauthorized');
@@ -129,7 +175,7 @@ export async function fetchEntry(id: string): Promise<EntryResponse> {
 }
 
 export async function toggleStar(id: string, starred: boolean): Promise<void> {
-	const resp = await fetch(`${API}/entries/${id}`, {
+	const resp = await fetch(apiUrl(`/entries/${id}`), {
 		method: 'PATCH',
 		headers: buildHeaders({ 'Content-Type': 'application/json' }),
 		body: JSON.stringify({ starred })
@@ -142,7 +188,7 @@ export async function toggleStar(id: string, starred: boolean): Promise<void> {
 }
 
 export async function deleteEntry(id: string): Promise<void> {
-	const resp = await fetch(`${API}/entries/${id}`, {
+	const resp = await fetch(apiUrl(`/entries/${id}`), {
 		method: 'DELETE',
 		headers: buildHeaders()
 	});
@@ -154,7 +200,7 @@ export async function deleteEntry(id: string): Promise<void> {
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
-	const resp = await fetch(`${API}/health`, { headers: buildHeaders() });
+	const resp = await fetch(apiUrl('/health'), { headers: buildHeaders() });
 	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 	return resp.json();
 }

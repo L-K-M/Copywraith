@@ -86,7 +86,8 @@
 			}
 		} catch (e: any) {
 			// Server unreachable or unexpected error
-			authError = 'Could not connect to server.';
+			const details = e?.message ? ` ${e.message}` : '';
+			authError = `Could not connect to server.${details}`;
 			screen = 'unlock';
 		}
 	}

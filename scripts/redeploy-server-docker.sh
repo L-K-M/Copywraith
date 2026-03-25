@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   HEALTH_RETRIES=20
 #   HEALTH_DELAY_SECS=1
 #   COPYWRAITH_SERVER_IMAGE_REPO=copywraith-server
-#   COPYWRAITH_SERVER_IMAGE_TAG=0.1.3
+#   COPYWRAITH_SERVER_IMAGE_TAG=0.1.4
 #
 # Notes:
 # - If COPYWRAITH_SERVER_IMAGE_TAG is not set, this script uses
@@ -114,8 +114,10 @@ if command -v curl >/dev/null 2>&1; then
   echo ""
   echo "Health: $HEALTH_URL"
   healthy=0
+  health_body=""
   for ((i = 1; i <= HEALTH_RETRIES; i++)); do
-    if curl -fsS "$HEALTH_URL"; then
+    if health_body="$(curl -fsS "$HEALTH_URL")"; then
+      printf '%s\n' "$health_body"
       echo ""
       healthy=1
       break
@@ -127,6 +129,12 @@ if command -v curl >/dev/null 2>&1; then
     echo "WARNING: Health check failed."
     echo "Last container logs:"
     compose logs --tail=120 "$SERVICE" || true
+  elif [[ "$IMAGE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$health_body" =~ \"version\":\"([^\"]+)\" ]]; then
+    api_version="${BASH_REMATCH[1]}"
+    if [[ "$api_version" != "$IMAGE_TAG" ]]; then
+      echo "WARNING: API version ($api_version) does not match expected image tag ($IMAGE_TAG)."
+      echo "This usually means another service still owns port $PORT."
+    fi
   fi
 else
   echo "curl not found; skipping health check."
