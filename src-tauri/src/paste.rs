@@ -94,12 +94,14 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
 fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
     #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
+        let accessibility_trusted = is_accessibility_trusted();
+
         // Warn early if Accessibility permission is missing.  We do NOT bail
         // out — the osascript must still run so the `activate` line restores
         // focus to the target app.  Only the `keystroke` line requires
         // Accessibility; it will fail and the stderr-capture below will
         // surface the error to the user.
-        if !is_accessibility_trusted() {
+        if !accessibility_trusted {
             log::warn!(
                 "Accessibility permission not granted — the paste keystroke \
                  will likely fail.  Grant access in System Settings > Privacy \
@@ -112,59 +114,51 @@ fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
         // round-trip on modern hardware.
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let mut command = std::process::Command::new("osascript");
+        // Primary path: keystroke "v" with command modifier.
+        let primary_result = run_macos_paste_script(target_app.as_deref(), false);
 
-        if let Some(target_app_name) = target_app {
-            let escaped_name = target_app_name.replace('\\', "\\\\").replace('"', "\\\"");
-
-            command
-                .arg("-e")
-                .arg(format!(
-                    "tell application \"{}\" to activate",
-                    escaped_name
-                ))
-                .arg("-e")
-                .arg("delay 0.12");
-        }
-
-        // Use .output() so we capture stderr for diagnostics.
-        let result = command
-            .arg("-e")
-            .arg("tell application \"System Events\" to keystroke \"v\" using command down")
-            .output();
-
-        match result {
+        match primary_result {
             Ok(output) if output.status.success() => {
                 log::debug!("Paste simulation succeeded");
             }
             Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr_text(&output);
                 log::error!(
                     "osascript paste simulation failed (status {}): {}",
                     output.status,
-                    stderr.trim()
+                    stderr
                 );
 
-                // Provide actionable guidance for common errors.
-                let msg = if stderr.contains("assistive")
-                    || stderr.contains("1002")
-                    || stderr.contains("not allowed")
-                {
-                    "Accessibility permission required. Open System Settings \u{2192} \
-                     Privacy & Security \u{2192} Accessibility and enable Copywraith."
-                        .to_string()
-                } else {
-                    format!("Paste simulation failed: {}", stderr.trim())
-                };
+                // Secondary fallback: key-code based paste can succeed in apps
+                // where literal keystroke simulation is flaky.
+                if accessibility_trusted {
+                    match run_macos_paste_script(target_app.as_deref(), true) {
+                        Ok(fallback_output) if fallback_output.status.success() => {
+                            log::warn!(
+                                "Primary paste simulation failed, but key-code fallback succeeded"
+                            );
+                            return;
+                        }
+                        Ok(fallback_output) => {
+                            let fallback_stderr = stderr_text(&fallback_output);
+                            log::error!(
+                                "osascript key-code fallback failed (status {}): {}",
+                                fallback_output.status,
+                                fallback_stderr
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to run osascript fallback: {}", e);
+                        }
+                    }
+                }
 
-                let _ = app.emit("paste-failed", &msg);
+                let msg = classify_macos_paste_error(&stderr);
+                emit_paste_failed(&app, &msg);
             }
             Err(e) => {
                 log::error!("Failed to run osascript: {}", e);
-                let _ = app.emit(
-                    "paste-failed",
-                    format!("Failed to run paste simulation: {}", e),
-                );
+                emit_paste_failed(&app, &format!("Failed to run paste simulation: {}", e));
             }
         }
     });
@@ -175,6 +169,86 @@ fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
         let _ = app;
         log::warn!("Simulated paste is not implemented on this platform");
     }
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_paste_script(
+    target_app: Option<&str>,
+    use_key_code: bool,
+) -> std::io::Result<std::process::Output> {
+    let mut command = std::process::Command::new("osascript");
+
+    if let Some(target_app_name) = target_app {
+        let escaped_name = target_app_name.replace('\\', "\\\\").replace('"', "\\\"");
+
+        // Keep activation in a `try` block so name-resolution failures do not
+        // abort the script before we even attempt Cmd+V.
+        command
+            .arg("-e")
+            .arg("try")
+            .arg("-e")
+            .arg(format!(
+                "tell application \"{}\" to activate",
+                escaped_name
+            ))
+            .arg("-e")
+            .arg("end try")
+            .arg("-e")
+            .arg("delay 0.14");
+    }
+
+    let paste_line = if use_key_code {
+        "tell application \"System Events\" to key code 9 using {command down}"
+    } else {
+        "tell application \"System Events\" to keystroke \"v\" using {command down}"
+    };
+
+    command.arg("-e").arg(paste_line).output()
+}
+
+#[cfg(target_os = "macos")]
+fn stderr_text(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        "<no stderr>".to_string()
+    } else {
+        stderr
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn classify_macos_paste_error(stderr: &str) -> String {
+    let lower = stderr.to_ascii_lowercase();
+
+    if lower.contains("assistive")
+        || lower.contains("-1719")
+        || lower.contains("1002")
+        || lower.contains("not allowed")
+    {
+        return "Accessibility permission required. Open System Settings -> Privacy & Security -> Accessibility and enable Copywraith.".to_string();
+    }
+
+    if lower.contains("can't get application") || lower.contains("can't get process") {
+        return "Could not target the previously focused app for paste. Refocus the destination field and try again.".to_string();
+    }
+
+    if stderr == "<no stderr>" {
+        return "Paste simulation failed for an unknown reason.".to_string();
+    }
+
+    format!("Paste simulation failed: {}", stderr)
+}
+
+#[cfg(target_os = "macos")]
+fn emit_paste_failed(app: &tauri::AppHandle, message: &str) {
+    // The popup is hidden before paste simulation. If paste fails, re-show it
+    // so the frontend notification is actually visible to the user.
+    if let Some(popup) = app.get_webview_window("popup") {
+        let _ = popup.show();
+        let _ = popup.set_focus();
+    }
+
+    let _ = app.emit("paste-failed", message.to_string());
 }
 
 /// Check whether this process has Accessibility (assistive access) permission.
