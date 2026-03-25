@@ -30,7 +30,6 @@ env_logger = "0.11"
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard = "2"
-enigo = "0.3"
 
 # Android: official clipboard manager (read/write text)
 [target.'cfg(target_os = "android")'.dependencies]

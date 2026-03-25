@@ -45,39 +45,34 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
     simulate_paste();
 }
 
-/// Simulate a paste keystroke (Cmd+V on macOS, Ctrl+V on Windows/Linux).
+/// Simulate a paste keystroke.
 ///
-/// Uses the `enigo` crate for cross-platform input simulation. A short delay
-/// is inserted to allow the window manager to process the hide before the
-/// keystroke is sent.
+/// On macOS we use AppleScript/System Events because it is more reliable than
+/// synthetic key events from a background thread in the popup flow.
+/// Other platforms currently only write to clipboard and log a warning.
 fn simulate_paste() {
-    use enigo::{Enigo, Keyboard, Settings};
-
+    #[cfg(target_os = "macos")]
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let mut enigo = match Enigo::new(&Settings::default()) {
-            Ok(e) => e,
-            Err(e) => {
-                log::error!("Failed to initialise input simulator: {}", e);
-                return;
+        let status = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg("tell application \"System Events\" to keystroke \"v\" using command down")
+            .status();
+
+        match status {
+            Ok(exit_status) if exit_status.success() => {}
+            Ok(exit_status) => {
+                log::error!("osascript paste simulation exited with status: {}", exit_status);
             }
-        };
-
-        #[cfg(target_os = "macos")]
-        let modifier = enigo::Key::Meta;
-        #[cfg(not(target_os = "macos"))]
-        let modifier = enigo::Key::Control;
-
-        if let Err(e) = enigo.key(modifier, enigo::Direction::Press) {
-            log::error!("Failed to press modifier key: {}", e);
-            return;
-        }
-        if let Err(e) = enigo.key(enigo::Key::Unicode('v'), enigo::Direction::Click) {
-            log::error!("Failed to send 'v' key: {}", e);
-        }
-        if let Err(e) = enigo.key(modifier, enigo::Direction::Release) {
-            log::error!("Failed to release modifier key: {}", e);
+            Err(e) => {
+                log::error!("Failed to run osascript paste simulation: {}", e);
+            }
         }
     });
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        log::warn!("Simulated paste is not implemented on this platform");
+    }
 }
