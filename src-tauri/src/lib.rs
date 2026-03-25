@@ -16,6 +16,10 @@ pub struct AppState {
     pub sync_client: Arc<sync::SyncClient>,
     #[cfg(desktop)]
     pub last_focused_app: std::sync::Mutex<Option<String>>,
+    /// When `true`, the next clipboard-monitor event should be ignored because
+    /// it was triggered by our own clipboard write (paste preparation).
+    #[cfg(desktop)]
+    pub suppress_next_monitor_event: std::sync::atomic::AtomicBool,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -55,6 +59,8 @@ pub fn run() {
                 sync_client: sync_client.clone(),
                 #[cfg(desktop)]
                 last_focused_app: std::sync::Mutex::new(None),
+                #[cfg(desktop)]
+                suppress_next_monitor_event: std::sync::atomic::AtomicBool::new(false),
             };
 
             app.manage(state);

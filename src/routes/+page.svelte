@@ -15,6 +15,7 @@
 		pasteSelectedEntry,
 		starredOnly
 	} from '$lib/util/clipboardStore';
+	import { notify } from '$lib/util/notifications';
 	import { TauriService } from '$lib/tauri';
 
 	import FilterBar from '$lib/components/FilterBar.svelte';
@@ -38,6 +39,7 @@
 	let unlistenClipboardReordered: UnlistenFn;
 	let unlistenPopupShow: UnlistenFn;
 	let unlistenSyncEndpointStatus: UnlistenFn;
+	let unlistenPasteFailed: UnlistenFn;
 
 	onMount(async () => {
 		// Detect platform first so all components can adapt
@@ -116,6 +118,14 @@
 			}
 		);
 
+		// Desktop: show user-visible feedback when paste simulation fails
+		// (e.g. missing Accessibility permission).
+		if (!mobile) {
+			unlistenPasteFailed = await listen<string>('paste-failed', (event) => {
+				notify('error', event.payload, 6000);
+			});
+		}
+
 		// Clipboard monitoring is started from the Rust backend via
 		// Clipboard::start_monitor() on desktop, so no need to call startListening() here.
 	});
@@ -126,6 +136,7 @@
 		unlistenClipboardReordered?.();
 		unlistenPopupShow?.();
 		unlistenSyncEndpointStatus?.();
+		unlistenPasteFailed?.();
 	});
 
 	function handleWindowClose() {

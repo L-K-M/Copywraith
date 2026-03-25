@@ -35,6 +35,21 @@ pub fn start_monitoring(
     app.listen(
         "plugin:clipboard://clipboard-monitor/update",
         move |_event| {
+            // Skip events triggered by our own clipboard writes (paste preparation).
+            // The flag is set by write_and_paste_text / write_and_paste_image before
+            // they call clipboard.write_*, so by the time this event fires the flag
+            // is guaranteed to be true for self-triggered changes.
+            {
+                let state = app_clone.state::<crate::AppState>();
+                if state
+                    .suppress_next_monitor_event
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    log::debug!("Skipping self-triggered clipboard monitor event");
+                    return;
+                }
+            }
+
             let clipboard = app_clone.state::<Clipboard>();
             handle_clipboard_change(&app_clone, &clipboard, &storage, &sync_client);
         },

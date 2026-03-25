@@ -1,6 +1,9 @@
 use tauri::Manager;
 
 #[cfg(target_os = "macos")]
+use tauri::Emitter;
+
+#[cfg(target_os = "macos")]
 pub fn remember_frontmost_app(app: &tauri::AppHandle) {
     let target_app = detect_frontmost_app_name();
     let state = app.state::<crate::AppState>();
@@ -27,9 +30,22 @@ pub fn paste_most_recent_plaintext(app: &tauri::AppHandle) {
 pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
     let target_app = preferred_paste_target(app);
 
+    // Suppress the clipboard monitor so it does not re-process our own write.
+    // The flag MUST be set before the write because the monitor event fires
+    // asynchronously as soon as the system pasteboard changes.
+    let state = app.state::<crate::AppState>();
+    state
+        .suppress_next_monitor_event
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     // Use the clipboard plugin to write text
     let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
     if let Err(e) = clipboard.write_text(text.to_string()) {
+        // Write failed — reset the suppress flag so the next real clipboard
+        // change is not silently swallowed.
+        state
+            .suppress_next_monitor_event
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         log::error!("Failed to write to clipboard: {}", e);
         return;
     }
@@ -40,16 +56,25 @@ pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
     }
 
     // Simulate Cmd+V / Ctrl+V keystroke
-    simulate_paste(target_app);
+    simulate_paste(app.clone(), target_app);
 }
 
 /// Write image data to clipboard and simulate paste
 pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
     let target_app = preferred_paste_target(app);
 
+    // Suppress the clipboard monitor (same rationale as write_and_paste_text).
+    let state = app.state::<crate::AppState>();
+    state
+        .suppress_next_monitor_event
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
     let b64 = copywraith_core::content::bytes_to_base64(image_data);
     if let Err(e) = clipboard.write_image_base64(b64) {
+        state
+            .suppress_next_monitor_event
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         log::error!("Failed to write image to clipboard: {}", e);
         return;
     }
@@ -58,7 +83,7 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
         let _ = popup.hide();
     }
 
-    simulate_paste(target_app);
+    simulate_paste(app.clone(), target_app);
 }
 
 /// Simulate a paste keystroke.
@@ -66,9 +91,25 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
 /// On macOS we use AppleScript/System Events because it is more reliable than
 /// synthetic key events from a background thread in the popup flow.
 /// Other platforms currently only write to clipboard and log a warning.
-fn simulate_paste(target_app: Option<String>) {
+fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
     #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
+        // Warn early if Accessibility permission is missing.  We do NOT bail
+        // out — the osascript must still run so the `activate` line restores
+        // focus to the target app.  Only the `keystroke` line requires
+        // Accessibility; it will fail and the stderr-capture below will
+        // surface the error to the user.
+        if !is_accessibility_trusted() {
+            log::warn!(
+                "Accessibility permission not granted — the paste keystroke \
+                 will likely fail.  Grant access in System Settings > Privacy \
+                 & Security > Accessibility."
+            );
+        }
+
+        // Give macOS time to complete the popup hide and begin refocusing the
+        // previous app.  100 ms is sufficient for the window-server
+        // round-trip on modern hardware.
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let mut command = std::process::Command::new("osascript");
@@ -78,26 +119,52 @@ fn simulate_paste(target_app: Option<String>) {
 
             command
                 .arg("-e")
-                .arg(format!("tell application \"{}\" to activate", escaped_name))
+                .arg(format!(
+                    "tell application \"{}\" to activate",
+                    escaped_name
+                ))
                 .arg("-e")
-                .arg("delay 0.08");
+                .arg("delay 0.12");
         }
 
-        let status = command
+        // Use .output() so we capture stderr for diagnostics.
+        let result = command
             .arg("-e")
             .arg("tell application \"System Events\" to keystroke \"v\" using command down")
-            .status();
+            .output();
 
-        match status {
-            Ok(exit_status) if exit_status.success() => {}
-            Ok(exit_status) => {
+        match result {
+            Ok(output) if output.status.success() => {
+                log::debug!("Paste simulation succeeded");
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
                 log::error!(
-                    "osascript paste simulation exited with status: {}",
-                    exit_status
+                    "osascript paste simulation failed (status {}): {}",
+                    output.status,
+                    stderr.trim()
                 );
+
+                // Provide actionable guidance for common errors.
+                let msg = if stderr.contains("assistive")
+                    || stderr.contains("1002")
+                    || stderr.contains("not allowed")
+                {
+                    "Accessibility permission required. Open System Settings \u{2192} \
+                     Privacy & Security \u{2192} Accessibility and enable Copywraith."
+                        .to_string()
+                } else {
+                    format!("Paste simulation failed: {}", stderr.trim())
+                };
+
+                let _ = app.emit("paste-failed", &msg);
             }
             Err(e) => {
-                log::error!("Failed to run osascript paste simulation: {}", e);
+                log::error!("Failed to run osascript: {}", e);
+                let _ = app.emit(
+                    "paste-failed",
+                    format!("Failed to run paste simulation: {}", e),
+                );
             }
         }
     });
@@ -105,8 +172,23 @@ fn simulate_paste(target_app: Option<String>) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = target_app;
+        let _ = app;
         log::warn!("Simulated paste is not implemented on this platform");
     }
+}
+
+/// Check whether this process has Accessibility (assistive access) permission.
+///
+/// Uses the `AXIsProcessTrusted()` function from the ApplicationServices
+/// framework.  Returns `true` when the app is listed and enabled in
+/// System Settings > Privacy & Security > Accessibility.
+#[cfg(target_os = "macos")]
+fn is_accessibility_trusted() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> u8;
+    }
+    unsafe { AXIsProcessTrusted() != 0 }
 }
 
 #[cfg(target_os = "macos")]
