@@ -68,6 +68,16 @@ sudo docker compose build --no-cache copywraith-server
 sudo docker compose up
 ```
 
+Or use the helper script (recommended for repeat deploys):
+
+```bash
+# from repo root
+./scripts/redeploy-server-docker.sh
+
+# on systems where Docker requires sudo
+USE_SUDO=1 ./scripts/redeploy-server-docker.sh
+```
+
 Alternatively from `server/`:
 
 ```bash
