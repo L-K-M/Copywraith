@@ -10,7 +10,34 @@ export const filterText = writable('');
 export const starredOnly = writable(false);
 export const selectedEntryId = writable<string | null>(null);
 
+const LOAD_ENTRIES_TIMEOUT_MS = 10_000;
+
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let loadRequestId = 0;
+
+async function getEntriesWithTimeout(options: {
+	limit: number;
+	offset: number;
+	starred_only: boolean;
+	search?: string;
+}): Promise<ClipboardEntry[]> {
+	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+	try {
+		return await Promise.race([
+			TauriService.getEntries(options),
+			new Promise<ClipboardEntry[]>((_, reject) => {
+				timeoutHandle = setTimeout(() => {
+					reject(new Error(`Timed out loading clipboard entries after ${LOAD_ENTRIES_TIMEOUT_MS}ms`));
+				}, LOAD_ENTRIES_TIMEOUT_MS);
+			})
+		]);
+	} finally {
+		if (timeoutHandle !== undefined) {
+			clearTimeout(timeoutHandle);
+		}
+	}
+}
 
 function syncSelection(list: ClipboardEntry[]) {
 	const selectedId = get(selectedEntryId);
@@ -26,22 +53,31 @@ function syncSelection(list: ClipboardEntry[]) {
 }
 
 export async function loadEntries() {
+	const requestId = ++loadRequestId;
 	isLoading.set(true);
+
 	try {
 		const filter = get(filterText);
 		const starred = get(starredOnly);
-		const result = await TauriService.getEntries({
+		const result = await getEntriesWithTimeout({
 			limit: 100,
 			offset: 0,
 			starred_only: starred,
 			search: filter || undefined
 		});
+
+		if (requestId !== loadRequestId) {
+			return;
+		}
+
 		entries.set(result);
 		syncSelection(result);
 	} catch (e) {
 		console.error('Failed to load entries:', e);
 	} finally {
-		isLoading.set(false);
+		if (requestId === loadRequestId) {
+			isLoading.set(false);
+		}
 	}
 }
 

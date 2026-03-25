@@ -48,8 +48,8 @@
 			platform.set('');
 		}
 
-		// Load initial entries
-		await loadEntries();
+		// Load initial entries without blocking listener setup
+		void loadEntries();
 
 		const mobile = $isMobile;
 
