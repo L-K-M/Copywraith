@@ -1,5 +1,7 @@
 import { writable, get } from 'svelte/store';
 import { TauriService } from '$lib/tauri';
+import { isMobile } from '$lib/util/platform';
+import { notify } from '$lib/util/notifications';
 import type { ClipboardEntry } from '$lib/types';
 
 export const entries = writable<ClipboardEntry[]>([]);
@@ -100,6 +102,10 @@ export async function deleteEntry(id: string) {
 export async function pasteEntry(id: string) {
 	try {
 		await TauriService.pasteEntry(id);
+		// On mobile, pasting just copies to clipboard — show feedback
+		if (get(isMobile)) {
+			notify('success', 'Copied to clipboard');
+		}
 	} catch (e) {
 		console.error('Failed to paste entry:', e);
 	}
@@ -108,6 +114,9 @@ export async function pasteEntry(id: string) {
 export async function pasteEntryPlaintext(id: string) {
 	try {
 		await TauriService.pasteEntryPlaintext(id);
+		if (get(isMobile)) {
+			notify('success', 'Copied as plaintext');
+		}
 	} catch (e) {
 		console.error('Failed to paste entry as plaintext:', e);
 	}

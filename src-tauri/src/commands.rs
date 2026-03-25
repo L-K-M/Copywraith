@@ -2,9 +2,11 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use tauri::State;
 
 use crate::models::{EntryForFrontend, Settings};
-use crate::paste;
 use crate::AppState;
 use copywraith_core::models::ContentType;
+
+#[cfg(desktop)]
+use crate::paste;
 
 #[tauri::command]
 pub async fn get_entries(
@@ -114,25 +116,34 @@ pub async fn paste_entry(
         .map_err(|e| e.to_string())?
         .ok_or("Entry not found")?;
 
-    match entry.content_type {
-        ContentType::Image => {
-            if let Some(hash) = &entry.blob_hash {
-                if let Some(data) = state.storage.get_blob(hash).map_err(|e| e.to_string())? {
-                    paste::write_and_paste_image(&app, &data);
+    #[cfg(desktop)]
+    {
+        match entry.content_type {
+            ContentType::Image => {
+                if let Some(hash) = &entry.blob_hash {
+                    if let Some(data) = state.storage.get_blob(hash).map_err(|e| e.to_string())? {
+                        paste::write_and_paste_image(&app, &data);
+                    }
+                }
+            }
+            ContentType::Html => {
+                if let Some(text) = &entry.text_content {
+                    let plaintext = strip_html(text);
+                    paste::write_and_paste_text(&app, &plaintext);
+                }
+            }
+            _ => {
+                if let Some(text) = &entry.text_content {
+                    paste::write_and_paste_text(&app, text);
                 }
             }
         }
-        ContentType::Html => {
-            if let Some(text) = &entry.text_content {
-                let plaintext = strip_html(text);
-                paste::write_and_paste_text(&app, &plaintext);
-            }
-        }
-        _ => {
-            if let Some(text) = &entry.text_content {
-                paste::write_and_paste_text(&app, text);
-            }
-        }
+    }
+
+    // On mobile, just write to clipboard (no paste simulation)
+    #[cfg(mobile)]
+    {
+        write_to_clipboard_mobile(&app, &entry, false)?;
     }
 
     Ok(())
@@ -150,13 +161,120 @@ pub async fn paste_entry_plaintext(
         .map_err(|e| e.to_string())?
         .ok_or("Entry not found")?;
 
-    if let Some(text) = &entry.text_content {
-        // Strip HTML tags for plaintext paste
-        let plaintext = strip_html(text);
-        paste::write_and_paste_text(&app, &plaintext);
+    #[cfg(desktop)]
+    {
+        if let Some(text) = &entry.text_content {
+            // Strip HTML tags for plaintext paste
+            let plaintext = strip_html(text);
+            paste::write_and_paste_text(&app, &plaintext);
+        }
+    }
+
+    #[cfg(mobile)]
+    {
+        write_to_clipboard_mobile(&app, &entry, true)?;
     }
 
     Ok(())
+}
+
+/// On mobile, write entry content to the system clipboard.
+/// The official clipboard-manager plugin supports plain text on Android.
+#[cfg(mobile)]
+fn write_to_clipboard_mobile(
+    app: &tauri::AppHandle,
+    entry: &copywraith_core::models::ClipboardEntry,
+    force_plaintext: bool,
+) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    let text = match &entry.text_content {
+        Some(t) => {
+            if force_plaintext || entry.content_type == ContentType::Html {
+                strip_html(t)
+            } else {
+                t.clone()
+            }
+        }
+        None => {
+            if entry.content_type == ContentType::Image {
+                // Android clipboard-manager only supports text; image copy not available
+                return Ok(());
+            }
+            return Ok(());
+        }
+    };
+
+    app.clipboard()
+        .write_text(text)
+        .map_err(|e| format!("Failed to write to clipboard: {}", e))
+}
+
+/// Capture the current system clipboard and save it as a new entry.
+/// Called when the mobile app opens or resumes to persist whatever the user
+/// last copied in another app.
+#[tauri::command]
+pub async fn capture_clipboard(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    // On desktop, clipboard monitoring handles this automatically
+    #[cfg(desktop)]
+    {
+        let _ = &app;
+        let _ = &state;
+        return Ok(false);
+    }
+
+    #[cfg(mobile)]
+    {
+        use tauri::Emitter;
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+
+        let text = app
+            .clipboard()
+            .read_text()
+            .map_err(|e| format!("Failed to read clipboard: {}", e))?;
+
+        if text.trim().is_empty() {
+            return Ok(false);
+        }
+
+        let content_hash = copywraith_core::content::hash_text(&text);
+        match state
+            .storage
+            .insert_entry(ContentType::Text, Some(&text), None, &content_hash, None)
+        {
+            Ok(Some(entry)) => {
+                let _ = app.emit("clipboard-updated", &entry);
+                // Trigger background sync for the new entry
+                let sync = state.sync_client.clone();
+                let storage = state.storage.clone();
+                tauri::async_runtime::spawn(async move {
+                    sync.sync_entry(&entry, &storage).await;
+                });
+                Ok(true)
+            }
+            Ok(None) => Ok(false), // duplicate content
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// Returns the current platform so the frontend can adapt its UI.
+/// Returns "android", "ios", "macos", "windows", or "linux".
+#[tauri::command]
+pub async fn get_platform() -> String {
+    #[cfg(target_os = "android")]
+    return "android".to_string();
+    #[cfg(target_os = "ios")]
+    return "ios".to_string();
+    #[cfg(target_os = "macos")]
+    return "macos".to_string();
+    #[cfg(target_os = "windows")]
+    return "windows".to_string();
+    #[cfg(target_os = "linux")]
+    return "linux".to_string();
 }
 
 #[tauri::command]
@@ -174,11 +292,14 @@ pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> 
 
 #[tauri::command]
 pub async fn reregister_shortcuts(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    #[allow(unused_variables)] app: tauri::AppHandle,
+    #[allow(unused_variables)] state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let settings = state.storage.get_settings();
-    crate::register_shortcuts(&app, &settings);
+    #[cfg(desktop)]
+    {
+        let settings = state.storage.get_settings();
+        crate::register_shortcuts(&app, &settings);
+    }
     Ok(())
 }
 

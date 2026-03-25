@@ -1,7 +1,8 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
 	"identifier": "copywraith-default",
-	"description": "Default permissions for Copywraith",
+	"description": "Default permissions for Copywraith (desktop)",
+	"platforms": ["linux", "macOS", "windows"],
 	"windows": ["popup"],
 	"permissions": [
 		"core:default",

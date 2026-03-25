@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Button, MovableDialog } from '@lkmc/system7-ui';
 	import { TauriService } from '$lib/tauri';
+	import { isMobile } from '$lib/util/platform';
 	import type { Settings } from '$lib/types';
 	import { notify } from '$lib/util/notifications';
 	import { onMount } from 'svelte';
@@ -38,7 +39,9 @@
 				shortcut_starred_popup: shortcutStarredPopup,
 				shortcut_paste_plaintext: shortcutPastePlaintext
 			});
-			await TauriService.reregisterShortcuts();
+			if (!$isMobile) {
+				await TauriService.reregisterShortcuts();
+			}
 			notify('success', 'Settings saved');
 			onclose();
 		} catch (e) {
@@ -82,45 +85,47 @@
 			/>
 		</div>
 
-		<div class="section-divider"></div>
-		<div class="section-label">Keyboard Shortcuts</div>
+		{#if !$isMobile}
+			<div class="section-divider"></div>
+			<div class="section-label">Keyboard Shortcuts</div>
 
-		<div class="s7-form-group">
-			<label for="shortcut-toggle">Toggle Popup</label>
-			<input
-				id="shortcut-toggle"
-				type="text"
-				class="s7-input"
-				placeholder="CmdOrCtrl+Shift+V"
-				bind:value={shortcutTogglePopup}
-			/>
-		</div>
+			<div class="s7-form-group">
+				<label for="shortcut-toggle">Toggle Popup</label>
+				<input
+					id="shortcut-toggle"
+					type="text"
+					class="s7-input"
+					placeholder="CmdOrCtrl+Shift+V"
+					bind:value={shortcutTogglePopup}
+				/>
+			</div>
 
-		<div class="s7-form-group">
-			<label for="shortcut-starred">Starred Popup</label>
-			<input
-				id="shortcut-starred"
-				type="text"
-				class="s7-input"
-				placeholder="CmdOrCtrl+Shift+B"
-				bind:value={shortcutStarredPopup}
-			/>
-		</div>
+			<div class="s7-form-group">
+				<label for="shortcut-starred">Starred Popup</label>
+				<input
+					id="shortcut-starred"
+					type="text"
+					class="s7-input"
+					placeholder="CmdOrCtrl+Shift+B"
+					bind:value={shortcutStarredPopup}
+				/>
+			</div>
 
-		<div class="s7-form-group">
-			<label for="shortcut-plaintext">Paste as Plaintext</label>
-			<input
-				id="shortcut-plaintext"
-				type="text"
-				class="s7-input"
-				placeholder="CmdOrCtrl+Shift+Alt+V"
-				bind:value={shortcutPastePlaintext}
-			/>
-		</div>
+			<div class="s7-form-group">
+				<label for="shortcut-plaintext">Paste as Plaintext</label>
+				<input
+					id="shortcut-plaintext"
+					type="text"
+					class="s7-input"
+					placeholder="CmdOrCtrl+Shift+Alt+V"
+					bind:value={shortcutPastePlaintext}
+				/>
+			</div>
 
-		<div class="shortcut-hint">
-			Use format: CmdOrCtrl+Shift+Key. Leave empty to disable.
-		</div>
+			<div class="shortcut-hint">
+				Use format: CmdOrCtrl+Shift+Key. Leave empty to disable.
+			</div>
+		{/if}
 
 		<div class="s7-actions">
 			<Button onclick={onclose}>Cancel</Button>

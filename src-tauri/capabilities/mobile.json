@@ -1,0 +1,11 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"identifier": "copywraith-mobile",
+	"description": "Permissions for Copywraith on mobile (Android/iOS)",
+	"platforms": ["android", "iOS"],
+	"permissions": [
+		"core:default",
+		"clipboard-manager:allow-read-text",
+		"clipboard-manager:allow-write-text"
+	]
+}

@@ -6,6 +6,7 @@
 	import { WindowManager } from '$lib/windowManager';
 	import { windowFocused } from '$lib/util/windowState';
 	import { notifications } from '$lib/util/notifications';
+	import { platform, isMobile } from '$lib/util/platform';
 	import { syncEndpointStatus, type SyncEndpointStatus } from '$lib/util/syncStatusStore';
 	import type { ClipboardEntry } from '$lib/types';
 	import {
@@ -14,6 +15,7 @@
 		pasteSelectedEntry,
 		starredOnly
 	} from '$lib/util/clipboardStore';
+	import { TauriService } from '$lib/tauri';
 
 	import FilterBar from '$lib/components/FilterBar.svelte';
 	import EntryList from '$lib/components/EntryList.svelte';
@@ -38,12 +40,40 @@
 	let unlistenSyncEndpointStatus: UnlistenFn;
 
 	onMount(async () => {
+		// Detect platform first so all components can adapt
+		try {
+			const p = await TauriService.getPlatform();
+			platform.set(p);
+		} catch {
+			platform.set('');
+		}
+
 		// Load initial entries
 		await loadEntries();
+
+		const mobile = $isMobile;
+
+		// On mobile, capture the current clipboard content on app open
+		if (mobile) {
+			try {
+				await TauriService.captureClipboard();
+			} catch (e) {
+				console.error('Failed to capture clipboard:', e);
+			}
+		}
 
 		// Track window focus
 		unlistenFocus = await appWindow.onFocusChanged(({ payload: focused }) => {
 			windowFocused.set(focused);
+
+			// On mobile, capture clipboard when app resumes (gains focus)
+			if (mobile && focused) {
+				TauriService.captureClipboard()
+					.then((captured) => {
+						if (captured) loadEntries();
+					})
+					.catch(() => {});
+			}
 		});
 
 		// Listen for clipboard changes from the Rust backend
@@ -55,15 +85,17 @@
 			loadEntries();
 		});
 
-		// Listen for popup show event to set starred filter mode
-		unlistenPopupShow = await listen<boolean>('popup-show', (event) => {
-			starredOnly.set(event.payload);
-			loadEntries();
-			// Auto-focus the filter field
-			setTimeout(() => {
-				filterBar?.focus();
-			}, 50);
-		});
+		// Desktop-only: Listen for popup show event to set starred filter mode
+		if (!mobile) {
+			unlistenPopupShow = await listen<boolean>('popup-show', (event) => {
+				starredOnly.set(event.payload);
+				loadEntries();
+				// Auto-focus the filter field
+				setTimeout(() => {
+					filterBar?.focus();
+				}, 50);
+			});
+		}
 
 		unlistenSyncEndpointStatus = await listen<SyncEndpointStatus>(
 			'sync-endpoint-status',
@@ -85,7 +117,7 @@
 		);
 
 		// Clipboard monitoring is started from the Rust backend via
-		// Clipboard::start_monitor(), so no need to call startListening() here.
+		// Clipboard::start_monitor() on desktop, so no need to call startListening() here.
 	});
 
 	onDestroy(() => {
@@ -113,6 +145,9 @@
 	}
 
 	function handleGlobalKeydown(e: KeyboardEvent) {
+		// Skip keyboard shortcuts on mobile
+		if ($isMobile) return;
+
 		const target = e.target;
 		const isInputTarget =
 			target instanceof HTMLElement &&
@@ -159,17 +194,27 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="window-frame s7-root" class:window-unfocused={!$windowFocused}>
-	<TitleBar
-		title="Copywraith"
-		focused={$windowFocused}
-		closable
-		shadeable
-		draggable
-		onclose={handleWindowClose}
-		onshade={handleWindowShade}
-		ondragstart={handleWindowDrag}
-	/>
+<div class="window-frame s7-root" class:window-unfocused={!$windowFocused} class:mobile={$isMobile}>
+	{#if $isMobile}
+		<!-- Mobile: simple app bar, no window chrome -->
+		<div class="mobile-header">
+			<span class="mobile-title">Copywraith</span>
+			<button type="button" class="mobile-settings-btn" onclick={handleSettingsOpen}>
+				Settings
+			</button>
+		</div>
+	{:else}
+		<TitleBar
+			title="Copywraith"
+			focused={$windowFocused}
+			closable
+			shadeable
+			draggable
+			onclose={handleWindowClose}
+			onshade={handleWindowShade}
+			ondragstart={handleWindowDrag}
+		/>
+	{/if}
 
 	{#if !isWindowShaded}
 		<Notification notifications={$notifications} />
@@ -214,5 +259,34 @@
 		flex-direction: column;
 		flex: 1;
 		overflow: hidden;
+	}
+
+	/* Mobile: no window border, full screen */
+	.window-frame.mobile {
+		border: none;
+	}
+
+	.mobile-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 12px;
+		background: #ddd;
+		border-bottom: 1px solid #000;
+		user-select: none;
+	}
+
+	.mobile-title {
+		font-weight: bold;
+		font-size: 16px;
+	}
+
+	.mobile-settings-btn {
+		background: #fff;
+		border: 1px solid #000;
+		padding: 4px 12px;
+		font-size: 13px;
+		cursor: pointer;
+		font-family: inherit;
 	}
 </style>

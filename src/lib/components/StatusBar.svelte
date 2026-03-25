@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { entries, starredOnly } from '$lib/util/clipboardStore';
+	import { isMobile } from '$lib/util/platform';
 	import { syncEndpointStatus } from '$lib/util/syncStatusStore';
 
 	let entryCount = $derived($entries.length);
@@ -64,7 +65,11 @@
 		{endpointText}
 	</span>
 	<span class="status-hint">
-		Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
+		{#if $isMobile}
+			Tap to copy
+		{:else}
+			Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
+		{/if}
 	</span>
 </div>
 

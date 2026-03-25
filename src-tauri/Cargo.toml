@@ -13,8 +13,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 copywraith-core = { path = "../crates/copywraith-core" }
 tauri = { version = "2", features = [] }
-tauri-plugin-global-shortcut = "2"
-tauri-plugin-clipboard = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -27,4 +25,13 @@ anyhow = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 log = "0.4"
 env_logger = "0.11"
+
+# Desktop-only: clipboard monitoring, global shortcuts, paste simulation
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-clipboard = "2"
 enigo = "0.3"
+
+# Android: official clipboard manager (read/write text)
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-clipboard-manager = "2"

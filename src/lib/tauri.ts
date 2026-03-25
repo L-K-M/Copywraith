@@ -47,4 +47,14 @@ export class TauriService {
 	static async reregisterShortcuts(): Promise<void> {
 		await invoke('reregister_shortcuts');
 	}
+
+	/** Read the current system clipboard and save it as a new entry (mobile). */
+	static async captureClipboard(): Promise<boolean> {
+		return await invoke('capture_clipboard');
+	}
+
+	/** Returns the current platform: "android", "ios", "macos", "windows", "linux". */
+	static async getPlatform(): Promise<string> {
+		return await invoke('get_platform');
+	}
 }

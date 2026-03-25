@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ClipboardEntry } from '$lib/types';
 	import { toggleStar, pasteEntry, pasteEntryPlaintext, deleteEntry } from '$lib/util/clipboardStore';
+	import { isMobile } from '$lib/util/platform';
 	import { BalloonHelp } from '@lkmc/system7-ui';
 	import { TauriService } from '$lib/tauri';
 	import { onMount } from 'svelte';
@@ -69,7 +70,8 @@
 
 	function handleClick(e: MouseEvent) {
 		onselect?.(entry.id);
-		if (e.altKey) {
+		// On mobile, alt-click is not available; always do a standard paste/copy
+		if (!$isMobile && e.altKey) {
 			pasteEntryPlaintext(entry.id);
 		} else {
 			pasteEntry(entry.id);
@@ -300,5 +302,49 @@
 
 	.delete-btn:hover {
 		opacity: 1 !important;
+	}
+
+	/* Mobile: larger touch targets, always-visible actions */
+	@media (pointer: coarse) {
+		.entry-row {
+			min-height: 44px;
+		}
+
+		.col-star {
+			width: 36px;
+			padding: 4px 6px;
+		}
+
+		.star-btn {
+			font-size: 18px;
+			padding: 4px;
+		}
+
+		.col-content {
+			padding: 6px 8px;
+		}
+
+		.text-preview {
+			font-size: 15px;
+		}
+
+		.image-preview {
+			height: 56px;
+		}
+
+		.image-preview img {
+			max-height: 56px;
+		}
+
+		.col-actions {
+			width: 32px;
+			padding: 4px;
+		}
+
+		.delete-btn {
+			font-size: 14px;
+			opacity: 0.4;
+			padding: 4px;
+		}
 	}
 </style>

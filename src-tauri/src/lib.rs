@@ -1,6 +1,8 @@
+#[cfg(desktop)]
 mod clipboard;
 mod commands;
 mod models;
+#[cfg(desktop)]
 mod paste;
 mod storage;
 mod sync;
@@ -8,17 +10,31 @@ mod sync;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 pub struct AppState {
     pub storage: Arc<storage::LocalStorage>,
     pub sync_client: Arc<sync::SyncClient>,
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_clipboard::init())
+    let mut builder = tauri::Builder::default();
+
+    // Desktop-only plugins
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .plugin(tauri_plugin_clipboard::init());
+    }
+
+    // Android: official clipboard-manager plugin for read/write
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+    }
+
+    builder
         .setup(|app| {
             let app_handle = app.handle().clone();
             let data_dir = app
@@ -39,12 +55,18 @@ pub fn run() {
 
             app.manage(state);
 
-            // Start clipboard monitoring
-            clipboard::start_monitoring(app_handle.clone(), storage.clone(), sync_client.clone());
+            // Desktop: start clipboard monitoring and register global shortcuts
+            #[cfg(desktop)]
+            {
+                clipboard::start_monitoring(
+                    app_handle.clone(),
+                    storage.clone(),
+                    sync_client.clone(),
+                );
 
-            // Register global shortcuts from saved settings
-            let settings = storage.get_settings();
-            register_shortcuts(&app_handle, &settings);
+                let settings = storage.get_settings();
+                register_shortcuts(&app_handle, &settings);
+            }
 
             // Start periodic two-way sync loop (push unsynced + pull remote)
             start_sync_loop(app_handle.clone(), storage.clone(), sync_client.clone());
@@ -61,13 +83,16 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::reregister_shortcuts,
+            commands::capture_clipboard,
+            commands::get_platform,
         ])
         .run(tauri::generate_context!())
         .expect("error while running copywraith");
 }
 
+#[cfg(desktop)]
 pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
-    use tauri_plugin_global_shortcut::ShortcutState;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     // Unregister all existing shortcuts first
     let _ = app.global_shortcut().unregister_all();
@@ -116,6 +141,7 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
     }
 }
 
+#[cfg(desktop)]
 fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {
     if let Some(popup) = app.get_webview_window("popup") {
         let is_visible = popup.is_visible().unwrap_or(false);
