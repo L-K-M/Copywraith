@@ -35,8 +35,12 @@
 
 	function getPreview(entry: EntryResponse): string {
 		if (entry.text_content) {
-			const text =
-				entry.content_type === 'html' ? htmlToPlainText(entry.text_content) : entry.text_content;
+			let text = entry.text_content;
+			if (entry.content_type === 'html') {
+				text = htmlToPlainText(text);
+			} else if (entry.content_type === 'rtf') {
+				text = rtfToPlainText(text);
+			}
 			return text.length > 200 ? text.substring(0, 200) + '...' : text;
 		}
 		if (entry.content_type === 'file') return '[File]';
@@ -55,6 +59,22 @@
 			.replace(/&gt;/gi, '>')
 			.replace(/&quot;/gi, '"')
 			.replace(/&#39;/gi, "'")
+			.replace(/\s+/g, ' ')
+			.trim();
+	}
+
+	function rtfToPlainText(rtf: string): string {
+		if (!rtf.trimStart().startsWith('{\\rtf')) return rtf;
+		return rtf
+			// Remove RTF header groups: {\fonttbl...}, {\colortbl...}, etc.
+			.replace(/\{\\(?:fonttbl|colortbl|stylesheet|info|\*\\)[^}]*(?:\{[^}]*\}[^}]*)*\}/g, '')
+			// Remove control words with optional numeric param
+			.replace(/\\[a-z]+[-]?\d*\s?/gi, '')
+			// Remove hex-encoded chars \'xx
+			.replace(/\\'[0-9a-f]{2}/gi, '')
+			// Remove remaining braces
+			.replace(/[{}]/g, '')
+			// Collapse whitespace
 			.replace(/\s+/g, ' ')
 			.trim();
 	}
@@ -95,12 +115,10 @@
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="preview" onclick={() => onview(entry.id)}>
-			{#if entry.sensitive}
-				<span class="sensitive-content">[Sensitive content hidden]</span>
-			{:else if entry.content_type === 'image' && entry.blob_url}
+			{#if entry.content_type === 'image' && entry.blob_url}
 				<img class="img-preview" src={entry.blob_url} alt="Clipboard preview" />
 			{:else}
-				{getPreview(entry)}
+				<span class:sensitive-content={entry.sensitive}>{getPreview(entry)}</span>
 			{/if}
 		</div>
 	</td>

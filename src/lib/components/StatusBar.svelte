@@ -77,7 +77,7 @@
 		padding: 4px 8px;
 		border-top: 1px solid #000;
 		background: #eee;
-		font-size: 11px;
+		font-size: 12px;
 		user-select: none;
 		flex-shrink: 0;
 	}
@@ -90,7 +90,7 @@
 		padding: 1px 6px;
 		border: 1px solid #777;
 		background: #f5f5f5;
-		font-size: 10px;
+		font-size: 11px;
 		white-space: nowrap;
 	}
 

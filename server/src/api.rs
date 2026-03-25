@@ -197,7 +197,7 @@ async fn create_entry(
     Ok((
         status,
         Json(CreateEntryResponse {
-            entry: EntryResponse { blob_url, entry },
+            entry: EntryResponse { blob_url, entry: mask_sensitive_entry(entry) },
             created,
         }),
     ))
@@ -230,7 +230,7 @@ async fn list_entries(
                 .blob_hash
                 .as_ref()
                 .map(|_| format!("/api/entries/{}/blob", e.id));
-            EntryResponse { blob_url, entry: e }
+            EntryResponse { blob_url, entry: mask_sensitive_entry(e) }
         })
         .collect();
 
@@ -259,7 +259,7 @@ async fn get_entry(
         .as_ref()
         .map(|_| format!("/api/entries/{}/blob", entry.id));
 
-    Ok(Json(EntryResponse { blob_url, entry }))
+    Ok(Json(EntryResponse { blob_url, entry: mask_sensitive_entry(entry) }))
 }
 
 async fn update_entry(
@@ -285,7 +285,7 @@ async fn update_entry(
         .as_ref()
         .map(|_| format!("/api/entries/{}/blob", entry.id));
 
-    Ok(Json(EntryResponse { blob_url, entry }))
+    Ok(Json(EntryResponse { blob_url, entry: mask_sensitive_entry(entry) }))
 }
 
 async fn delete_entry(
@@ -443,6 +443,17 @@ fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
 fn get_dek(state: &AppState) -> Option<[u8; 32]> {
     let crypto = state.crypto.lock().unwrap();
     crypto.get_dek()
+}
+
+/// Mask `text_content` on sensitive entries so the server never sends
+/// the full secret over the wire. Shows first 3 characters + bullets.
+fn mask_sensitive_entry(mut entry: copywraith_core::models::ClipboardEntry) -> copywraith_core::models::ClipboardEntry {
+    if entry.sensitive {
+        entry.text_content = entry.text_content.map(|text| {
+            copywraith_core::content::mask_sensitive(&text, 60)
+        });
+    }
+    entry
 }
 
 /// Encrypt all existing unencrypted entries and blobs in place.

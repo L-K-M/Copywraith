@@ -87,18 +87,16 @@
 		{/if}
 
 		<div class="content-display">
-			{#if entry.sensitive}
-				<div class="empty-content sensitive-content">[Sensitive content hidden]</div>
-			{:else if entry.has_image && imageData}
+			{#if entry.has_image && imageData}
 				<div class="image-container">
 					<img src="data:image/png;base64,{imageData}" alt="Clipboard preview" />
 				</div>
 			{:else if entry.has_image}
 				<div class="empty-content">Loading image...</div>
 			{:else if entry.full_text}
-				<pre class="text-content">{entry.full_text}</pre>
+				<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.full_text}</pre>
 			{:else if entry.preview}
-				<pre class="text-content">{entry.preview}</pre>
+				<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.preview}</pre>
 			{:else}
 				<div class="empty-content">No displayable content</div>
 			{/if}

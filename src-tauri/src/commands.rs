@@ -29,11 +29,26 @@ pub async fn get_entries(
         .map(|e| {
             let preview = e.preview(200);
 
+            // For sensitive entries, mask the full text so we never send
+            // secrets to the frontend JS context.
+            let full_text = if e.sensitive {
+                e.text_content.map(|t| {
+                    let plain = match e.content_type {
+                        ContentType::Html => copywraith_core::content::strip_html(&t),
+                        ContentType::Rtf => copywraith_core::content::strip_rtf(&t),
+                        _ => t.trim().to_string(),
+                    };
+                    copywraith_core::content::mask_sensitive(&plain, 200)
+                })
+            } else {
+                e.text_content
+            };
+
             EntryForFrontend {
                 id: e.id,
                 content_type: e.content_type,
                 preview,
-                full_text: e.text_content,
+                full_text,
                 has_image: e.content_type == ContentType::Image && e.blob_hash.is_some(),
                 starred: e.starred,
                 sensitive: e.sensitive,

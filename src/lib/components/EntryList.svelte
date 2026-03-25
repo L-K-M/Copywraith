@@ -7,7 +7,7 @@
 	let { onpreview }: { onpreview?: (entry: ClipboardEntry) => void } = $props();
 
 	const columns = [
-		{ key: 'star', label: '\u2606', width: '32px', className: 'col-star-header' },
+		{ key: 'star', label: '', width: '32px', className: 'col-star-header' },
 		{ key: 'content', label: 'Content' },
 		{ key: 'type', label: 'Type', width: '78px' },
 		{ key: 'time', label: 'Time', width: '72px' },

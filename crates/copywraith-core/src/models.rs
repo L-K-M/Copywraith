@@ -117,22 +117,40 @@ impl ClipboardEntry {
 
     /// Returns a short preview of the content for display.
     /// `max_len` is measured in characters, not bytes.
+    /// HTML and RTF content is stripped to plain text.
+    /// Sensitive entries show first 3 chars + bullet characters.
     pub fn preview(&self, max_len: usize) -> String {
+        if self.sensitive {
+            if let Some(text) = &self.text_content {
+                let plain = match self.content_type {
+                    ContentType::Html => crate::content::strip_html(text),
+                    ContentType::Rtf => crate::content::strip_rtf(text),
+                    _ => text.trim().to_string(),
+                };
+                return crate::content::mask_sensitive(&plain, max_len);
+            }
+            return "[Sensitive]".to_string();
+        }
+
         match &self.text_content {
             Some(text) => {
-                let trimmed = text.trim();
-                // Count characters to avoid panicking on multi-byte UTF-8
-                let char_count = trimmed.chars().count();
+                // Strip markup for display
+                let plain = match self.content_type {
+                    ContentType::Html => crate::content::strip_html(text),
+                    ContentType::Rtf => crate::content::strip_rtf(text),
+                    _ => text.trim().to_string(),
+                };
+                let char_count = plain.chars().count();
                 if char_count <= max_len {
-                    trimmed.to_string()
+                    plain
                 } else {
                     // Find the byte index of the max_len-th character boundary
-                    let byte_end = trimmed
+                    let byte_end = plain
                         .char_indices()
                         .nth(max_len)
                         .map(|(i, _)| i)
-                        .unwrap_or(trimmed.len());
-                    format!("{}...", &trimmed[..byte_end])
+                        .unwrap_or(plain.len());
+                    format!("{}...", &plain[..byte_end])
                 }
             }
             None => match self.content_type {
