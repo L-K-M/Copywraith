@@ -8,7 +8,7 @@ Do not expose the server component to the Internet. It is intended to be used on
 
 ## Prerequisites
 
-- Rust toolchain (stable; project currently builds with Rust 1.83+)
+- Rust toolchain (stable; project currently builds with Rust 1.85+)
 - Node.js + npm
 - Tauri v2 system dependencies for your OS
 
