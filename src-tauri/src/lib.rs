@@ -162,6 +162,7 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
             let _ = popup.hide();
         } else {
             paste::remember_frontmost_app(app);
+            position_popup_near_cursor(&popup);
             let _ = popup.show();
             let _ = popup.set_focus();
             // Emit event to frontend to update filter mode
@@ -169,6 +170,84 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
         }
     }
     Ok(())
+}
+
+#[cfg(desktop)]
+fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
+    const CURSOR_OFFSET_PX: i32 = 14;
+    const SCREEN_MARGIN_PX: i32 = 8;
+
+    let cursor = match popup.cursor_position() {
+        Ok(pos) => pos,
+        Err(e) => {
+            log::debug!("Could not read cursor position: {}", e);
+            let _ = popup.center();
+            return;
+        }
+    };
+
+    let window_size = match popup.outer_size() {
+        Ok(size) => size,
+        Err(e) => {
+            log::debug!("Could not read popup size for positioning: {}", e);
+            let _ = popup.center();
+            return;
+        }
+    };
+
+    let cursor_x = cursor.x.round() as i32;
+    let cursor_y = cursor.y.round() as i32;
+    let window_w = window_size.width as i32;
+    let window_h = window_size.height as i32;
+
+    // Start below-right of the pointer.
+    let mut x = cursor_x + CURSOR_OFFSET_PX;
+    let mut y = cursor_y + CURSOR_OFFSET_PX;
+
+    let monitor = popup
+        .monitor_from_point(cursor.x, cursor.y)
+        .ok()
+        .flatten()
+        .or_else(|| popup.current_monitor().ok().flatten())
+        .or_else(|| popup.primary_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let monitor_pos = monitor.position();
+        let monitor_size = monitor.size();
+
+        let monitor_left = monitor_pos.x;
+        let monitor_top = monitor_pos.y;
+        let monitor_right = monitor_left + monitor_size.width as i32;
+        let monitor_bottom = monitor_top + monitor_size.height as i32;
+
+        // If below-right overflows, try above-left first.
+        if x + window_w > monitor_right - SCREEN_MARGIN_PX {
+            x = cursor_x - window_w - CURSOR_OFFSET_PX;
+        }
+        if y + window_h > monitor_bottom - SCREEN_MARGIN_PX {
+            y = cursor_y - window_h - CURSOR_OFFSET_PX;
+        }
+
+        // Clamp to keep the full popup inside monitor bounds.
+        let min_x = monitor_left + SCREEN_MARGIN_PX;
+        let min_y = monitor_top + SCREEN_MARGIN_PX;
+        let max_x = monitor_right - window_w - SCREEN_MARGIN_PX;
+        let max_y = monitor_bottom - window_h - SCREEN_MARGIN_PX;
+
+        x = if max_x >= min_x {
+            x.clamp(min_x, max_x)
+        } else {
+            monitor_left
+        };
+
+        y = if max_y >= min_y {
+            y.clamp(min_y, max_y)
+        } else {
+            monitor_top
+        };
+    }
+
+    let _ = popup.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 fn start_sync_loop(
