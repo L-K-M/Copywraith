@@ -32,8 +32,6 @@ const FALLBACK_HTML: &str = r#"<!DOCTYPE html>
 pub struct AppState {
     pub storage: Storage,
     pub crypto: SharedCryptoState,
-    /// Legacy env-var key; ignored when auth.json exists.
-    pub admin_api_key: Option<String>,
 }
 
 #[tokio::main]
@@ -61,19 +59,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("No password configured -- server is open");
     }
 
-    let admin_api_key = std::env::var("COPYWRAITH_ADMIN_API_KEY")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    if admin_api_key.is_some() && !crypto_state.is_initialized() {
-        tracing::info!("Legacy admin API key loaded (will be ignored once a password is set)");
-    }
-
     let state = Arc::new(AppState {
         storage,
         crypto: Mutex::new(crypto_state),
-        admin_api_key,
     });
 
     let cors = CorsLayer::new()

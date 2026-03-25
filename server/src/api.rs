@@ -415,19 +415,8 @@ fn ensure_authorized(state: &AppState, headers: &HeaderMap) -> Result<(), AppErr
         return Ok(());
     }
 
-    drop(crypto); // release lock for legacy path
-
-    // Legacy: env-var API key
-    let Some(expected) = state.admin_api_key.as_deref() else {
-        return Ok(()); // no auth configured at all
-    };
-
-    let token = extract_bearer(headers).unwrap_or("");
-    if token == expected {
-        Ok(())
-    } else {
-        Err(AppError::Unauthorized)
-    }
+    // No auth configured -- open mode
+    Ok(())
 }
 
 fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
