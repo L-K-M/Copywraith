@@ -132,6 +132,86 @@ key stays the same, only its wrapping changes). If the password is forgotten,
 delete `auth.json` from the data directory -- but all encrypted data will be
 permanently lost.
 
+## Android app
+
+The same codebase produces an Android app. On Android, tapping an entry copies it
+to the clipboard (instead of simulating a paste). Opening the app automatically
+captures whatever is on the Android clipboard.
+
+### Android prerequisites
+
+- Android Studio with SDK Platform 24+ installed
+- Android NDK (installed automatically by `tauri android init`, or manually via Android Studio SDK Manager)
+- Rust Android targets:
+
+```bash
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+```
+
+- `JAVA_HOME` pointing to the JDK bundled with Android Studio (or a standalone JDK 17+)
+- `ANDROID_HOME` pointing to your Android SDK (e.g. `~/Library/Android/sdk`)
+
+If you have `NDK_HOME` set in your shell profile, make sure it matches the
+installed NDK version. If in doubt, `unset NDK_HOME` and let Tauri auto-detect it.
+
+### Initialize the Android project
+
+From the repository root:
+
+```bash
+npx tauri android init
+```
+
+This generates the Gradle project under `src-tauri/gen/android/`.
+
+### If CLI NDK install fails
+
+If `npx tauri android init` reports that it installed an NDK version but then
+fails with `NDK_HOME ... doesn't point to an existing directory`, install the
+NDK using Android Studio instead:
+
+1. Open Android Studio
+2. Go to Settings/Preferences -> Android SDK -> SDK Tools
+3. Enable `NDK (Side by side)` and apply changes
+4. Verify the installed path exists under `~/Library/Android/sdk/ndk/<version>`
+5. Point `NDK_HOME` to that exact directory and re-run init
+
+```bash
+export NDK_HOME="$HOME/Library/Android/sdk/ndk/<version>"
+npx tauri android init
+```
+
+### Build and run (development)
+
+Connect a device or start an emulator, then:
+
+```bash
+npx tauri android dev
+```
+
+### Build a release APK / AAB
+
+```bash
+npx tauri android build
+```
+
+The unsigned APK is written to `src-tauri/gen/android/app/build/outputs/apk/`.
+For a signed release build, configure signing in
+`src-tauri/gen/android/app/build.gradle.kts` per the
+[Tauri Android distribution guide](https://v2.tauri.app/distribute/sign/android/).
+
+### Android troubleshooting
+
+- **`NDK_HOME` doesn't point to an existing directory** -- unset the variable
+  (`unset NDK_HOME`) or update it to the path printed by `sdkmanager` during init.
+  If the printed path does not actually exist, install NDK from Android Studio
+  (Android SDK -> SDK Tools -> `NDK (Side by side)`) and point `NDK_HOME` to
+  the installed version directory.
+- **Gradle sync fails** -- make sure `JAVA_HOME` and `ANDROID_HOME` are set correctly
+  and that you have accepted the SDK licenses (`sdkmanager --licenses`).
+- **App crashes on launch** -- check `adb logcat` for Rust panics. The most common
+  cause is a missing server URL in Settings (sync errors are non-fatal but logged).
+
 ## Quick troubleshooting
 
 - **`npm install` fails with registry/package errors**
