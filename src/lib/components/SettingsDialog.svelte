@@ -75,14 +75,18 @@
 		</div>
 
 		<div class="s7-form-group">
-			<label for="api-key">API Key</label>
+			<label for="server-password">Server Password</label>
 			<input
-				id="api-key"
+				id="server-password"
 				type="password"
 				class="s7-input"
-				placeholder="Optional"
+				placeholder="Password from admin UI"
 				bind:value={apiKey}
 			/>
+			<div class="field-hint">
+				Use the same password configured on the server admin UI. Copywraith sends it as
+				an `Authorization: Bearer ...` header.
+			</div>
 		</div>
 
 		{#if !$isMobile}
@@ -163,5 +167,12 @@
 		font-size: 10px;
 		color: #888;
 		line-height: 1.3;
+	}
+
+	.field-hint {
+		font-size: 10px;
+		color: #666;
+		line-height: 1.35;
+		margin-top: 2px;
 	}
 </style>

@@ -181,6 +181,18 @@ export NDK_HOME="$HOME/Library/Android/sdk/ndk/<version>"
 npx tauri android init
 ```
 
+### Optional helper scripts
+
+From the repository root:
+
+```bash
+# Verifies Rust/Android toolchains, fixes stale NDK_HOME, then runs Android dev
+./scripts/android-dev-bootstrap.sh
+
+# Persists ANDROID_HOME/NDK_HOME into your shell profile and macOS launchctl env
+./scripts/android-env-persist.sh
+```
+
 ### Build and run (development)
 
 Connect a device or start an emulator, then:
@@ -188,6 +200,18 @@ Connect a device or start an emulator, then:
 ```bash
 npx tauri android dev
 ```
+
+### Android app icon
+
+Android launcher icons are generated from `src-tauri/icons/icon.png`.
+If you update the app icon source, regenerate icons with:
+
+```bash
+npx tauri icon src-tauri/icons/icon.png
+```
+
+Then rebuild the Android app. If the old icon still appears on-device, uninstall
+the app once and reinstall (some launchers cache app icons).
 
 ### Build a release APK / AAB
 

@@ -69,7 +69,7 @@
 			// On mobile, capture clipboard when app resumes (gains focus)
 			if (mobile && focused) {
 				TauriService.captureClipboard()
-					.then((captured) => {
+					.then((captured: boolean) => {
 						if (captured) loadEntries();
 					})
 					.catch(() => {});
@@ -194,16 +194,13 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="window-frame s7-root" class:window-unfocused={!$windowFocused} class:mobile={$isMobile}>
-	{#if $isMobile}
-		<!-- Mobile: simple app bar, no window chrome -->
-		<div class="mobile-header">
-			<span class="mobile-title">Copywraith</span>
-			<button type="button" class="mobile-settings-btn" onclick={handleSettingsOpen}>
-				Settings
-			</button>
-		</div>
-	{:else}
+<div
+	class="window-frame s7-root"
+	class:window-unfocused={!$windowFocused}
+	class:mobile={$isMobile}
+	class:android={$platform === 'android'}
+>
+	{#if !$isMobile}
 		<TitleBar
 			title="Copywraith"
 			focused={$windowFocused}
@@ -214,6 +211,10 @@
 			onshade={handleWindowShade}
 			ondragstart={handleWindowDrag}
 		/>
+	{/if}
+
+	{#if $isMobile}
+		<div class="mobile-safe-top" aria-hidden="true"></div>
 	{/if}
 
 	{#if !isWindowShaded}
@@ -244,6 +245,7 @@
 		display: flex;
 		flex-direction: column;
 		height: 100vh;
+		height: 100dvh;
 		border: 2px solid #000;
 		box-sizing: border-box;
 		background: #fff;
@@ -263,30 +265,21 @@
 
 	/* Mobile: no window border, full screen */
 	.window-frame.mobile {
+		--safe-area-top: env(safe-area-inset-top, 0px);
+		--safe-area-bottom: env(safe-area-inset-bottom, 0px);
 		border: none;
 	}
 
-	.mobile-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 10px 12px;
-		background: #ddd;
-		border-bottom: 1px solid #000;
-		user-select: none;
+	.window-frame.mobile.android {
+		--safe-area-top: max(env(safe-area-inset-top, 0px), 24px);
 	}
 
-	.mobile-title {
-		font-weight: bold;
-		font-size: 16px;
+	.mobile-safe-top {
+		height: var(--safe-area-top);
+		flex-shrink: 0;
 	}
 
-	.mobile-settings-btn {
-		background: #fff;
-		border: 1px solid #000;
-		padding: 4px 12px;
-		font-size: 13px;
-		cursor: pointer;
-		font-family: inherit;
+	.window-frame.mobile .app-content {
+		padding-bottom: var(--safe-area-bottom);
 	}
 </style>
