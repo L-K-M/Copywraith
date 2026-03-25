@@ -448,10 +448,8 @@ impl SyncClient {
         };
 
         if storage.has_content_hash(&content_hash)? {
-            return storage.apply_remote_star_state_by_content_hash(
-                &content_hash,
-                remote.entry.starred,
-            );
+            return storage
+                .apply_remote_star_state_by_content_hash(&content_hash, remote.entry.starred);
         }
 
         if remote.entry.content_type == ContentType::Image && blob_data.is_none() {
@@ -518,7 +516,9 @@ impl SyncClient {
                 .blob_url
                 .as_deref()
                 .map(|url| resolve_url(&endpoint.url, url))
-                .unwrap_or_else(|| format!("{}/api/entries/{}/blob", endpoint.url, remote.entry.id));
+                .unwrap_or_else(|| {
+                    format!("{}/api/entries/{}/blob", endpoint.url, remote.entry.id)
+                });
 
             let mut request = self.http.get(&blob_url);
             if !api_key.is_empty() {
@@ -583,9 +583,8 @@ impl SyncClient {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!("Failed to download blob for {}", remote.entry.id)
-        }))
+        Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("Failed to download blob for {}", remote.entry.id)))
     }
 }
 

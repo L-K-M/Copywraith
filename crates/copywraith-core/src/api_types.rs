@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::models::{ClipboardEntry, ContentType};
 
 // --- Request types ---
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateEntryRequest {
     pub content_type: ContentType,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -18,13 +19,13 @@ pub struct CreateEntryRequest {
     pub content_hash: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateEntryRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starred: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, IntoParams, ToSchema)]
 pub struct ListEntriesParams {
     #[serde(default = "default_limit")]
     pub limit: u32,
@@ -51,7 +52,7 @@ pub fn clamp_limit(limit: u32) -> u32 {
 
 // --- Response types ---
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct EntryResponse {
     #[serde(flatten)]
     pub entry: ClipboardEntry,
@@ -59,20 +60,20 @@ pub struct EntryResponse {
     pub blob_url: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ListEntriesResponse {
     pub entries: Vec<EntryResponse>,
     pub total: u64,
     pub has_more: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateEntryResponse {
     pub entry: EntryResponse,
     pub created: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
@@ -80,7 +81,7 @@ pub struct HealthResponse {
     pub entries_count: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
 }

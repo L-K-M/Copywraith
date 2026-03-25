@@ -134,11 +134,14 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
     if !shortcut_plaintext.is_empty() {
         let app_handle = app.clone();
         app.global_shortcut()
-            .on_shortcut(shortcut_plaintext.as_str(), move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    paste::paste_most_recent_plaintext(&app_handle);
-                }
-            })
+            .on_shortcut(
+                shortcut_plaintext.as_str(),
+                move |_app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        paste::paste_most_recent_plaintext(&app_handle);
+                    }
+                },
+            )
             .unwrap_or_else(|e| {
                 log::warn!("Failed to register {}: {}", shortcut_plaintext, e);
             });

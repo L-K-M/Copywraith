@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use utoipa::{Modify, OpenApi, ToSchema};
 
 use copywraith_core::api_types::*;
 use copywraith_core::models::ContentType;
@@ -34,32 +35,108 @@ pub fn router() -> AppRouter {
         .route("/entries/{id}/blob", get(get_blob))
 }
 
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        auth_status,
+        auth_setup,
+        auth_unlock,
+        auth_change_password,
+        auth_lock,
+        health,
+        create_entry,
+        list_entries,
+        get_entry,
+        update_entry,
+        delete_entry,
+        get_blob
+    ),
+    components(
+        schemas(
+            AuthStatusResponse,
+            SetupRequest,
+            UnlockRequest,
+            ChangePasswordRequest,
+            ErrorResponse,
+            HealthResponse,
+            CreateEntryRequest,
+            UpdateEntryRequest,
+            ListEntriesParams,
+            EntryResponse,
+            ListEntriesResponse,
+            CreateEntryResponse,
+            copywraith_core::models::ClipboardEntry,
+            copywraith_core::models::ContentType
+        )
+    ),
+    tags(
+        (name = "auth", description = "Password setup, unlock, and lock endpoints"),
+        (name = "entries", description = "Clipboard entry CRUD and blob download endpoints"),
+        (name = "system", description = "Health and status endpoints")
+    ),
+    modifiers(&ApiServerAddon)
+)]
+pub struct ApiDoc;
+
+struct ApiServerAddon;
+
+impl Modify for ApiServerAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi.servers = Some(vec![utoipa::openapi::Server::new("/")]);
+
+        let components = openapi
+            .components
+            .get_or_insert_with(utoipa::openapi::Components::new);
+        components.add_security_scheme(
+            "bearer_auth",
+            utoipa::openapi::security::SecurityScheme::Http(
+                utoipa::openapi::security::HttpBuilder::new()
+                    .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
+                    .bearer_format("Password")
+                    .build(),
+            ),
+        );
+    }
+}
+
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    ApiDoc::openapi()
+}
+
 // ---------------------------------------------------------------------------
 // Auth endpoints
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct AuthStatusResponse {
     initialized: bool,
     unlocked: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct SetupRequest {
     password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct UnlockRequest {
     password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct ChangePasswordRequest {
     old_password: String,
     new_password: String,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/auth/status",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Returns auth initialization and unlock status", body = AuthStatusResponse)
+    )
+)]
 async fn auth_status(State(state): State<Arc<AppState>>) -> Json<AuthStatusResponse> {
     let crypto = state.crypto.lock().unwrap();
     Json(AuthStatusResponse {
@@ -68,6 +145,17 @@ async fn auth_status(State(state): State<Arc<AppState>>) -> Json<AuthStatusRespo
     })
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/setup",
+    tag = "auth",
+    request_body = SetupRequest,
+    responses(
+        (status = 200, description = "Initializes password protection and encrypts existing data"),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn auth_setup(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SetupRequest>,
@@ -88,9 +176,9 @@ async fn auth_setup(
     crypto.setup_password(&req.password)?;
 
     // Encrypt any existing unencrypted entries
-    let dek = crypto.get_dek().ok_or_else(|| {
-        anyhow::anyhow!("DEK not available after setup")
-    })?;
+    let dek = crypto
+        .get_dek()
+        .ok_or_else(|| anyhow::anyhow!("DEK not available after setup"))?;
     drop(crypto); // release crypto lock before touching storage
 
     migrate_existing_data(&state, &dek)?;
@@ -98,6 +186,18 @@ async fn auth_setup(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/unlock",
+    tag = "auth",
+    request_body = UnlockRequest,
+    responses(
+        (status = 200, description = "Unlocks encrypted data for this process"),
+        (status = 400, description = "No password configured", body = ErrorResponse),
+        (status = 401, description = "Wrong password", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn auth_unlock(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UnlockRequest>,
@@ -115,6 +215,22 @@ async fn auth_unlock(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/change-password",
+    tag = "auth",
+    security(
+        ("bearer_auth" = [])
+    ),
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 200, description = "Changes password while keeping encrypted data intact"),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn auth_change_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -133,6 +249,20 @@ async fn auth_change_password(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/lock",
+    tag = "auth",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Locks encrypted data in memory"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn auth_lock(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -147,10 +277,15 @@ async fn auth_lock(
 // Data endpoints
 // ---------------------------------------------------------------------------
 
-async fn health(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Json<HealthResponse> {
+#[utoipa::path(
+    get,
+    path = "/api/health",
+    tag = "system",
+    responses(
+        (status = 200, description = "Server health and version. Includes entry count only when authorized.", body = HealthResponse)
+    )
+)]
+async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<HealthResponse> {
     // Only include entry count when the caller is authenticated
     let entries_count = if is_authorized(state.as_ref(), &headers) {
         Some(state.storage.count_entries().unwrap_or(0))
@@ -164,6 +299,23 @@ async fn health(
     })
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/entries",
+    tag = "entries",
+    security(
+        ("bearer_auth" = [])
+    ),
+    request_body = CreateEntryRequest,
+    responses(
+        (status = 201, description = "Created a new entry", body = CreateEntryResponse),
+        (status = 200, description = "Entry already existed (deduplicated by hash)", body = CreateEntryResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn create_entry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -197,12 +349,30 @@ async fn create_entry(
     Ok((
         status,
         Json(CreateEntryResponse {
-            entry: EntryResponse { blob_url, entry: mask_sensitive_entry(entry) },
+            entry: EntryResponse {
+                blob_url,
+                entry: mask_sensitive_entry(entry),
+            },
             created,
         }),
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/entries",
+    tag = "entries",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(ListEntriesParams),
+    responses(
+        (status = 200, description = "List entries with pagination and filtering", body = ListEntriesResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn list_entries(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -230,7 +400,10 @@ async fn list_entries(
                 .blob_hash
                 .as_ref()
                 .map(|_| format!("/api/entries/{}/blob", e.id));
-            EntryResponse { blob_url, entry: mask_sensitive_entry(e) }
+            EntryResponse {
+                blob_url,
+                entry: mask_sensitive_entry(e),
+            }
         })
         .collect();
 
@@ -241,6 +414,24 @@ async fn list_entries(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/entries/{id}",
+    tag = "entries",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Entry ID")
+    ),
+    responses(
+        (status = 200, description = "Returns one entry", body = EntryResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 404, description = "Entry not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn get_entry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -259,9 +450,31 @@ async fn get_entry(
         .as_ref()
         .map(|_| format!("/api/entries/{}/blob", entry.id));
 
-    Ok(Json(EntryResponse { blob_url, entry: mask_sensitive_entry(entry) }))
+    Ok(Json(EntryResponse {
+        blob_url,
+        entry: mask_sensitive_entry(entry),
+    }))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/entries/{id}",
+    tag = "entries",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Entry ID")
+    ),
+    request_body = UpdateEntryRequest,
+    responses(
+        (status = 200, description = "Updated entry", body = EntryResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 404, description = "Entry not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn update_entry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -285,9 +498,30 @@ async fn update_entry(
         .as_ref()
         .map(|_| format!("/api/entries/{}/blob", entry.id));
 
-    Ok(Json(EntryResponse { blob_url, entry: mask_sensitive_entry(entry) }))
+    Ok(Json(EntryResponse {
+        blob_url,
+        entry: mask_sensitive_entry(entry),
+    }))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/entries/{id}",
+    tag = "entries",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Entry ID")
+    ),
+    responses(
+        (status = 204, description = "Entry deleted"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 404, description = "Entry not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn delete_entry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -303,6 +537,24 @@ async fn delete_entry(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/entries/{id}/blob",
+    tag = "entries",
+    security(
+        ("bearer_auth" = [])
+    ),
+    params(
+        ("id" = String, Path, description = "Entry ID")
+    ),
+    responses(
+        (status = 200, description = "Raw blob bytes"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Password setup required", body = ErrorResponse),
+        (status = 404, description = "Entry/blob not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
 async fn get_blob(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -447,11 +699,13 @@ fn get_dek(state: &AppState) -> Option<[u8; 32]> {
 
 /// Mask `text_content` on sensitive entries so the server never sends
 /// the full secret over the wire. Shows first 3 characters + bullets.
-fn mask_sensitive_entry(mut entry: copywraith_core::models::ClipboardEntry) -> copywraith_core::models::ClipboardEntry {
+fn mask_sensitive_entry(
+    mut entry: copywraith_core::models::ClipboardEntry,
+) -> copywraith_core::models::ClipboardEntry {
     if entry.sensitive {
-        entry.text_content = entry.text_content.map(|text| {
-            copywraith_core::content::mask_sensitive(&text, 60)
-        });
+        entry.text_content = entry
+            .text_content
+            .map(|text| copywraith_core::content::mask_sensitive(&text, 60));
     }
     entry
 }

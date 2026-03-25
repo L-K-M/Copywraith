@@ -82,9 +82,7 @@ impl LocalStorage {
             .prepare("SELECT sensitive FROM entries LIMIT 0")
             .is_ok();
         if !has_sensitive {
-            conn.execute_batch(
-                "ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;",
-            )?;
+            conn.execute_batch("ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;")?;
         }
 
         Ok(Self {
@@ -401,9 +399,11 @@ impl LocalStorage {
             )
             .or_else(|_| {
                 // Backward compatibility for older clients that only stored one server URL.
-                db.query_row("SELECT value FROM settings WHERE key = 'server_url'", [], |row| {
-                    row.get::<_, String>(0)
-                })
+                db.query_row(
+                    "SELECT value FROM settings WHERE key = 'server_url'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
             })
             .unwrap_or_default();
         let server_url_fallback = db

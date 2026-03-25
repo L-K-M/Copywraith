@@ -54,17 +54,25 @@ pub fn strip_html(html: &str) -> String {
     while i < len {
         if chars[i] == '<' {
             // Check for <style or <script opening tags
-            if i + 6 < len && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<style") == &true {
+            if i + 6 < len
+                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<style") == &true
+            {
                 in_style = true;
             }
-            if i + 7 < len && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<script") == &true {
+            if i + 7 < len
+                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<script") == &true
+            {
                 in_script = true;
             }
             // Check for closing tags
-            if i + 7 < len && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</style") == &true {
+            if i + 7 < len
+                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</style") == &true
+            {
                 in_style = false;
             }
-            if i + 8 < len && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</script") == &true {
+            if i + 8 < len
+                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</script") == &true
+            {
                 in_script = false;
             }
             in_tag = true;
@@ -267,7 +275,10 @@ pub fn mask_sensitive(text: &str, max_len: usize) -> String {
     let chars: Vec<char> = trimmed.chars().collect();
     let visible = 3.min(chars.len());
     let prefix: String = chars[..visible].iter().collect();
-    let remaining = chars.len().saturating_sub(visible).min(max_len.saturating_sub(visible));
+    let remaining = chars
+        .len()
+        .saturating_sub(visible)
+        .min(max_len.saturating_sub(visible));
     let bullets: String = "\u{2022}".repeat(remaining);
     format!("{}{}", prefix, bullets)
 }
@@ -364,7 +375,10 @@ mod tests {
 
     #[test]
     fn test_mask_sensitive() {
-        assert_eq!(mask_sensitive("sk-1234567890", 20), "sk-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}");
+        assert_eq!(
+            mask_sensitive("sk-1234567890", 20),
+            "sk-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
     }
 
     #[test]

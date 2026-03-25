@@ -71,9 +71,7 @@ impl Storage {
             .prepare("SELECT sensitive FROM entries LIMIT 0")
             .is_ok();
         if !has_sensitive {
-            conn.execute_batch(
-                "ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;",
-            )?;
+            conn.execute_batch("ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;")?;
         }
 
         Ok(Self {
@@ -252,10 +250,7 @@ impl Storage {
 
         if use_fts {
             if let Some(q) = search {
-                conditions.push(format!(
-                    "f.text_content MATCH ?{}",
-                    params_vec.len() + 1
-                ));
+                conditions.push(format!("f.text_content MATCH ?{}", params_vec.len() + 1));
                 params_vec.push(Box::new(q.to_string()));
             }
         }
@@ -429,9 +424,8 @@ impl Storage {
     pub fn encrypt_all_entries(&self, dek: &[u8; 32]) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
 
-        let mut stmt = db.prepare(
-            "SELECT id, text_content FROM entries WHERE text_content IS NOT NULL",
-        )?;
+        let mut stmt =
+            db.prepare("SELECT id, text_content FROM entries WHERE text_content IS NOT NULL")?;
 
         let rows: Vec<(String, String)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

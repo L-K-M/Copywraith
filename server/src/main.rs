@@ -28,6 +28,29 @@ const FALLBACK_HTML: &str = r#"<!DOCTYPE html>
 </body>
 </html>"#;
 
+/// Swagger UI shell that loads OpenAPI JSON from /api-docs/openapi.json.
+const SWAGGER_UI_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Copywraith API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: '/api-docs/openapi.json',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis],
+    });
+  </script>
+</body>
+</html>"#;
+
 pub struct AppState {
     pub storage: Storage,
     pub crypto: SharedCryptoState,
@@ -75,10 +98,11 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Serving admin UI from {}", dist_path.display());
         let index_file = dist_path.join("index.html");
         Router::new()
+            .route("/swagger-ui", get(swagger_ui))
+            .route("/swagger-ui/", get(swagger_ui))
+            .route("/api-docs/openapi.json", get(openapi_json))
             .nest("/api", api::router())
-            .fallback_service(
-                ServeDir::new(dist_path).fallback(ServeFile::new(index_file)),
-            )
+            .fallback_service(ServeDir::new(dist_path).fallback(ServeFile::new(index_file)))
             .layer(cors)
             .layer(TraceLayer::new_for_http())
             .with_state(state)
@@ -86,6 +110,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("Admin UI dist directory not found; serving fallback page");
         Router::new()
             .route("/", get(fallback_ui))
+            .route("/swagger-ui", get(swagger_ui))
+            .route("/swagger-ui/", get(swagger_ui))
+            .route("/api-docs/openapi.json", get(openapi_json))
             .nest("/api", api::router())
             .layer(cors)
             .layer(TraceLayer::new_for_http())
@@ -99,16 +126,17 @@ async fn main() -> anyhow::Result<()> {
 
     let host: [u8; 4] = std::env::var("COPYWRAITH_HOST")
         .ok()
-        .and_then(|h| {
-            h.parse::<std::net::Ipv4Addr>()
-                .ok()
-                .map(|ip| ip.octets())
-        })
+        .and_then(|h| h.parse::<std::net::Ipv4Addr>().ok().map(|ip| ip.octets()))
         .unwrap_or([127, 0, 0, 1]); // default to localhost-only
 
     let addr = SocketAddr::from((host, port));
     tracing::info!("Copywraith server listening on {}", addr);
     tracing::info!("Admin UI available at http://localhost:{}/", port);
+    tracing::info!(
+        "API docs available at http://localhost:{}/swagger-ui/ and http://localhost:{}/api-docs/openapi.json",
+        port,
+        port
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -142,4 +170,14 @@ fn resolve_ui_dir() -> Option<PathBuf> {
 /// Fallback when the UI dist hasn't been built
 async fn fallback_ui() -> axum::response::Html<&'static str> {
     axum::response::Html(FALLBACK_HTML)
+}
+
+/// OpenAPI specification in JSON format.
+async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
+    axum::Json(api::openapi())
+}
+
+/// Swagger UI page (loads assets from unpkg CDN).
+async fn swagger_ui() -> axum::response::Html<&'static str> {
+    axum::response::Html(SWAGGER_UI_HTML)
 }

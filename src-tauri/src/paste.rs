@@ -2,10 +2,11 @@ use tauri::Manager;
 
 #[cfg(target_os = "macos")]
 pub fn remember_frontmost_app(app: &tauri::AppHandle) {
+    let target_app = detect_frontmost_app_name();
     let state = app.state::<crate::AppState>();
     if let Ok(mut slot) = state.last_focused_app.lock() {
-        *slot = detect_frontmost_app_name();
-    }
+        *slot = target_app;
+    };
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -73,9 +74,7 @@ fn simulate_paste(target_app: Option<String>) {
         let mut command = std::process::Command::new("osascript");
 
         if let Some(target_app_name) = target_app {
-            let escaped_name = target_app_name
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
+            let escaped_name = target_app_name.replace('\\', "\\\\").replace('"', "\\\"");
 
             command
                 .arg("-e")
@@ -92,7 +91,10 @@ fn simulate_paste(target_app: Option<String>) {
         match status {
             Ok(exit_status) if exit_status.success() => {}
             Ok(exit_status) => {
-                log::error!("osascript paste simulation exited with status: {}", exit_status);
+                log::error!(
+                    "osascript paste simulation exited with status: {}",
+                    exit_status
+                );
             }
             Err(e) => {
                 log::error!("Failed to run osascript paste simulation: {}", e);
@@ -109,14 +111,17 @@ fn simulate_paste(target_app: Option<String>) {
 
 #[cfg(target_os = "macos")]
 fn preferred_paste_target(app: &tauri::AppHandle) -> Option<String> {
-    let state = app.state::<crate::AppState>();
-    if let Ok(slot) = state.last_focused_app.lock() {
-        if slot.is_some() {
-            return slot.clone();
-        }
-    }
+    let remembered = {
+        let state = app.state::<crate::AppState>();
+        let lock_result = state.last_focused_app.lock();
+        let remembered_value = match lock_result {
+            Ok(slot) => slot.clone(),
+            Err(_) => None,
+        };
+        remembered_value
+    };
 
-    detect_frontmost_app_name()
+    remembered.or_else(detect_frontmost_app_name)
 }
 
 #[cfg(not(target_os = "macos"))]

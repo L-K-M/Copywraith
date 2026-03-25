@@ -361,8 +361,13 @@ pub type SharedCryptoState = Mutex<CryptoState>;
 // ---------------------------------------------------------------------------
 
 fn derive_master_key(password: &str, salt: &[u8]) -> anyhow::Result<[u8; ARGON2_OUTPUT_LEN]> {
-    let params = argon2::Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(ARGON2_OUTPUT_LEN))
-        .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {}", e))?;
+    let params = argon2::Params::new(
+        ARGON2_M_COST,
+        ARGON2_T_COST,
+        ARGON2_P_COST,
+        Some(ARGON2_OUTPUT_LEN),
+    )
+    .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {}", e))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
     let mut output = [0u8; ARGON2_OUTPUT_LEN];
@@ -519,7 +524,9 @@ mod tests {
         state.setup_password("old-password").unwrap();
         let dek_before = state.get_dek().unwrap();
 
-        state.change_password("old-password", "new-password").unwrap();
+        state
+            .change_password("old-password", "new-password")
+            .unwrap();
         let dek_after = state.get_dek().unwrap();
 
         // DEK should be the same after password change

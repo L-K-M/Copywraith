@@ -255,7 +255,13 @@ fn store_entry(
     content_hash: &str,
     source_app: Option<&str>,
 ) {
-    match storage.insert_entry(content_type, text_content, blob_content, content_hash, source_app) {
+    match storage.insert_entry(
+        content_type,
+        text_content,
+        blob_content,
+        content_hash,
+        source_app,
+    ) {
         Ok(Some(entry)) => {
             let _ = app.emit("clipboard-updated", &entry);
             // Trigger background sync

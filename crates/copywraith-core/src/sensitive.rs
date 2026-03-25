@@ -81,9 +81,8 @@ fn luhn_check(digits: &[u8]) -> bool {
 // US Social Security Numbers  (NNN-NN-NNNN)
 // ---------------------------------------------------------------------------
 
-static RE_SSN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(\d{3})-(\d{2})-(\d{4})\b").unwrap()
-});
+static RE_SSN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(\d{3})-(\d{2})-(\d{4})\b").unwrap());
 
 fn check_ssn(text: &str) -> bool {
     for cap in RE_SSN.captures_iter(text) {
@@ -163,9 +162,7 @@ fn check_jwt(text: &str) -> bool {
 // AWS Access Key IDs  (AKIA + 16 uppercase alphanumeric characters)
 // ---------------------------------------------------------------------------
 
-static RE_AWS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap()
-});
+static RE_AWS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap());
 
 fn check_aws_key(text: &str) -> bool {
     RE_AWS.is_match(text)
@@ -243,9 +240,7 @@ mod tests {
 
     #[test]
     fn detects_api_key_stripe() {
-        assert!(contains_sensitive_data(
-            "sk_live_abcdefghijklmnopqrstuvwx"
-        ));
+        assert!(contains_sensitive_data("sk_live_abcdefghijklmnopqrstuvwx"));
     }
 
     #[test]
@@ -286,15 +281,15 @@ mod tests {
 
     #[test]
     fn detects_generic_secret_assignment() {
-        assert!(contains_sensitive_data(
-            "secret=abcdefghijklmnopqrstuvwxyz"
-        ));
+        assert!(contains_sensitive_data("secret=abcdefghijklmnopqrstuvwxyz"));
     }
 
     #[test]
     fn ignores_normal_text() {
         assert!(!contains_sensitive_data("Hello, world!"));
-        assert!(!contains_sensitive_data("The quick brown fox jumps over the lazy dog."));
+        assert!(!contains_sensitive_data(
+            "The quick brown fox jumps over the lazy dog."
+        ));
         assert!(!contains_sensitive_data("Meeting at 3pm tomorrow."));
     }
 
