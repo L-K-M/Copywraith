@@ -122,6 +122,12 @@ npx tauri dev
 
 The popup window starts hidden. Use the hotkeys below to open it.
 
+Build the app:
+
+```bash
+npm run tauri build
+```
+
 ### 3) Configure sync (optional)
 
 In the desktop popup:
