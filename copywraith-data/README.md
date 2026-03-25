@@ -1,0 +1,1 @@
+This is the directory where the server will store its data when started using docker compose.

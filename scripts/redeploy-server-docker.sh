@@ -14,6 +14,8 @@ set -Eeuo pipefail
 #   PULL=1
 #   PORT=3742
 #   HEALTH_URL=http://127.0.0.1:3742/api/health
+#   HEALTH_RETRIES=20
+#   HEALTH_DELAY_SECS=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,6 +27,8 @@ NO_CACHE="${NO_CACHE:-1}"
 PULL="${PULL:-1}"
 PORT="${PORT:-3742}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${PORT}/api/health}"
+HEALTH_RETRIES="${HEALTH_RETRIES:-20}"
+HEALTH_DELAY_SECS="${HEALTH_DELAY_SECS:-1}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker is not installed or not in PATH."
@@ -73,10 +77,20 @@ echo "[4/4] Verifying deployment"
 if command -v curl >/dev/null 2>&1; then
   echo ""
   echo "Health: $HEALTH_URL"
-  if curl -fsS "$HEALTH_URL"; then
-    echo ""
-  else
+  healthy=0
+  for ((i = 1; i <= HEALTH_RETRIES; i++)); do
+    if curl -fsS "$HEALTH_URL"; then
+      echo ""
+      healthy=1
+      break
+    fi
+    sleep "$HEALTH_DELAY_SECS"
+  done
+
+  if [[ "$healthy" != "1" ]]; then
     echo "WARNING: Health check failed."
+    echo "Last container logs:"
+    "${COMPOSE[@]}" logs --tail=120 "$SERVICE" || true
   fi
 else
   echo "curl not found; skipping health check."

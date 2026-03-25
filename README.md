@@ -51,6 +51,7 @@ Environment variables:
 
 - `COPYWRAITH_DATA_DIR` (default `./data`)
 - `PORT` (default `3742`)
+- `COPYWRAITH_HOST` (default `127.0.0.1`; set `0.0.0.0` for Docker)
 - `RUST_LOG`
 
 Tip: copy `.env.example` to `.env` and adjust values for local/docker runs.
@@ -95,6 +96,10 @@ Pull latest changes (or update the Dockerfile), then rebuild with:
 ```bash
 docker compose build --no-cache --pull copywraith-server
 ```
+
+Docker note: the container must run with `COPYWRAITH_HOST=0.0.0.0` (already set
+in both compose files). If it is missing, `/api/health` from the host may fail
+with connection reset/refused even though the container is running.
 
 
 
@@ -268,3 +273,6 @@ For a signed release build, configure signing in
   - this usually means Cargo 1.83 is being used from an old Docker builder image
   - confirm `server/Dockerfile` uses `FROM rust:1.85-slim-bookworm` (or newer)
   - rebuild with `docker compose build --no-cache --pull copywraith-server`
+- **`/api/health` fails after container start (`connection reset`/`refused`)**
+  - confirm your compose env includes `COPYWRAITH_HOST=0.0.0.0`
+  - redeploy with `./scripts/redeploy-server-docker.sh` (use `USE_SUDO=1` if needed)

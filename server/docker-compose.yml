@@ -6,12 +6,10 @@ services:
     ports:
       - "3742:3742"
     volumes:
-      - copywraith-data:/data
+      - ./copywraith-data:/data
     environment:
       - COPYWRAITH_DATA_DIR=/data
       - PORT=3742
+      - COPYWRAITH_HOST=0.0.0.0
       - RUST_LOG=copywraith_server=info
     restart: unless-stopped
-
-volumes:
-  copywraith-data:

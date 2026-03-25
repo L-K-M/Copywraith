@@ -37,6 +37,7 @@ COPY --from=ui-builder /build/server/ui/dist /ui/dist
 
 ENV COPYWRAITH_DATA_DIR=/data
 ENV PORT=3742
+ENV COPYWRAITH_HOST=0.0.0.0
 ENV COPYWRAITH_UI_DIR=/ui/dist
 
 EXPOSE 3742
