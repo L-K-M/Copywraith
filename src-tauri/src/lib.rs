@@ -14,6 +14,8 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
     pub storage: Arc<storage::LocalStorage>,
     pub sync_client: Arc<sync::SyncClient>,
+    #[cfg(desktop)]
+    pub last_focused_app: std::sync::Mutex<Option<String>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -51,6 +53,8 @@ pub fn run() {
             let state = AppState {
                 storage: storage.clone(),
                 sync_client: sync_client.clone(),
+                #[cfg(desktop)]
+                last_focused_app: std::sync::Mutex::new(None),
             };
 
             app.manage(state);
@@ -148,6 +152,7 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
         if is_visible {
             let _ = popup.hide();
         } else {
+            paste::remember_frontmost_app(app);
             let _ = popup.show();
             let _ = popup.set_focus();
             // Emit event to frontend to update filter mode
