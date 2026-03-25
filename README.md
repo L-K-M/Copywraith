@@ -52,7 +52,6 @@ Environment variables:
 - `COPYWRAITH_DATA_DIR` (default `./data`)
 - `PORT` (default `3742`)
 - `RUST_LOG`
-- `COPYWRAITH_ADMIN_API_KEY` (legacy bearer token; ignored when a password is configured)
 
 Tip: copy `.env.example` to `.env` and adjust values for local/docker runs.
 

@@ -27,7 +27,6 @@ pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
 
     // Simulate Cmd+V keystroke
     // On macOS we use CGEvent APIs through a helper
-    #[cfg(target_os = "macos")]
     simulate_paste();
 }
 
@@ -44,7 +43,6 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
         let _ = popup.hide();
     }
 
-    #[cfg(target_os = "macos")]
     simulate_paste();
 }
 

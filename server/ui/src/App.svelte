@@ -85,9 +85,9 @@
 				screen = 'unlock';
 			}
 		} catch (e: any) {
-			// Server might be unreachable or auth not configured (legacy open mode)
-			screen = 'main';
-			await loadEntries();
+			// Server unreachable or unexpected error
+			authError = 'Could not connect to server.';
+			screen = 'unlock';
 		}
 	}
 

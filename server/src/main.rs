@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     if crypto_state.is_initialized() {
         tracing::info!("Password protection enabled (auth.json found)");
     } else {
-        tracing::info!("No password configured -- server is open");
+        tracing::warn!("No password configured -- password setup required before use");
     }
 
     let state = Arc::new(AppState {

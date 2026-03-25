@@ -163,7 +163,7 @@ async fn create_entry(
 ) -> Result<(StatusCode, Json<CreateEntryResponse>), AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
-    let dek = get_dek_if_initialized(&state);
+    let dek = get_dek(&state);
 
     let (entry, created) = state.storage.create_entry(
         req.content_type,
@@ -202,7 +202,7 @@ async fn list_entries(
 ) -> Result<Json<ListEntriesResponse>, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
-    let dek = get_dek_if_initialized(&state);
+    let dek = get_dek(&state);
     let limit = copywraith_core::api_types::clamp_limit(params.limit);
 
     let (entries, total) = state.storage.list_entries(
@@ -240,7 +240,7 @@ async fn get_entry(
 ) -> Result<Json<EntryResponse>, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
-    let dek = get_dek_if_initialized(&state);
+    let dek = get_dek(&state);
     let entry = state
         .storage
         .get_entry(&id, dek.as_ref())?
@@ -266,7 +266,7 @@ async fn update_entry(
         state.storage.update_entry_starred(&id, starred)?;
     }
 
-    let dek = get_dek_if_initialized(&state);
+    let dek = get_dek(&state);
     let entry = state
         .storage
         .get_entry(&id, dek.as_ref())?
@@ -302,7 +302,7 @@ async fn get_blob(
 ) -> Result<Response, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
-    let dek = get_dek_if_initialized(&state);
+    let dek = get_dek(&state);
     let entry = state
         .storage
         .get_entry(&id, dek.as_ref())?
@@ -349,7 +349,7 @@ enum AppError {
     Unauthorized,
     NotFound,
     BadRequest(String),
-    Locked,
+    SetupRequired,
     Internal(anyhow::Error),
 }
 
@@ -365,9 +365,9 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Locked => (
+            AppError::SetupRequired => (
                 StatusCode::FORBIDDEN,
-                "Server is locked. Send password to unlock.".to_string(),
+                "Password not configured. Set up a password first.".to_string(),
             ),
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {:?}", err);
@@ -387,35 +387,23 @@ impl IntoResponse for AppError {
 // ---------------------------------------------------------------------------
 
 /// Extract password from Bearer token and verify.
-/// Falls back to legacy API key if auth.json is not configured.
+/// Password must be configured; if not, returns 403 (setup required).
 fn ensure_authorized(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
     let mut crypto = state.crypto.lock().unwrap();
 
-    if crypto.is_initialized() {
-        // Password-based auth: extract Bearer token as password
-        let password = extract_bearer(headers).ok_or(AppError::Unauthorized)?;
-
-        if !crypto.is_unlocked() {
-            // Try to unlock with the provided password
-            let ok = crypto
-                .verify_and_unlock(password)
-                .map_err(AppError::Internal)?;
-            if !ok {
-                return Err(AppError::Unauthorized);
-            }
-        } else {
-            // Already unlocked: fast-path verification
-            let ok = crypto
-                .verify_and_unlock(password)
-                .map_err(AppError::Internal)?;
-            if !ok {
-                return Err(AppError::Unauthorized);
-            }
-        }
-        return Ok(());
+    if !crypto.is_initialized() {
+        return Err(AppError::SetupRequired);
     }
 
-    // No auth configured -- open mode
+    let password = extract_bearer(headers).ok_or(AppError::Unauthorized)?;
+
+    let ok = crypto
+        .verify_and_unlock(password)
+        .map_err(AppError::Internal)?;
+    if !ok {
+        return Err(AppError::Unauthorized);
+    }
+
     Ok(())
 }
 
@@ -429,8 +417,8 @@ fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
-/// Get the DEK if password auth is initialized and unlocked.
-fn get_dek_if_initialized(state: &AppState) -> Option<[u8; 32]> {
+/// Get the DEK. Returns `Some` after `ensure_authorized` has succeeded.
+fn get_dek(state: &AppState) -> Option<[u8; 32]> {
     let crypto = state.crypto.lock().unwrap();
     crypto.get_dek()
 }
