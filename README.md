@@ -18,11 +18,11 @@ Implemented today:
 - Global shortcuts for opening popup and quick plaintext paste
 - Two-way background sync (push local unsynced + pull remote updates)
 - Server REST API + Svelte admin web UI
+- Password protection with at-rest encryption (Argon2id + AES-256-GCM)
 
 Planned later:
 
 - Android/mobile client
-- Expanded auth model beyond single bearer token
 
 ## Architecture at a glance
 
@@ -43,7 +43,8 @@ Planned later:
 ├── src-tauri/                # Tauri Rust backend (monitoring, commands, sync, shortcuts)
 ├── src/                      # Svelte popup frontend
 ├── ARCHITECTURE.md
-└── IMPLEMENTATION.md
+├── IMPLEMENTATION.md
+└── ENCRYPTION.md
 ```
 
 ## Prerequisites
@@ -96,7 +97,7 @@ Environment variables:
 - `COPYWRAITH_DATA_DIR` (default `./data`)
 - `PORT` (default `3742`)
 - `RUST_LOG`
-- `COPYWRAITH_ADMIN_API_KEY` (optional bearer token; server admin UI reads it automatically)
+- `COPYWRAITH_ADMIN_API_KEY` (legacy bearer token; ignored when a password is configured)
 
 Tip: copy `.env.example` to `.env` and adjust values for local/docker runs.
 
@@ -138,11 +139,36 @@ Inside the list:
 - `Double-click` or `Space` on focused row -> open entry preview dialog
 - `Enter` on focused row -> paste
 
+## Password protection & encryption
+
+On first visit to the admin UI (or first API call), you are prompted to create
+a password. Once set:
+
+- All clipboard text and blob data is encrypted at rest (AES-256-GCM)
+- Every API request requires the password as `Authorization: Bearer <password>`
+- The web UI stores the password in `sessionStorage` (cleared on tab close)
+- The desktop client sends the same password via the Settings "API Key" field
+
+Password can be changed without re-encrypting data (the underlying encryption
+key stays the same, only its wrapping changes). If the password is forgotten,
+delete `auth.json` from the data directory -- but all encrypted data will be
+permanently lost.
+
+If no password is set (`auth.json` absent), the server runs in open mode with
+no auth and no encryption, for backward compatibility.
+
+See `ENCRYPTION.md` for full cryptographic details.
+
 ## Server API
 
 Base URL: `/api`
 
 - `GET /health`
+- `GET /auth/status`
+- `POST /auth/setup`
+- `POST /auth/unlock`
+- `POST /auth/change-password`
+- `POST /auth/lock`
 - `POST /entries`
 - `GET /entries`
 - `GET /entries/{id}`
@@ -152,6 +178,9 @@ Base URL: `/api`
 
 Notes:
 
+- Auth endpoints (`/auth/status`, `/auth/setup`, `/auth/unlock`) do not require a password
+- All `/entries*` endpoints require `Authorization: Bearer <password>` when a password is configured
+- `/health` is always open
 - `GET /entries` supports pagination/filtering/search via query params
   - `limit`, `offset`, `content_type`, `starred_only`, `search`
 - Deduplication is based on `content_hash`
@@ -179,13 +208,11 @@ docker compose up --build
 
 This exposes port `3742` and persists server data in Docker volume `copywraith-data`.
 
-To set an admin API key via startup environment (instead of typing it in the web UI), set
-`COPYWRAITH_ADMIN_API_KEY` before running `docker compose up`.
-
 ## Data and persistence
 
 - Desktop client keeps its own SQLite + blob cache in Tauri app data directory
 - Server keeps SQLite + blobs under `COPYWRAITH_DATA_DIR` (default `./data`)
+- Password auth config stored in `{data_dir}/auth.json`; encrypted entries use `ENC:1:` prefix
 - Both desktop and server deduplicate by content hash
 
 ## Platform notes

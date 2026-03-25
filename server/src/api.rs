@@ -5,16 +5,26 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
 
 use copywraith_core::api_types::*;
 use copywraith_core::models::ContentType;
 
+use crate::crypto;
 use crate::AppState;
 
 type AppRouter = Router<Arc<AppState>>;
 
 pub fn router() -> AppRouter {
     Router::new()
+        // Auth endpoints (no password required)
+        .route("/auth/status", get(auth_status))
+        .route("/auth/setup", post(auth_setup))
+        .route("/auth/unlock", post(auth_unlock))
+        // Auth endpoints (password required)
+        .route("/auth/change-password", post(auth_change_password))
+        .route("/auth/lock", post(auth_lock))
+        // Data endpoints
         .route("/health", get(health))
         .route("/entries", post(create_entry))
         .route("/entries", get(list_entries))
@@ -23,6 +33,119 @@ pub fn router() -> AppRouter {
         .route("/entries/{id}", delete(delete_entry))
         .route("/entries/{id}/blob", get(get_blob))
 }
+
+// ---------------------------------------------------------------------------
+// Auth endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct AuthStatusResponse {
+    initialized: bool,
+    unlocked: bool,
+}
+
+#[derive(Deserialize)]
+struct SetupRequest {
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct UnlockRequest {
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordRequest {
+    old_password: String,
+    new_password: String,
+}
+
+async fn auth_status(State(state): State<Arc<AppState>>) -> Json<AuthStatusResponse> {
+    let crypto = state.crypto.lock().unwrap();
+    Json(AuthStatusResponse {
+        initialized: crypto.is_initialized(),
+        unlocked: crypto.is_unlocked(),
+    })
+}
+
+async fn auth_setup(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetupRequest>,
+) -> Result<StatusCode, AppError> {
+    if req.password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "Password must be at least 8 characters".to_string(),
+        ));
+    }
+
+    let mut crypto = state.crypto.lock().unwrap();
+    if crypto.is_initialized() {
+        return Err(AppError::BadRequest(
+            "Password already configured".to_string(),
+        ));
+    }
+
+    crypto.setup_password(&req.password)?;
+
+    // Encrypt any existing unencrypted entries
+    let dek = crypto.get_dek().ok_or_else(|| {
+        anyhow::anyhow!("DEK not available after setup")
+    })?;
+    drop(crypto); // release crypto lock before touching storage
+
+    migrate_existing_data(&state, &dek)?;
+
+    Ok(StatusCode::OK)
+}
+
+async fn auth_unlock(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UnlockRequest>,
+) -> Result<StatusCode, AppError> {
+    let mut crypto = state.crypto.lock().unwrap();
+    if !crypto.is_initialized() {
+        return Err(AppError::BadRequest("No password configured".to_string()));
+    }
+
+    let ok = crypto.verify_and_unlock(&req.password)?;
+    if ok {
+        Ok(StatusCode::OK)
+    } else {
+        Err(AppError::Unauthorized)
+    }
+}
+
+async fn auth_change_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+
+    if req.new_password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "New password must be at least 8 characters".to_string(),
+        ));
+    }
+
+    let mut crypto = state.crypto.lock().unwrap();
+    crypto.change_password(&req.old_password, &req.new_password)?;
+    Ok(StatusCode::OK)
+}
+
+async fn auth_lock(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AppError> {
+    ensure_authorized(state.as_ref(), &headers)?;
+    let mut crypto = state.crypto.lock().unwrap();
+    crypto.lock();
+    Ok(StatusCode::OK)
+}
+
+// ---------------------------------------------------------------------------
+// Data endpoints
+// ---------------------------------------------------------------------------
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let entries_count = state.storage.count_entries().unwrap_or(0);
@@ -40,6 +163,8 @@ async fn create_entry(
 ) -> Result<(StatusCode, Json<CreateEntryResponse>), AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
+    let dek = get_dek_if_initialized(&state);
+
     let (entry, created) = state.storage.create_entry(
         req.content_type,
         req.text_content.as_deref(),
@@ -47,6 +172,7 @@ async fn create_entry(
         req.source_app.as_deref(),
         req.starred,
         &req.content_hash,
+        dek.as_ref(),
     )?;
 
     let blob_url = entry
@@ -76,13 +202,16 @@ async fn list_entries(
 ) -> Result<Json<ListEntriesResponse>, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
+    let dek = get_dek_if_initialized(&state);
     let limit = copywraith_core::api_types::clamp_limit(params.limit);
+
     let (entries, total) = state.storage.list_entries(
         limit,
         params.offset,
         params.content_type,
         params.starred_only,
         params.search.as_deref(),
+        dek.as_ref(),
     )?;
 
     let has_more = (params.offset + limit) < total as u32;
@@ -111,7 +240,11 @@ async fn get_entry(
 ) -> Result<Json<EntryResponse>, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
-    let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
+    let dek = get_dek_if_initialized(&state);
+    let entry = state
+        .storage
+        .get_entry(&id, dek.as_ref())?
+        .ok_or(AppError::NotFound)?;
 
     let blob_url = entry
         .blob_hash
@@ -133,7 +266,11 @@ async fn update_entry(
         state.storage.update_entry_starred(&id, starred)?;
     }
 
-    let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
+    let dek = get_dek_if_initialized(&state);
+    let entry = state
+        .storage
+        .get_entry(&id, dek.as_ref())?
+        .ok_or(AppError::NotFound)?;
 
     let blob_url = entry
         .blob_hash
@@ -165,10 +302,21 @@ async fn get_blob(
 ) -> Result<Response, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
-    let entry = state.storage.get_entry(&id)?.ok_or(AppError::NotFound)?;
+    let dek = get_dek_if_initialized(&state);
+    let entry = state
+        .storage
+        .get_entry(&id, dek.as_ref())?
+        .ok_or(AppError::NotFound)?;
 
     let hash = entry.blob_hash.ok_or(AppError::NotFound)?;
-    let data = state.storage.get_blob(&hash)?.ok_or(AppError::NotFound)?;
+    let raw_data = state.storage.get_blob(&hash)?.ok_or(AppError::NotFound)?;
+
+    // Decrypt blob if encryption is active
+    let data = if let Some(ref dek) = dek {
+        crypto::decrypt_blob(dek, &raw_data)?
+    } else {
+        raw_data
+    };
 
     let content_type = match entry.content_type {
         ContentType::Image => {
@@ -192,12 +340,16 @@ async fn get_blob(
         .into_response())
 }
 
+// ---------------------------------------------------------------------------
 // Error handling
+// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 enum AppError {
     Unauthorized,
     NotFound,
+    BadRequest(String),
+    Locked,
     Internal(anyhow::Error),
 }
 
@@ -212,6 +364,11 @@ impl IntoResponse for AppError {
         let (status, message) = match self {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            AppError::Locked => (
+                StatusCode::FORBIDDEN,
+                "Server is locked. Send password to unlock.".to_string(),
+            ),
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {:?}", err);
                 (
@@ -225,23 +382,74 @@ impl IntoResponse for AppError {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Auth helpers
+// ---------------------------------------------------------------------------
+
+/// Extract password from Bearer token and verify.
+/// Falls back to legacy API key if auth.json is not configured.
 fn ensure_authorized(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
-    let Some(expected) = state.admin_api_key.as_deref() else {
+    let mut crypto = state.crypto.lock().unwrap();
+
+    if crypto.is_initialized() {
+        // Password-based auth: extract Bearer token as password
+        let password = extract_bearer(headers).ok_or(AppError::Unauthorized)?;
+
+        if !crypto.is_unlocked() {
+            // Try to unlock with the provided password
+            let ok = crypto
+                .verify_and_unlock(password)
+                .map_err(AppError::Internal)?;
+            if !ok {
+                return Err(AppError::Unauthorized);
+            }
+        } else {
+            // Already unlocked: fast-path verification
+            let ok = crypto
+                .verify_and_unlock(password)
+                .map_err(AppError::Internal)?;
+            if !ok {
+                return Err(AppError::Unauthorized);
+            }
+        }
         return Ok(());
+    }
+
+    drop(crypto); // release lock for legacy path
+
+    // Legacy: env-var API key
+    let Some(expected) = state.admin_api_key.as_deref() else {
+        return Ok(()); // no auth configured at all
     };
 
-    let header = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-
-    let token = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "));
-
-    if token == Some(expected) {
+    let token = extract_bearer(headers).unwrap_or("");
+    if token == expected {
         Ok(())
     } else {
         Err(AppError::Unauthorized)
     }
+}
+
+fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| {
+            h.strip_prefix("Bearer ")
+                .or_else(|| h.strip_prefix("bearer "))
+        })
+}
+
+/// Get the DEK if password auth is initialized and unlocked.
+fn get_dek_if_initialized(state: &AppState) -> Option<[u8; 32]> {
+    let crypto = state.crypto.lock().unwrap();
+    crypto.get_dek()
+}
+
+/// Encrypt all existing unencrypted entries and blobs in place.
+fn migrate_existing_data(state: &AppState, dek: &[u8; 32]) -> anyhow::Result<()> {
+    state.storage.encrypt_all_entries(dek)?;
+    state.storage.encrypt_all_blobs(dek)?;
+    tracing::info!("Migrated existing data to encrypted storage");
+    Ok(())
 }

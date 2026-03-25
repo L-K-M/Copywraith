@@ -23,3 +23,8 @@ export interface HealthResponse {
 	version: string;
 	entries_count: number;
 }
+
+export interface AuthStatusResponse {
+	initialized: boolean;
+	unlocked: boolean;
+}

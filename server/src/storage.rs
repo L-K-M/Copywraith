@@ -8,6 +8,8 @@ use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection};
 use ulid::Ulid;
 
+use crate::crypto;
+
 pub struct Storage {
     db: Mutex<Connection>,
     blob_dir: PathBuf,
@@ -88,6 +90,7 @@ impl Storage {
         source_app: Option<&str>,
         starred: Option<bool>,
         content_hash: &str,
+        dek: Option<&[u8; 32]>,
     ) -> anyhow::Result<(ClipboardEntry, bool)> {
         let db = self.db.lock().unwrap();
 
@@ -97,20 +100,7 @@ impl Storage {
                 "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries WHERE content_hash = ?1",
                 params![content_hash],
-                |row| {
-                    Ok(ClipboardEntry {
-                        id: row.get(0)?,
-                        content_type: serde_json::from_str::<ContentType>(&format!("\"{}\"", row.get::<_, String>(1)?)).unwrap_or(ContentType::Text),
-                        text_content: row.get(2)?,
-                        blob_hash: row.get(3)?,
-                        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-                        source_app: row.get(5)?,
-                        starred: row.get::<_, i32>(6)? != 0,
-                        sensitive: row.get::<_, i32>(7)? != 0,
-                        created_at: row.get::<_, String>(8)?.parse().unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(9)?.parse().unwrap_or_else(|_| Utc::now()),
-                    })
-                },
+                |row| row_to_entry(row),
             )
             .ok();
 
@@ -124,6 +114,10 @@ impl Storage {
                 "UPDATE entries SET updated_at = ?1, starred = ?2 WHERE id = ?3",
                 params![now.to_rfc3339(), next_starred as i32, entry.id],
             )?;
+            // Decrypt text_content for the response
+            if let (Some(dek), Some(ref tc)) = (dek, &entry.text_content) {
+                entry.text_content = Some(crypto::decrypt_text(dek, tc)?);
+            }
             return Ok((entry, false));
         }
 
@@ -133,10 +127,15 @@ impl Storage {
             let hash = hash_bytes(&bytes);
             let size = bytes.len() as u64;
 
-            // Write blob to disk
+            // Encrypt blob if DEK is available, then write to disk
             let blob_path = self.blob_dir.join(&hash);
             if !blob_path.exists() {
-                std::fs::write(&blob_path, &bytes)?;
+                let to_write = if let Some(dek) = dek {
+                    crypto::encrypt_blob(dek, &bytes)?
+                } else {
+                    bytes
+                };
+                std::fs::write(&blob_path, &to_write)?;
             }
 
             (Some(hash), Some(size))
@@ -152,13 +151,19 @@ impl Storage {
             .map(|t| contains_sensitive_data(t))
             .unwrap_or(false);
 
+        // Encrypt text_content if DEK is available
+        let stored_text = match (dek, text_content) {
+            (Some(dek), Some(tc)) => Some(crypto::encrypt_text(dek, tc)?),
+            (_, tc) => tc.map(|s| s.to_string()),
+        };
+
         db.execute(
             "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, sensitive, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 content_type.as_str(),
-                text_content,
+                stored_text,
                 blob_hash,
                 blob_size.map(|s| s as i64),
                 content_hash,
@@ -173,7 +178,7 @@ impl Storage {
         let entry = ClipboardEntry {
             id,
             content_type,
-            text_content: text_content.map(|s| s.to_string()),
+            text_content: text_content.map(|s| s.to_string()), // return plaintext
             blob_hash,
             blob_size,
             source_app: source_app.map(|s| s.to_string()),
@@ -186,30 +191,30 @@ impl Storage {
         Ok((entry, true))
     }
 
-    pub fn get_entry(&self, id: &str) -> anyhow::Result<Option<ClipboardEntry>> {
+    pub fn get_entry(
+        &self,
+        id: &str,
+        dek: Option<&[u8; 32]>,
+    ) -> anyhow::Result<Option<ClipboardEntry>> {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
                 "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries WHERE id = ?1",
                 params![id],
-                |row| {
-                    Ok(ClipboardEntry {
-                        id: row.get(0)?,
-                        content_type: serde_json::from_str::<ContentType>(&format!("\"{}\"", row.get::<_, String>(1)?)).unwrap_or(ContentType::Text),
-                        text_content: row.get(2)?,
-                        blob_hash: row.get(3)?,
-                        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-                        source_app: row.get(5)?,
-                        starred: row.get::<_, i32>(6)? != 0,
-                        sensitive: row.get::<_, i32>(7)? != 0,
-                        created_at: row.get::<_, String>(8)?.parse().unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(9)?.parse().unwrap_or_else(|_| Utc::now()),
-                    })
-                },
+                |row| row_to_entry(row),
             )
             .ok();
-        Ok(entry)
+
+        match (entry, dek) {
+            (Some(mut e), Some(dek)) => {
+                if let Some(ref tc) = e.text_content {
+                    e.text_content = Some(crypto::decrypt_text(dek, tc)?);
+                }
+                Ok(Some(e))
+            }
+            (e, _) => Ok(e),
+        }
     }
 
     pub fn list_entries(
@@ -219,8 +224,16 @@ impl Storage {
         content_type: Option<ContentType>,
         starred_only: bool,
         search: Option<&str>,
+        dek: Option<&[u8; 32]>,
     ) -> anyhow::Result<(Vec<ClipboardEntry>, u64)> {
         let db = self.db.lock().unwrap();
+
+        // When encryption is active and a search term is provided, we can't use
+        // FTS on ciphertext. Fall back to in-memory substring search.
+        let encryption_active = dek.is_some();
+        let use_fts = search.is_some() && !encryption_active;
+        let memory_search = search.is_some() && encryption_active;
+        let search_term = search.map(|s| s.to_lowercase());
 
         let mut conditions = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -234,10 +247,14 @@ impl Storage {
             conditions.push("e.starred = 1".to_string());
         }
 
-        let join_fts = search.is_some();
-        if let Some(q) = search {
-            conditions.push(format!("f.text_content MATCH ?{}", params_vec.len() + 1));
-            params_vec.push(Box::new(q.to_string()));
+        if use_fts {
+            if let Some(q) = search {
+                conditions.push(format!(
+                    "f.text_content MATCH ?{}",
+                    params_vec.len() + 1
+                ));
+                params_vec.push(Box::new(q.to_string()));
+            }
         }
 
         let where_clause = if conditions.is_empty() {
@@ -246,71 +263,100 @@ impl Storage {
             format!("WHERE {}", conditions.join(" AND "))
         };
 
-        let fts_join = if join_fts {
+        let fts_join = if use_fts {
             "JOIN entries_fts f ON f.rowid = e.rowid"
         } else {
             ""
         };
 
-        // Count total
-        let count_sql = format!(
-            "SELECT COUNT(*) FROM entries e {} {}",
-            fts_join, where_clause
-        );
-        let total: u64 = {
-            let mut stmt = db.prepare(&count_sql)?;
+        if memory_search {
+            // Encrypted search: load all matching entries, decrypt, filter, paginate in memory
+            let query_sql = format!(
+                "SELECT e.id, e.content_type, e.text_content, e.blob_hash, e.blob_size, e.source_app, e.starred, e.sensitive, e.created_at, e.updated_at
+                 FROM entries e {} {}
+                 ORDER BY e.updated_at DESC",
+                fts_join, where_clause,
+            );
+
+            let mut stmt = db.prepare(&query_sql)?;
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params_vec.iter().map(|p| p.as_ref()).collect();
-            stmt.query_row(param_refs.as_slice(), |row| row.get::<_, i64>(0))? as u64
-        };
 
-        // Fetch entries
-        let query_sql = format!(
-            "SELECT e.id, e.content_type, e.text_content, e.blob_hash, e.blob_size, e.source_app, e.starred, e.sensitive, e.created_at, e.updated_at
-             FROM entries e {} {}
-             ORDER BY e.updated_at DESC
-             LIMIT ?{} OFFSET ?{}",
-            fts_join,
-            where_clause,
-            params_vec.len() + 1,
-            params_vec.len() + 2,
-        );
+            let all_entries = stmt
+                .query_map(param_refs.as_slice(), |row| row_to_entry(row))?
+                .collect::<Result<Vec<_>, _>>()?;
 
-        params_vec.push(Box::new(limit as i64));
-        params_vec.push(Box::new(offset as i64));
+            let dek = dek.unwrap(); // safe: memory_search implies dek.is_some()
+            let mut filtered = Vec::new();
+            for mut entry in all_entries {
+                if let Some(ref tc) = entry.text_content {
+                    let plain = crypto::decrypt_text(dek, tc).unwrap_or_default();
+                    if plain
+                        .to_lowercase()
+                        .contains(search_term.as_deref().unwrap_or(""))
+                    {
+                        entry.text_content = Some(plain);
+                        filtered.push(entry);
+                    }
+                }
+            }
 
-        let mut stmt = db.prepare(&query_sql)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|p| p.as_ref()).collect();
+            let total = filtered.len() as u64;
+            let start = offset as usize;
+            let end = (start + limit as usize).min(filtered.len());
+            let page = if start < filtered.len() {
+                filtered[start..end].to_vec()
+            } else {
+                Vec::new()
+            };
 
-        let entries = stmt
-            .query_map(param_refs.as_slice(), |row| {
-                Ok(ClipboardEntry {
-                    id: row.get(0)?,
-                    content_type: serde_json::from_str::<ContentType>(&format!(
-                        "\"{}\"",
-                        row.get::<_, String>(1)?
-                    ))
-                    .unwrap_or(ContentType::Text),
-                    text_content: row.get(2)?,
-                    blob_hash: row.get(3)?,
-                    blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-                    source_app: row.get(5)?,
-                    starred: row.get::<_, i32>(6)? != 0,
-                    sensitive: row.get::<_, i32>(7)? != 0,
-                    created_at: row
-                        .get::<_, String>(8)?
-                        .parse()
-                        .unwrap_or_else(|_| Utc::now()),
-                    updated_at: row
-                        .get::<_, String>(9)?
-                        .parse()
-                        .unwrap_or_else(|_| Utc::now()),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            Ok((page, total))
+        } else {
+            // Normal path (plaintext FTS or no search)
+            let count_sql = format!(
+                "SELECT COUNT(*) FROM entries e {} {}",
+                fts_join, where_clause
+            );
+            let total: u64 = {
+                let mut stmt = db.prepare(&count_sql)?;
+                let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                    params_vec.iter().map(|p| p.as_ref()).collect();
+                stmt.query_row(param_refs.as_slice(), |row| row.get::<_, i64>(0))? as u64
+            };
 
-        Ok((entries, total))
+            let query_sql = format!(
+                "SELECT e.id, e.content_type, e.text_content, e.blob_hash, e.blob_size, e.source_app, e.starred, e.sensitive, e.created_at, e.updated_at
+                 FROM entries e {} {}
+                 ORDER BY e.updated_at DESC
+                 LIMIT ?{} OFFSET ?{}",
+                fts_join,
+                where_clause,
+                params_vec.len() + 1,
+                params_vec.len() + 2,
+            );
+
+            params_vec.push(Box::new(limit as i64));
+            params_vec.push(Box::new(offset as i64));
+
+            let mut stmt = db.prepare(&query_sql)?;
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params_vec.iter().map(|p| p.as_ref()).collect();
+
+            let mut entries = stmt
+                .query_map(param_refs.as_slice(), |row| row_to_entry(row))?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Decrypt text_content if DEK is available
+            if let Some(dek) = dek {
+                for entry in &mut entries {
+                    if let Some(ref tc) = entry.text_content {
+                        entry.text_content = Some(crypto::decrypt_text(dek, tc)?);
+                    }
+                }
+            }
+
+            Ok((entries, total))
+        }
     }
 
     pub fn update_entry_starred(&self, id: &str, starred: bool) -> anyhow::Result<bool> {
@@ -368,4 +414,79 @@ impl Storage {
         let count: i64 = db.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
         Ok(count as u64)
     }
+
+    // -----------------------------------------------------------------------
+    // Migration: encrypt existing plaintext data
+    // -----------------------------------------------------------------------
+
+    /// Encrypt all existing unencrypted text_content values in place.
+    pub fn encrypt_all_entries(&self, dek: &[u8; 32]) -> anyhow::Result<()> {
+        let db = self.db.lock().unwrap();
+
+        let mut stmt = db.prepare(
+            "SELECT id, text_content FROM entries WHERE text_content IS NOT NULL",
+        )?;
+
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (id, tc) in &rows {
+            if crypto::is_encrypted_text(tc) {
+                continue; // already encrypted
+            }
+            let encrypted = crypto::encrypt_text(dek, tc)?;
+            db.execute(
+                "UPDATE entries SET text_content = ?1 WHERE id = ?2",
+                params![encrypted, id],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Encrypt all existing unencrypted blob files in place.
+    pub fn encrypt_all_blobs(&self, dek: &[u8; 32]) -> anyhow::Result<()> {
+        let entries = std::fs::read_dir(&self.blob_dir)?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let data = std::fs::read(&path)?;
+            if crypto::is_encrypted_blob(&data) {
+                continue; // already encrypted
+            }
+            let encrypted = crypto::encrypt_blob(dek, &data)?;
+            std::fs::write(&path, &encrypted)?;
+        }
+        Ok(())
+    }
+}
+
+/// Helper: parse a SQLite row into a ClipboardEntry.
+fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
+    Ok(ClipboardEntry {
+        id: row.get(0)?,
+        content_type: serde_json::from_str::<ContentType>(&format!(
+            "\"{}\"",
+            row.get::<_, String>(1)?
+        ))
+        .unwrap_or(ContentType::Text),
+        text_content: row.get(2)?,
+        blob_hash: row.get(3)?,
+        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
+        source_app: row.get(5)?,
+        starred: row.get::<_, i32>(6)? != 0,
+        sensitive: row.get::<_, i32>(7)? != 0,
+        created_at: row
+            .get::<_, String>(8)?
+            .parse()
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: row
+            .get::<_, String>(9)?
+            .parse()
+            .unwrap_or_else(|_| Utc::now()),
+    })
 }
