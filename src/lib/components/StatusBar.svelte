@@ -77,7 +77,7 @@
 		padding: 4px 8px;
 		border-top: 1px solid #000;
 		background: #eee;
-		font-size: 12px;
+		font-size: 13px;
 		user-select: none;
 		flex-shrink: 0;
 	}
@@ -87,10 +87,10 @@
 	}
 
 	.status-endpoint {
-		padding: 1px 6px;
+		padding: 2px 6px;
 		border: 1px solid #777;
 		background: #f5f5f5;
-		font-size: 11px;
+		font-size: 13px;
 		white-space: nowrap;
 	}
 
