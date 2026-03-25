@@ -15,7 +15,18 @@ pub fn hash_text(text: &str) -> String {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
+}
+
+/// Returns `true` if `hash` is a valid SHA-256 hex string (exactly 64 hex chars).
+/// Use this before joining a hash to a filesystem path to prevent path traversal.
+pub fn is_valid_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Encode bytes to base64 string

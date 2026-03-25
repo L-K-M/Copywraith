@@ -30,6 +30,21 @@ impl std::fmt::Display for ContentType {
     }
 }
 
+impl std::str::FromStr for ContentType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "text" => Ok(ContentType::Text),
+            "html" => Ok(ContentType::Html),
+            "rtf" => Ok(ContentType::Rtf),
+            "image" => Ok(ContentType::Image),
+            "file" => Ok(ContentType::File),
+            other => Err(format!("unknown content type: {}", other)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardEntry {
     pub id: String,
@@ -100,15 +115,24 @@ impl ClipboardEntry {
         }
     }
 
-    /// Returns a short preview of the content for display
+    /// Returns a short preview of the content for display.
+    /// `max_len` is measured in characters, not bytes.
     pub fn preview(&self, max_len: usize) -> String {
         match &self.text_content {
             Some(text) => {
                 let trimmed = text.trim();
-                if trimmed.len() <= max_len {
+                // Count characters to avoid panicking on multi-byte UTF-8
+                let char_count = trimmed.chars().count();
+                if char_count <= max_len {
                     trimmed.to_string()
                 } else {
-                    format!("{}...", &trimmed[..max_len])
+                    // Find the byte index of the max_len-th character boundary
+                    let byte_end = trimmed
+                        .char_indices()
+                        .nth(max_len)
+                        .map(|(i, _)| i)
+                        .unwrap_or(trimmed.len());
+                    format!("{}...", &trimmed[..byte_end])
                 }
             }
             None => match self.content_type {

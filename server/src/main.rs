@@ -1,6 +1,5 @@
 mod api;
 mod crypto;
-mod search;
 mod storage;
 
 use std::net::SocketAddr;
@@ -98,7 +97,16 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(3742);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let host: [u8; 4] = std::env::var("COPYWRAITH_HOST")
+        .ok()
+        .and_then(|h| {
+            h.parse::<std::net::Ipv4Addr>()
+                .ok()
+                .map(|ip| ip.octets())
+        })
+        .unwrap_or([127, 0, 0, 1]); // default to localhost-only
+
+    let addr = SocketAddr::from((host, port));
     tracing::info!("Copywraith server listening on {}", addr);
     tracing::info!("Admin UI available at http://localhost:{}/", port);
 

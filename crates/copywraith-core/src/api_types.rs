@@ -76,7 +76,8 @@ pub struct CreateEntryResponse {
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
-    pub entries_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries_count: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

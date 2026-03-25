@@ -128,6 +128,9 @@ impl Storage {
             let size = bytes.len() as u64;
 
             // Encrypt blob if DEK is available, then write to disk
+            if !copywraith_core::content::is_valid_hash(&hash) {
+                anyhow::bail!("Generated invalid blob hash");
+            }
             let blob_path = self.blob_dir.join(&hash);
             if !blob_path.exists() {
                 let to_write = if let Some(dek) = dek {
@@ -401,6 +404,9 @@ impl Storage {
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        if !copywraith_core::content::is_valid_hash(hash) {
+            anyhow::bail!("Invalid blob hash: {}", hash);
+        }
         let blob_path = self.blob_dir.join(hash);
         if blob_path.exists() {
             Ok(Some(std::fs::read(&blob_path)?))
@@ -469,11 +475,10 @@ impl Storage {
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
     Ok(ClipboardEntry {
         id: row.get(0)?,
-        content_type: serde_json::from_str::<ContentType>(&format!(
-            "\"{}\"",
-            row.get::<_, String>(1)?
-        ))
-        .unwrap_or(ContentType::Text),
+        content_type: row
+            .get::<_, String>(1)?
+            .parse::<ContentType>()
+            .unwrap_or(ContentType::Text),
         text_content: row.get(2)?,
         blob_hash: row.get(3)?,
         blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),

@@ -11,7 +11,7 @@ pub fn paste_most_recent_plaintext(app: &tauri::AppHandle) {
     }
 }
 
-/// Write text to clipboard and simulate Cmd+V
+/// Write text to clipboard and simulate Cmd+V / Ctrl+V
 pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
     // Use the clipboard plugin to write text
     let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
@@ -25,8 +25,7 @@ pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
         let _ = popup.hide();
     }
 
-    // Simulate Cmd+V keystroke
-    // On macOS we use CGEvent APIs through a helper
+    // Simulate Cmd+V / Ctrl+V keystroke
     simulate_paste();
 }
 
@@ -46,20 +45,39 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
     simulate_paste();
 }
 
-#[cfg(target_os = "macos")]
+/// Simulate a paste keystroke (Cmd+V on macOS, Ctrl+V on Windows/Linux).
+///
+/// Uses the `enigo` crate for cross-platform input simulation. A short delay
+/// is inserted to allow the window manager to process the hide before the
+/// keystroke is sent.
 fn simulate_paste() {
-    use std::process::Command;
-    // Use osascript to simulate Cmd+V
+    use enigo::{Enigo, Keyboard, Settings};
+
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        let _ = Command::new("osascript")
-            .arg("-e")
-            .arg("tell application \"System Events\" to keystroke \"v\" using command down")
-            .output();
-    });
-}
 
-#[cfg(not(target_os = "macos"))]
-fn simulate_paste() {
-    log::warn!("Paste simulation not implemented for this platform");
+        let mut enigo = match Enigo::new(&Settings::default()) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("Failed to initialise input simulator: {}", e);
+                return;
+            }
+        };
+
+        #[cfg(target_os = "macos")]
+        let modifier = enigo::Key::Meta;
+        #[cfg(not(target_os = "macos"))]
+        let modifier = enigo::Key::Control;
+
+        if let Err(e) = enigo.key(modifier, enigo::Direction::Press) {
+            log::error!("Failed to press modifier key: {}", e);
+            return;
+        }
+        if let Err(e) = enigo.key(enigo::Key::Unicode('v'), enigo::Direction::Click) {
+            log::error!("Failed to send 'v' key: {}", e);
+        }
+        if let Err(e) = enigo.key(modifier, enigo::Direction::Release) {
+            log::error!("Failed to release modifier key: {}", e);
+        }
+    });
 }

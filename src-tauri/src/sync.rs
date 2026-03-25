@@ -88,8 +88,13 @@ impl SyncClient {
     pub fn new(storage: &LocalStorage) -> Self {
         // Restore persisted sync cursor so we don't re-scan the entire server on restart
         let persisted_cursor = storage.get_sync_cursor();
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            http: reqwest::Client::new(),
+            http,
             pull_state: Mutex::new(PullState {
                 initialized: persisted_cursor.is_some(),
                 last_seen_server_id: persisted_cursor,

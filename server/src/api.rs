@@ -147,8 +147,16 @@ async fn auth_lock(
 // Data endpoints
 // ---------------------------------------------------------------------------
 
-async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let entries_count = state.storage.count_entries().unwrap_or(0);
+async fn health(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Json<HealthResponse> {
+    // Only include entry count when the caller is authenticated
+    let entries_count = if is_authorized(state.as_ref(), &headers) {
+        Some(state.storage.count_entries().unwrap_or(0))
+    } else {
+        None
+    };
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -405,6 +413,20 @@ fn ensure_authorized(state: &AppState, headers: &HeaderMap) -> Result<(), AppErr
     }
 
     Ok(())
+}
+
+/// Non-failing auth check: returns true only when password is configured,
+/// a valid Bearer token is present, and the password verifies.
+fn is_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    let mut crypto = state.crypto.lock().unwrap();
+    if !crypto.is_initialized() {
+        return false;
+    }
+    let password = match extract_bearer(headers) {
+        Some(p) => p,
+        None => return false,
+    };
+    crypto.verify_and_unlock(password).unwrap_or(false)
 }
 
 fn extract_bearer(headers: &HeaderMap) -> Option<&str> {

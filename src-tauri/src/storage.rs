@@ -14,6 +14,31 @@ pub struct LocalStorage {
     blob_dir: std::path::PathBuf,
 }
 
+/// Parse a SQLite row (with the standard 10-column SELECT) into a ClipboardEntry.
+fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
+    Ok(ClipboardEntry {
+        id: row.get(0)?,
+        content_type: row
+            .get::<_, String>(1)?
+            .parse::<ContentType>()
+            .unwrap_or(ContentType::Text),
+        text_content: row.get(2)?,
+        blob_hash: row.get(3)?,
+        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
+        source_app: row.get(5)?,
+        starred: row.get::<_, i32>(6)? != 0,
+        sensitive: row.get::<_, i32>(7)? != 0,
+        created_at: row
+            .get::<_, String>(8)?
+            .parse()
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: row
+            .get::<_, String>(9)?
+            .parse()
+            .unwrap_or_else(|_| Utc::now()),
+    })
+}
+
 impl LocalStorage {
     pub fn new(data_dir: &Path) -> anyhow::Result<Self> {
         let db_path = data_dir.join("copywraith.db");
@@ -85,7 +110,7 @@ impl LocalStorage {
                 params![content_hash],
                 |row| row.get(0),
             )
-            .ok();
+            .optional()?;
 
         if let Some(id) = existing_id {
             let now = Utc::now();
@@ -100,6 +125,10 @@ impl LocalStorage {
             let hash = copywraith_core::content::hash_bytes(data);
             let size = data.len() as u64;
 
+            // Validate hash before using as filename (defense in depth)
+            if !copywraith_core::content::is_valid_hash(&hash) {
+                anyhow::bail!("Generated invalid blob hash");
+            }
             let blob_path = self.blob_dir.join(&hash);
             if !blob_path.exists() {
                 std::fs::write(&blob_path, data)?;
@@ -214,30 +243,7 @@ impl LocalStorage {
             param_values.iter().map(|p| p.as_ref()).collect();
 
         let entries = stmt
-            .query_map(param_refs.as_slice(), |row| {
-                Ok(ClipboardEntry {
-                    id: row.get(0)?,
-                    content_type: serde_json::from_str::<ContentType>(&format!(
-                        "\"{}\"",
-                        row.get::<_, String>(1)?
-                    ))
-                    .unwrap_or(ContentType::Text),
-                    text_content: row.get(2)?,
-                    blob_hash: row.get(3)?,
-                    blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-                    source_app: row.get(5)?,
-                    starred: row.get::<_, i32>(6)? != 0,
-                    sensitive: row.get::<_, i32>(7)? != 0,
-                    created_at: row
-                        .get::<_, String>(8)?
-                        .parse()
-                        .unwrap_or_else(|_| Utc::now()),
-                    updated_at: row
-                        .get::<_, String>(9)?
-                        .parse()
-                        .unwrap_or_else(|_| Utc::now()),
-                })
-            })?
+            .query_map(param_refs.as_slice(), |row| row_to_entry(row))?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(entries)
@@ -250,30 +256,9 @@ impl LocalStorage {
                 "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries WHERE id = ?1",
                 params![id],
-                |row| {
-                    Ok(ClipboardEntry {
-                        id: row.get(0)?,
-                        content_type: serde_json::from_str::<ContentType>(&format!(
-                            "\"{}\"",
-                            row.get::<_, String>(1)?
-                        ))
-                        .unwrap_or(ContentType::Text),
-                        text_content: row.get(2)?,
-                        blob_hash: row.get(3)?,
-                        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-                        source_app: row.get(5)?,
-                        starred: row.get::<_, i32>(6)? != 0,
-                        sensitive: row.get::<_, i32>(7)? != 0,
-                        created_at: row.get::<_, String>(8)?
-                            .parse()
-                            .unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(9)?
-                            .parse()
-                            .unwrap_or_else(|_| Utc::now()),
-                    })
-                },
+                |row| row_to_entry(row),
             )
-            .ok();
+            .optional()?;
         Ok(entry)
     }
 
@@ -329,11 +314,41 @@ impl LocalStorage {
 
     pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {
         let db = self.db.lock().unwrap();
+
+        // Read blob_hash before deleting so we can clean up the file
+        let blob_hash: Option<String> = db
+            .query_row(
+                "SELECT blob_hash FROM entries WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+
         let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+
+        // Remove blob file if no other entry references the same hash
+        if rows > 0 {
+            if let Some(ref hash) = blob_hash {
+                let count: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
+                    params![hash],
+                    |row| row.get(0),
+                )?;
+                if count == 0 {
+                    let blob_path = self.blob_dir.join(hash);
+                    let _ = std::fs::remove_file(blob_path);
+                }
+            }
+        }
+
         Ok(rows > 0)
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        if !copywraith_core::content::is_valid_hash(hash) {
+            anyhow::bail!("Invalid blob hash: {}", hash);
+        }
         let blob_path = self.blob_dir.join(hash);
         if blob_path.exists() {
             Ok(Some(std::fs::read(&blob_path)?))
@@ -349,30 +364,9 @@ impl LocalStorage {
                 "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
                  FROM entries ORDER BY updated_at DESC LIMIT 1",
                 [],
-                |row| {
-                    Ok(ClipboardEntry {
-                        id: row.get(0)?,
-                        content_type: serde_json::from_str::<ContentType>(&format!(
-                            "\"{}\"",
-                            row.get::<_, String>(1)?
-                        ))
-                        .unwrap_or(ContentType::Text),
-                        text_content: row.get(2)?,
-                        blob_hash: row.get(3)?,
-                        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-                        source_app: row.get(5)?,
-                        starred: row.get::<_, i32>(6)? != 0,
-                        sensitive: row.get::<_, i32>(7)? != 0,
-                        created_at: row.get::<_, String>(8)?
-                            .parse()
-                            .unwrap_or_else(|_| Utc::now()),
-                        updated_at: row.get::<_, String>(9)?
-                            .parse()
-                            .unwrap_or_else(|_| Utc::now()),
-                    })
-                },
+                |row| row_to_entry(row),
             )
-            .ok();
+            .optional()?;
         Ok(entry)
     }
 
@@ -384,30 +378,7 @@ impl LocalStorage {
         )?;
 
         let entries = stmt
-            .query_map([], |row| {
-                Ok(ClipboardEntry {
-                    id: row.get(0)?,
-                    content_type: serde_json::from_str::<ContentType>(&format!(
-                        "\"{}\"",
-                        row.get::<_, String>(1)?
-                    ))
-                    .unwrap_or(ContentType::Text),
-                    text_content: row.get(2)?,
-                    blob_hash: row.get(3)?,
-                    blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-                    source_app: row.get(5)?,
-                    starred: row.get::<_, i32>(6)? != 0,
-                    sensitive: row.get::<_, i32>(7)? != 0,
-                    created_at: row
-                        .get::<_, String>(8)?
-                        .parse()
-                        .unwrap_or_else(|_| Utc::now()),
-                    updated_at: row
-                        .get::<_, String>(9)?
-                        .parse()
-                        .unwrap_or_else(|_| Utc::now()),
-                })
-            })?
+            .query_map([], |row| row_to_entry(row))?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(entries)
@@ -482,35 +453,48 @@ impl LocalStorage {
 
     pub fn save_settings(&self, settings: &Settings) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
-        db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url_primary', ?1)",
-            params![settings.server_url_primary],
-        )?;
-        db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url_fallback', ?1)",
-            params![settings.server_url_fallback],
-        )?;
-        db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url', ?1)",
-            params![settings.server_url_primary],
-        )?;
-        db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('api_key', ?1)",
-            params![settings.api_key],
-        )?;
-        db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_toggle_popup', ?1)",
-            params![settings.shortcut_toggle_popup],
-        )?;
-        db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_starred_popup', ?1)",
-            params![settings.shortcut_starred_popup],
-        )?;
-        db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_paste_plaintext', ?1)",
-            params![settings.shortcut_paste_plaintext],
-        )?;
-        Ok(())
+        db.execute_batch("BEGIN")?;
+        let result = (|| -> anyhow::Result<()> {
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url_primary', ?1)",
+                params![settings.server_url_primary],
+            )?;
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url_fallback', ?1)",
+                params![settings.server_url_fallback],
+            )?;
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_url', ?1)",
+                params![settings.server_url_primary],
+            )?;
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('api_key', ?1)",
+                params![settings.api_key],
+            )?;
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_toggle_popup', ?1)",
+                params![settings.shortcut_toggle_popup],
+            )?;
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_starred_popup', ?1)",
+                params![settings.shortcut_starred_popup],
+            )?;
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_paste_plaintext', ?1)",
+                params![settings.shortcut_paste_plaintext],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                db.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = db.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     pub fn get_sync_cursor(&self) -> Option<String> {

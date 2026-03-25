@@ -21,7 +21,7 @@ export interface ListEntriesResponse {
 export interface HealthResponse {
 	status: string;
 	version: string;
-	entries_count: number;
+	entries_count?: number;
 }
 
 export interface AuthStatusResponse {

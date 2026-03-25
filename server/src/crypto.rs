@@ -121,10 +121,10 @@ impl CryptoState {
             dek_nonce: base64_encode(&nonce_bytes),
         };
 
-        // Write auth.json
+        // Write auth.json atomically (crash-safe)
         let auth_path = self.data_dir.join("auth.json");
         let json = serde_json::to_string_pretty(&config)?;
-        std::fs::write(&auth_path, json)?;
+        atomic_write(&auth_path, json.as_bytes())?;
 
         // Cache in memory
         self.auth_config = Some(config);
@@ -236,10 +236,10 @@ impl CryptoState {
             dek_nonce: base64_encode(&nonce_bytes),
         };
 
-        // Write updated auth.json
+        // Write updated auth.json atomically (crash-safe)
         let auth_path = self.data_dir.join("auth.json");
         let json = serde_json::to_string_pretty(&config)?;
-        std::fs::write(&auth_path, json)?;
+        atomic_write(&auth_path, json.as_bytes())?;
 
         // Update cache
         self.auth_config = Some(config);
@@ -413,6 +413,16 @@ fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .map_err(|e| anyhow::anyhow!("Base64 decode failed: {}", e))
+}
+
+/// Write data to `path` atomically by writing to a temporary file first and then
+/// renaming it into place. This prevents corruption if the process crashes during
+/// the write.
+fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, data)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 #[cfg(test)]
