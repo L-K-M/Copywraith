@@ -77,6 +77,15 @@ docker compose up --build
 
 This exposes port `3742` and persists server data in Docker volume `copywraith-data`.
 
+Docker note: the server builder image in `server/Dockerfile` must be Rust 1.85+
+(`rust:1.85-slim-bookworm` currently). If a build log still shows
+`rust:1.83-slim-bookworm`, you are building from an older copy of the file.
+Pull latest changes (or update the Dockerfile), then rebuild with:
+
+```bash
+docker compose build --no-cache --pull copywraith-server
+```
+
 
 
 ### 2) Start the desktop app
@@ -245,3 +254,7 @@ For a signed release build, configure signing in
 - **Entries not syncing**
   - check Settings -> `Primary Server URL` / `Fallback Server URL`
   - verify server is reachable and running on expected port
+- **Docker build fails with `feature \`edition2024\` is required`**
+  - this usually means Cargo 1.83 is being used from an old Docker builder image
+  - confirm `server/Dockerfile` uses `FROM rust:1.85-slim-bookworm` (or newer)
+  - rebuild with `docker compose build --no-cache --pull copywraith-server`
