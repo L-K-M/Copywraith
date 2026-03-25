@@ -16,9 +16,16 @@ set -Eeuo pipefail
 #   HEALTH_URL=http://127.0.0.1:3742/api/health
 #   HEALTH_RETRIES=20
 #   HEALTH_DELAY_SECS=1
+#   COPYWRAITH_SERVER_IMAGE_REPO=copywraith-server
+#   COPYWRAITH_SERVER_IMAGE_TAG=0.1.3
+#
+# Notes:
+# - If COPYWRAITH_SERVER_IMAGE_TAG is not set, this script uses
+#   server/Cargo.toml package version as the image tag.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SERVER_CARGO_TOML="$REPO_ROOT/server/Cargo.toml"
 
 COMPOSE_FILE="${COMPOSE_FILE:-$REPO_ROOT/docker-compose.yml}"
 SERVICE="${SERVICE:-copywraith-server}"
@@ -29,6 +36,15 @@ PORT="${PORT:-3742}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${PORT}/api/health}"
 HEALTH_RETRIES="${HEALTH_RETRIES:-20}"
 HEALTH_DELAY_SECS="${HEALTH_DELAY_SECS:-1}"
+
+DEFAULT_IMAGE_TAG=""
+if [[ -f "$SERVER_CARGO_TOML" ]]; then
+  DEFAULT_IMAGE_TAG="$(awk -F '"' '/^version = / { print $2; exit }' "$SERVER_CARGO_TOML" || true)"
+fi
+
+IMAGE_REPO="${COPYWRAITH_SERVER_IMAGE_REPO:-copywraith-server}"
+IMAGE_TAG="${COPYWRAITH_SERVER_IMAGE_TAG:-${DEFAULT_IMAGE_TAG:-dev}}"
+IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker is not installed or not in PATH."
@@ -48,31 +64,51 @@ fi
 
 COMPOSE=("${DOCKER[@]}" compose -f "$COMPOSE_FILE")
 
+compose() {
+  COPYWRAITH_SERVER_IMAGE_REPO="$IMAGE_REPO" COPYWRAITH_SERVER_IMAGE_TAG="$IMAGE_TAG" "${COMPOSE[@]}" "$@"
+}
+
 echo "== Copywraith Docker redeploy =="
 echo "compose file: $COMPOSE_FILE"
 echo "service:      $SERVICE"
+echo "image:        $IMAGE_REF"
 echo ""
 
 echo "[1/4] Stopping old containers"
-"${COMPOSE[@]}" down --remove-orphans
+compose down --remove-orphans
 
 echo "[2/4] Building image"
-BUILD=("${COMPOSE[@]}" build)
-if [[ "$NO_CACHE" == "1" ]]; then
-  BUILD+=(--no-cache)
+if [[ "$NO_CACHE" == "1" && "$PULL" == "1" ]]; then
+  compose build --no-cache --pull "$SERVICE"
+elif [[ "$NO_CACHE" == "1" ]]; then
+  compose build --no-cache "$SERVICE"
+elif [[ "$PULL" == "1" ]]; then
+  compose build --pull "$SERVICE"
+else
+  compose build "$SERVICE"
 fi
-if [[ "$PULL" == "1" ]]; then
-  BUILD+=(--pull)
-fi
-BUILD+=("$SERVICE")
-"${BUILD[@]}"
 
 echo "[3/4] Starting container with forced recreate"
-"${COMPOSE[@]}" up -d --force-recreate "$SERVICE"
+compose up -d --force-recreate "$SERVICE"
 
 echo "[4/4] Verifying deployment"
-"${COMPOSE[@]}" ps
+compose ps
 "${DOCKER[@]}" ps --filter "publish=${PORT}" --format 'table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+container_id=""
+while IFS= read -r line; do
+  if [[ -n "$line" ]]; then
+    container_id="$line"
+    break
+  fi
+done < <(compose ps -q "$SERVICE")
+
+if [[ -n "$container_id" ]]; then
+  running_image="$("${DOCKER[@]}" inspect --format '{{.Config.Image}}' "$container_id" 2>/dev/null || true)"
+  if [[ -n "$running_image" ]]; then
+    echo "running image: $running_image"
+  fi
+fi
 
 if command -v curl >/dev/null 2>&1; then
   echo ""
@@ -90,7 +126,7 @@ if command -v curl >/dev/null 2>&1; then
   if [[ "$healthy" != "1" ]]; then
     echo "WARNING: Health check failed."
     echo "Last container logs:"
-    "${COMPOSE[@]}" logs --tail=120 "$SERVICE" || true
+    compose logs --tail=120 "$SERVICE" || true
   fi
 else
   echo "curl not found; skipping health check."

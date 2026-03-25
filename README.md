@@ -79,6 +79,10 @@ Or use the helper script (recommended for repeat deploys):
 USE_SUDO=1 ./scripts/redeploy-server-docker.sh
 ```
 
+The script tags the image as `copywraith-server:<server-version>` (from
+`server/Cargo.toml`) and uses that same tag for build + up, which helps prevent
+stale image reuse between deploys.
+
 Alternatively from `server/`:
 
 ```bash
@@ -100,6 +104,11 @@ docker compose build --no-cache --pull copywraith-server
 Docker note: the container must run with `COPYWRAITH_HOST=0.0.0.0` (already set
 in both compose files). If it is missing, `/api/health` from the host may fail
 with connection reset/refused even though the container is running.
+
+Docker note: compose files include
+`COPYWRAITH_SERVER_IMAGE_REPO`/`COPYWRAITH_SERVER_IMAGE_TAG` support so you can
+pin a deployment image tag explicitly if needed. The default tag in compose is
+kept aligned with the server crate version (currently `0.1.3`).
 
 
 
@@ -276,3 +285,7 @@ For a signed release build, configure signing in
 - **`/api/health` fails after container start (`connection reset`/`refused`)**
   - confirm your compose env includes `COPYWRAITH_HOST=0.0.0.0`
   - redeploy with `./scripts/redeploy-server-docker.sh` (use `USE_SUDO=1` if needed)
+- **Server still reports an old version after deploy**
+  - redeploy with `./scripts/redeploy-server-docker.sh` (or `USE_SUDO=1 ...`)
+  - verify script output `running image:` matches the expected tag (for example `copywraith-server:0.1.3`)
+  - if needed, set `COPYWRAITH_SERVER_IMAGE_TAG` to a new value before build/up
