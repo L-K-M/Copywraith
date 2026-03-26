@@ -117,7 +117,11 @@ kept aligned with the server crate version (currently `0.1.4`).
 From repository root:
 
 ```bash
+# Test
 npx tauri dev
+
+# With log output
+RUST_LOG=debug npm run tauri dev
 ```
 
 The popup window starts hidden. Use the hotkeys below to open it.

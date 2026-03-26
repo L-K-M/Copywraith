@@ -12,5 +12,6 @@ services:
       COPYWRAITH_DATA_DIR: /data
       PORT: 3742
       COPYWRAITH_HOST: 0.0.0.0
+      COPYWRAITH_MAX_BODY_BYTES: ${COPYWRAITH_MAX_BODY_BYTES:-67108864}
       RUST_LOG: copywraith_server=info
     restart: unless-stopped

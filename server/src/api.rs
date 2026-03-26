@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
@@ -17,6 +17,12 @@ use crate::AppState;
 type AppRouter = Router<Arc<AppState>>;
 
 pub fn router() -> AppRouter {
+    let max_body_bytes = std::env::var("COPYWRAITH_MAX_BODY_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(64 * 1024 * 1024);
+
     Router::new()
         // Auth endpoints (no password required)
         .route("/auth/status", get(auth_status))
@@ -33,6 +39,9 @@ pub fn router() -> AppRouter {
         .route("/entries/{id}", patch(update_entry))
         .route("/entries/{id}", delete(delete_entry))
         .route("/entries/{id}/blob", get(get_blob))
+        // Clipboard entries can include large base64 payloads (images/files).
+        // Axum's default request body limit is too low for these sync uploads.
+        .layer(DefaultBodyLimit::max(max_body_bytes))
 }
 
 #[derive(OpenApi)]
