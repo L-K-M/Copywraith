@@ -50,10 +50,8 @@ pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
         return;
     }
 
-    // Hide the popup window
-    if let Some(popup) = app.get_webview_window("popup") {
-        let _ = popup.hide();
-    }
+    // Hide popup/NSPanel before simulated paste.
+    crate::hide_popup_window(app);
 
     // Simulate Cmd+V / Ctrl+V keystroke
     simulate_paste(app.clone(), target_app);
@@ -79,9 +77,7 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
         return;
     }
 
-    if let Some(popup) = app.get_webview_window("popup") {
-        let _ = popup.hide();
-    }
+    crate::hide_popup_window(app);
 
     simulate_paste(app.clone(), target_app);
 }

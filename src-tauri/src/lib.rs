@@ -16,6 +16,12 @@ pub struct AppState {
     pub sync_client: Arc<sync::SyncClient>,
     #[cfg(desktop)]
     pub last_focused_app: std::sync::Mutex<Option<String>>,
+    #[cfg(desktop)]
+    pub popup_open: std::sync::atomic::AtomicBool,
+    #[cfg(desktop)]
+    pub last_popup_toggle_at: std::sync::Mutex<Option<std::time::Instant>>,
+    #[cfg(desktop)]
+    pub last_popup_opened_at: std::sync::Mutex<Option<std::time::Instant>>,
     /// When `true`, the next clipboard-monitor event should be ignored because
     /// it was triggered by our own clipboard write (paste preparation).
     #[cfg(desktop)]
@@ -67,6 +73,12 @@ pub fn run() {
                 #[cfg(desktop)]
                 last_focused_app: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
+                popup_open: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(desktop)]
+                last_popup_toggle_at: std::sync::Mutex::new(None),
+                #[cfg(desktop)]
+                last_popup_opened_at: std::sync::Mutex::new(None),
+                #[cfg(desktop)]
                 suppress_next_monitor_event: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(target_os = "macos")]
                 popup_panel_initialized: std::sync::atomic::AtomicBool::new(false),
@@ -104,6 +116,7 @@ pub fn run() {
             commands::reregister_shortcuts,
             commands::capture_clipboard,
             commands::get_platform,
+            commands::hide_popup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running copywraith");
@@ -119,12 +132,17 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
     let shortcut_toggle = &settings.shortcut_toggle_popup;
     let shortcut_starred = &settings.shortcut_starred_popup;
     let shortcut_plaintext = &settings.shortcut_paste_plaintext;
+    let toggle_and_starred_conflict = !shortcut_toggle.is_empty()
+        && !shortcut_starred.is_empty()
+        && shortcut_toggle.eq_ignore_ascii_case(shortcut_starred);
 
     if !shortcut_toggle.is_empty() {
         let app_handle = app.clone();
         app.global_shortcut()
             .on_shortcut(shortcut_toggle.as_str(), move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
+                // Use Released to avoid key-repeat firing open->close while
+                // modifiers are still held.
+                if event.state == ShortcutState::Released {
                     let _ = toggle_popup(&app_handle, false);
                 }
             })
@@ -134,16 +152,23 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
     }
 
     if !shortcut_starred.is_empty() {
-        let app_handle = app.clone();
-        app.global_shortcut()
-            .on_shortcut(shortcut_starred.as_str(), move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    let _ = toggle_popup(&app_handle, true);
-                }
-            })
-            .unwrap_or_else(|e| {
-                log::warn!("Failed to register {}: {}", shortcut_starred, e);
-            });
+        if toggle_and_starred_conflict {
+            log::warn!(
+                "Skipping starred popup shortcut because it matches toggle shortcut ({})",
+                shortcut_starred
+            );
+        } else {
+            let app_handle = app.clone();
+            app.global_shortcut()
+                .on_shortcut(shortcut_starred.as_str(), move |_app, _shortcut, event| {
+                    if event.state == ShortcutState::Released {
+                        let _ = toggle_popup(&app_handle, true);
+                    }
+                })
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to register {}: {}", shortcut_starred, e);
+                });
+        }
     }
 
     if !shortcut_plaintext.is_empty() {
@@ -165,27 +190,72 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
 #[cfg(desktop)]
 fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {
-    if let Some(popup) = app.get_webview_window("popup") {
-        let is_visible = popup.is_visible().unwrap_or(false);
-        let is_focused = popup.is_focused().unwrap_or(false);
-        if is_visible || is_focused {
-            let _ = popup.hide();
-        } else {
-            paste::remember_frontmost_app(app);
-
-            position_popup_near_cursor(&popup);
-            let _ = popup.unminimize();
-
-            #[cfg(target_os = "macos")]
-            ensure_popup_panel_for_fullscreen_spaces(app, &popup);
-
-            let _ = popup.show();
-
-            let _ = popup.set_focus();
-
-            // Emit event to frontend to update filter mode
-            let _ = popup.emit("popup-show", starred_only);
+    // Guard against key auto-repeat causing immediate open->close toggles.
+    {
+        let state = app.state::<AppState>();
+        let lock_result = state.last_popup_toggle_at.lock();
+        if let Ok(mut last_toggle_at) = lock_result {
+            let now = std::time::Instant::now();
+            if let Some(last) = *last_toggle_at {
+                if now.duration_since(last) < Duration::from_millis(180) {
+                    return Ok(());
+                }
+            }
+            *last_toggle_at = Some(now);
         }
+    }
+
+    if let Some(popup) = app.get_webview_window("popup") {
+        let state = app.state::<AppState>();
+        let popup_open = state.popup_open.load(std::sync::atomic::Ordering::SeqCst);
+
+        if popup_open {
+            log::debug!("Toggle requested close for popup");
+            let state = app.state::<AppState>();
+            let lock_result = state.last_popup_opened_at.lock();
+            if let Ok(last_opened_at) = lock_result {
+                if let Some(last_opened) = *last_opened_at {
+                    if std::time::Instant::now().duration_since(last_opened)
+                        < Duration::from_millis(350)
+                    {
+                        // Likely key-repeat from same physical shortcut press.
+                        return Ok(());
+                    }
+                }
+            }
+
+            hide_popup_window(app);
+            return Ok(());
+        }
+
+        log::debug!("Toggle requested open for popup");
+        paste::remember_frontmost_app(app);
+        position_popup_near_cursor(&popup);
+        let _ = popup.unminimize();
+
+        #[cfg(target_os = "macos")]
+        ensure_popup_panel_for_fullscreen_spaces(app, &popup);
+
+        let _ = popup.show();
+
+        #[cfg(target_os = "macos")]
+        request_panel_show_on_main_thread(app, &popup);
+
+        let _ = popup.set_focus();
+
+        {
+            let state = app.state::<AppState>();
+            let lock_result = state.last_popup_opened_at.lock();
+            if let Ok(mut last_opened_at) = lock_result {
+                *last_opened_at = Some(std::time::Instant::now());
+            }
+            state
+                .popup_open
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        // Emit event to frontend to update filter mode
+        let _ = popup.emit("popup-show", starred_only);
     }
     Ok(())
 }
@@ -216,6 +286,51 @@ fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
 
     // Use physical coordinates because cursor_position() is physical.
     let _ = popup.set_position(tauri::PhysicalPosition::new(final_x, final_y));
+}
+
+#[cfg(desktop)]
+pub(crate) fn hide_popup_window(app: &tauri::AppHandle) {
+    if let Some(popup) = app.get_webview_window("popup") {
+        #[cfg(target_os = "macos")]
+        request_panel_hide_on_main_thread(app, &popup);
+
+        let _ = popup.hide();
+
+        let state = app.state::<AppState>();
+        state
+            .popup_open
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_panel_show_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
+    use tauri_nspanel::ManagerExt as NSPanelManagerExt;
+
+    let app_for_task = app.clone();
+    if let Err(e) = popup.run_on_main_thread(move || {
+        if let Ok(panel) = app_for_task.get_webview_panel("popup") {
+            log::debug!("Running panel.show on main thread");
+            panel.show();
+        }
+    }) {
+        log::debug!("Failed to schedule panel.show on main thread: {}", e);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_panel_hide_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
+    use tauri_nspanel::ManagerExt as NSPanelManagerExt;
+
+    let app_for_task = app.clone();
+    if let Err(e) = popup.run_on_main_thread(move || {
+        if let Ok(panel) = app_for_task.get_webview_panel("popup") {
+            log::debug!("Running panel.order_out on main thread");
+            panel.order_out(None);
+        }
+    }) {
+        log::debug!("Failed to schedule panel.order_out on main thread: {}", e);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -304,6 +419,7 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
         NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
             | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces,
     );
+    panel.set_hides_on_deactivate(false);
 
     log::info!("Configured popup window as NSPanel for macOS fullscreen spaces");
     Ok(())

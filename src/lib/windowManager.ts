@@ -1,4 +1,5 @@
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { TauriService } from '$lib/tauri';
 
 const TITLE_BAR_HEIGHT = 36;
 
@@ -8,7 +9,11 @@ export class WindowManager {
 	private isShaded = false;
 
 	async close(): Promise<void> {
-		await this.appWindow.hide();
+		try {
+			await TauriService.hidePopup();
+		} catch {
+			await this.appWindow.hide();
+		}
 	}
 
 	async startDragging(): Promise<void> {

@@ -303,6 +303,21 @@ pub async fn reregister_shortcuts(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        crate::hide_popup_window(&app);
+    }
+
+    #[cfg(mobile)]
+    {
+        let _ = app;
+    }
+
+    Ok(())
+}
+
 /// Simple HTML tag stripping
 fn strip_html(html: &str) -> String {
     let mut result = String::with_capacity(html.len());

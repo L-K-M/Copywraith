@@ -57,4 +57,9 @@ export class TauriService {
 	static async getPlatform(): Promise<string> {
 		return await invoke('get_platform');
 	}
+
+	/** Hides the popup window (and NSPanel on macOS when enabled). */
+	static async hidePopup(): Promise<void> {
+		await invoke('hide_popup');
+	}
 }
