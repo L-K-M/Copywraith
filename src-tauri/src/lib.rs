@@ -20,6 +20,8 @@ pub struct AppState {
     /// it was triggered by our own clipboard write (paste preparation).
     #[cfg(desktop)]
     pub suppress_next_monitor_event: std::sync::atomic::AtomicBool,
+    #[cfg(target_os = "macos")]
+    pub popup_panel_initialized: std::sync::atomic::AtomicBool,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -32,6 +34,11 @@ pub fn run() {
         builder = builder
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .plugin(tauri_plugin_clipboard::init());
+
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder.plugin(tauri_nspanel::init());
+        }
     }
 
     // Android: official clipboard-manager plugin for read/write
@@ -61,6 +68,8 @@ pub fn run() {
                 last_focused_app: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
                 suppress_next_monitor_event: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(target_os = "macos")]
+                popup_panel_initialized: std::sync::atomic::AtomicBool::new(false),
             };
 
             app.manage(state);
@@ -164,30 +173,13 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
         } else {
             paste::remember_frontmost_app(app);
 
-            #[cfg(target_os = "macos")]
-            {
-                // Ensure popup can appear over fullscreen apps (separate macOS
-                // Spaces) when opened via global shortcut.
-                if let Err(e) = popup.set_visible_on_all_workspaces(true) {
-                    log::warn!("Failed to enable visible_on_all_workspaces: {}", e);
-                }
-                let _ = popup.set_always_on_top(true);
-            }
-
-            // Position first while hidden, then re-apply once visible. Some
-            // window managers/macOS setups are more reliable when positioning
-            // happens before `show()`.
             position_popup_near_cursor(&popup);
             let _ = popup.unminimize();
-            let _ = popup.show();
 
             #[cfg(target_os = "macos")]
-            {
-                // Re-apply after show to handle macOS window-state resets.
-                let _ = popup.set_visible_on_all_workspaces(true);
-                let _ = popup.set_always_on_top(true);
-                log::debug!("Applied macOS popup visibility/topmost fullscreen hints");
-            }
+            ensure_popup_panel_for_fullscreen_spaces(app, &popup);
+
+            let _ = popup.show();
 
             let _ = popup.set_focus();
 
@@ -224,6 +216,97 @@ fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
 
     // Use physical coordinates because cursor_position() is physical.
     let _ = popup.set_position(tauri::PhysicalPosition::new(final_x, final_y));
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_popup_panel_for_fullscreen_spaces(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
+    let state = app.state::<AppState>();
+    if state
+        .popup_panel_initialized
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    let app_for_task = app.clone();
+
+    let run_result = popup.run_on_main_thread(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            configure_popup_panel_for_fullscreen_spaces_now(&app_for_task)
+        }));
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                log::warn!("NSPanel fullscreen-space setup failed: {}", e);
+            }
+            Err(panic_payload) => {
+                log::warn!(
+                    "NSPanel setup panicked; disabling panel mode for this run: {}",
+                    panic_payload_to_string(&panic_payload)
+                );
+            }
+        }
+    });
+
+    if let Err(e) = run_result {
+        state
+            .popup_panel_initialized
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        log::warn!("Failed to run NSPanel setup on main thread: {}", e);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn panic_payload_to_string(panic_payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic_payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_nspanel::cocoa::appkit::{NSMainMenuWindowLevel, NSWindowCollectionBehavior};
+    use tauri_nspanel::{ManagerExt as NSPanelManagerExt, WebviewWindowExt};
+
+    let popup = app
+        .get_webview_window("popup")
+        .ok_or_else(|| "Popup window not found".to_string())?;
+
+    popup
+        .ns_window()
+        .map_err(|e| format!("Popup NSWindow handle unavailable: {}", e))?;
+
+    let panel = match app.get_webview_panel("popup") {
+        Ok(existing) => existing,
+        Err(_) => popup
+            .to_panel()
+            .map_err(|e| format!("to_panel conversion failed: {}", e))?,
+    };
+
+    #[allow(non_upper_case_globals)]
+    const NSWindowStyleMaskNonActivatingPanel: i32 = 1 << 7;
+
+    log::debug!("NSPanel setup step: set_level");
+    panel.set_level(NSMainMenuWindowLevel + 1);
+
+    // Match the plugin's fullscreen example closely: a non-activating panel
+    // with fullscreen auxiliary + all-spaces collection behavior.
+    log::debug!("NSPanel setup step: set_style_mask(non-activating)");
+    panel.set_style_mask(NSWindowStyleMaskNonActivatingPanel);
+
+    log::debug!("NSPanel setup step: set_collection_behaviour");
+    panel.set_collection_behaviour(
+        NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces,
+    );
+
+    log::info!("Configured popup window as NSPanel for macOS fullscreen spaces");
+    Ok(())
 }
 
 fn start_sync_loop(
