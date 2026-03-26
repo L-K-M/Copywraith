@@ -23,6 +23,7 @@
 				"titleBarStyle": "Overlay",
 				"visible": false,
 				"alwaysOnTop": true,
+				"visibleOnAllWorkspaces": true,
 				"skipTaskbar": true,
 				"resizable": true,
 				"transparent": false

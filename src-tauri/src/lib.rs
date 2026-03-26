@@ -158,17 +158,39 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {
     if let Some(popup) = app.get_webview_window("popup") {
         let is_visible = popup.is_visible().unwrap_or(false);
-        if is_visible {
+        let is_focused = popup.is_focused().unwrap_or(false);
+        if is_visible || is_focused {
             let _ = popup.hide();
         } else {
             paste::remember_frontmost_app(app);
+
+            #[cfg(target_os = "macos")]
+            {
+                // Ensure popup can appear over fullscreen apps (separate macOS
+                // Spaces) when opened via global shortcut.
+                if let Err(e) = popup.set_visible_on_all_workspaces(true) {
+                    log::warn!("Failed to enable visible_on_all_workspaces: {}", e);
+                }
+                let _ = popup.set_always_on_top(true);
+            }
+
             // Position first while hidden, then re-apply once visible. Some
-            // window managers/macOS setups are more reliable when the final
-            // position is set after `show()`.
+            // window managers/macOS setups are more reliable when positioning
+            // happens before `show()`.
             position_popup_near_cursor(&popup);
+            let _ = popup.unminimize();
             let _ = popup.show();
-            position_popup_near_cursor(&popup);
+
+            #[cfg(target_os = "macos")]
+            {
+                // Re-apply after show to handle macOS window-state resets.
+                let _ = popup.set_visible_on_all_workspaces(true);
+                let _ = popup.set_always_on_top(true);
+                log::debug!("Applied macOS popup visibility/topmost fullscreen hints");
+            }
+
             let _ = popup.set_focus();
+
             // Emit event to frontend to update filter mode
             let _ = popup.emit("popup-show", starred_only);
         }
