@@ -224,7 +224,7 @@ fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), S
         if let Ok(mut last_toggle_at) = lock_result {
             let now = std::time::Instant::now();
             if let Some(last) = *last_toggle_at {
-                if now.duration_since(last) < Duration::from_millis(180) {
+                if now.duration_since(last) < Duration::from_millis(100) {
                     return Ok(());
                 }
             }
@@ -265,7 +265,7 @@ fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), S
             if let Ok(last_opened_at) = lock_result {
                 if let Some(last_opened) = *last_opened_at {
                     if std::time::Instant::now().duration_since(last_opened)
-                        < Duration::from_millis(350)
+                        < Duration::from_millis(200)
                     {
                         return Ok(());
                     }
