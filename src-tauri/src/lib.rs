@@ -207,7 +207,29 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
 
     if let Some(popup) = app.get_webview_window("popup") {
         let state = app.state::<AppState>();
-        let popup_open = state.popup_open.load(std::sync::atomic::Ordering::SeqCst);
+
+        let actually_visible = popup.is_visible().unwrap_or(false);
+        let recorded_open = state.popup_open.load(std::sync::atomic::Ordering::SeqCst);
+
+        let popup_open = if recorded_open && !actually_visible {
+            log::debug!(
+                "popup_open=true but window invisible; reconciling to closed"
+            );
+            state
+                .popup_open
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            false
+        } else if !recorded_open && actually_visible {
+            log::debug!(
+                "popup_open=false but window visible; reconciling to open"
+            );
+            state
+                .popup_open
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            true
+        } else {
+            recorded_open
+        };
 
         if popup_open {
             log::debug!("Toggle requested close for popup");
