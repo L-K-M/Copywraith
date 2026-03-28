@@ -286,6 +286,7 @@ fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), S
 
         #[cfg(not(target_os = "macos"))]
         {
+            let _ = popup.set_always_on_top(true);
             let _ = popup.unminimize();
             let _ = popup.show();
             let _ = popup.set_focus();
