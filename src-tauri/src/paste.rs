@@ -4,16 +4,39 @@ use tauri::Manager;
 use tauri::Emitter;
 
 #[cfg(target_os = "macos")]
-pub fn remember_frontmost_app(app: &tauri::AppHandle) {
-    let target_app = detect_frontmost_app_name();
-    let state = app.state::<crate::AppState>();
-    if let Ok(mut slot) = state.last_focused_app.lock() {
-        *slot = target_app;
-    };
+pub fn remember_frontmost_app(_app: &tauri::AppHandle) {
+    // No-op: the background cache thread started by start_frontmost_app_cache()
+    // continuously updates last_focused_app every ~1s, eliminating the
+    // synchronous osascript spawn that previously blocked the toggle path.
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn remember_frontmost_app(_app: &tauri::AppHandle) {}
+
+#[cfg(target_os = "macos")]
+pub fn start_frontmost_app_cache(app: &tauri::AppHandle) {
+    let app_handle = app.clone();
+    std::thread::Builder::new()
+        .name("frontmost-app-cache".into())
+        .spawn(move || {
+            loop {
+                if let Some(name) = detect_frontmost_app_name() {
+                    let state = app_handle.state::<crate::AppState>();
+                    if let Ok(mut slot) = state.last_focused_app.lock() {
+                        *slot = Some(name);
+                    }
+                }
+                // detect_frontmost_app_name returns None when Copywraith itself
+                // is frontmost (filtered by sanitize_target_app_name), so the
+                // cache naturally retains the last real app during popup display.
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        })
+        .expect("failed to spawn frontmost-app-cache thread");
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_frontmost_app_cache(_app: &tauri::AppHandle) {}
 
 #[cfg(desktop)]
 pub fn restore_previous_focus(app: &tauri::AppHandle) {

@@ -95,6 +95,8 @@ pub fn run() {
                     sync_client.clone(),
                 );
 
+                paste::start_frontmost_app_cache(&app_handle);
+
                 let settings = storage.get_settings();
                 register_shortcuts(&app_handle, &settings);
             }
