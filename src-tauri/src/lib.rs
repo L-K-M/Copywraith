@@ -352,7 +352,11 @@ fn ensure_popup_panel_for_fullscreen_spaces(app: &tauri::AppHandle, popup: &taur
         match result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                log::warn!("NSPanel fullscreen-space setup failed: {}", e);
+                log::warn!("NSPanel fullscreen-space setup failed (will retry next open): {}", e);
+                app_for_task
+                    .state::<AppState>()
+                    .popup_panel_initialized
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
             }
             Err(panic_payload) => {
                 log::warn!(
