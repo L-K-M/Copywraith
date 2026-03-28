@@ -85,30 +85,27 @@ pub fn paste_most_recent_plaintext(app: &tauri::AppHandle) {
 pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
     let target_app = preferred_paste_target(app);
 
-    // Suppress the clipboard monitor so it does not re-process our own write.
-    // The flag MUST be set before the write because the monitor event fires
-    // asynchronously as soon as the system pasteboard changes.
     let state = app.state::<crate::AppState>();
-    state
-        .suppress_next_monitor_event
-        .store(true, std::sync::atomic::Ordering::SeqCst);
 
-    // Use the clipboard plugin to write text
+    // Suppress the clipboard monitor for a 500ms window starting NOW.
+    // The window approach handles multiple rapid monitor events from a single
+    // paste write (e.g. duplicate system notifications) — every event that
+    // arrives before the deadline is suppressed.
+    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
+
     let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
     if let Err(e) = clipboard.write_text(text.to_string()) {
-        // Write failed — reset the suppress flag so the next real clipboard
-        // change is not silently swallowed.
-        state
-            .suppress_next_monitor_event
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+            *guard = None;
+        }
         log::error!("Failed to write to clipboard: {}", e);
         return;
     }
 
-    // Hide popup/NSPanel before simulated paste.
     crate::hide_popup_window(app);
 
-    // Simulate Cmd+V / Ctrl+V keystroke
     simulate_paste(app.clone(), target_app);
 }
 
@@ -116,18 +113,18 @@ pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
 pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
     let target_app = preferred_paste_target(app);
 
-    // Suppress the clipboard monitor (same rationale as write_and_paste_text).
     let state = app.state::<crate::AppState>();
-    state
-        .suppress_next_monitor_event
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
 
     let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
     let b64 = copywraith_core::content::bytes_to_base64(image_data);
     if let Err(e) = clipboard.write_image_base64(b64) {
-        state
-            .suppress_next_monitor_event
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+            *guard = None;
+        }
         log::error!("Failed to write image to clipboard: {}", e);
         return;
     }

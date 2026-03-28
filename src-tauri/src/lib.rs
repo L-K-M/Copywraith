@@ -22,10 +22,12 @@ pub struct AppState {
     pub last_popup_toggle_at: std::sync::Mutex<Option<std::time::Instant>>,
     #[cfg(desktop)]
     pub last_popup_opened_at: std::sync::Mutex<Option<std::time::Instant>>,
-    /// When `true`, the next clipboard-monitor event should be ignored because
-    /// it was triggered by our own clipboard write (paste preparation).
+    /// When set, all clipboard-monitor events whose arrival time is before this
+    /// instant are suppressed.  This handles multiple rapid monitor events from a
+    /// single paste write (e.g. duplicate system notifications) without requiring
+    /// per-event counter management.
     #[cfg(desktop)]
-    pub suppress_next_monitor_event: std::sync::atomic::AtomicBool,
+    pub suppress_monitor_until: std::sync::Mutex<Option<std::time::Instant>>,
     #[cfg(target_os = "macos")]
     pub popup_panel_initialized: std::sync::atomic::AtomicBool,
 }
@@ -79,7 +81,7 @@ pub fn run() {
                 #[cfg(desktop)]
                 last_popup_opened_at: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
-                suppress_next_monitor_event: std::sync::atomic::AtomicBool::new(false),
+                suppress_monitor_until: std::sync::Mutex::new(None),
                 #[cfg(target_os = "macos")]
                 popup_panel_initialized: std::sync::atomic::AtomicBool::new(false),
             };

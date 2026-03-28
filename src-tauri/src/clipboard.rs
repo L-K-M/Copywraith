@@ -35,19 +35,19 @@ pub fn start_monitoring(
     app.listen(
         "plugin:clipboard://clipboard-monitor/update",
         move |_event| {
-            // Skip events triggered by our own clipboard writes (paste preparation).
-            // The flag is set by write_and_paste_text / write_and_paste_image before
-            // they call clipboard.write_*, so by the time this event fires the flag
-            // is guaranteed to be true for self-triggered changes.
             {
                 let state = app_clone.state::<crate::AppState>();
-                if state
-                    .suppress_next_monitor_event
-                    .swap(false, std::sync::atomic::Ordering::SeqCst)
-                {
-                    log::debug!("Skipping self-triggered clipboard monitor event");
-                    return;
-                }
+                let suppress_guard = state.suppress_monitor_until.lock();
+                if let Ok(guard) = suppress_guard {
+                    if let Some(deadline) = *guard {
+                        if std::time::Instant::now() < deadline {
+                            log::debug!(
+                                "Skipping self-triggered clipboard monitor event (suppress window active)"
+                            );
+                            return;
+                        }
+                    }
+                };
             }
 
             let clipboard = app_clone.state::<Clipboard>();
@@ -72,7 +72,7 @@ fn handle_clipboard_change(
     sync_client: &Arc<SyncClient>,
 ) {
     let plain_text = read_plain_text(clipboard);
-    let source_app = detect_source_app_name();
+    let source_app = read_cached_source_app(app);
 
     // Check for image first so copied screenshots/files with image payload
     // are stored as image entries and shown with previews in the UI.
@@ -232,30 +232,14 @@ fn should_prefer_plain_text_for_html(html: &str) -> bool {
         || lower.contains("mso-")
 }
 
-#[cfg(target_os = "macos")]
-fn detect_source_app_name() -> Option<String> {
-    use std::process::Command;
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg("tell application \"System Events\" to get name of first process whose frontmost is true")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let app_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if app_name.is_empty() {
-        None
-    } else {
-        Some(app_name)
-    }
+#[cfg(desktop)]
+fn read_cached_source_app(app: &tauri::AppHandle) -> Option<String> {
+    let state = app.state::<crate::AppState>();
+    state.last_focused_app.lock().ok().and_then(|guard| guard.clone())
 }
 
-#[cfg(not(target_os = "macos"))]
-fn detect_source_app_name() -> Option<String> {
+#[cfg(not(desktop))]
+fn read_cached_source_app(_app: &tauri::AppHandle) -> Option<String> {
     None
 }
 
