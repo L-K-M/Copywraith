@@ -425,31 +425,71 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
         .map_err(|e| format!("Popup NSWindow handle unavailable: {}", e))?;
 
     let panel = match app.get_webview_panel("popup") {
-        Ok(existing) => existing,
-        Err(_) => popup
-            .to_panel()
-            .map_err(|e| format!("to_panel conversion failed: {}", e))?,
+        Ok(existing) => {
+            log::info!("NSPanel: reusing existing panel for popup window");
+            existing
+        }
+        Err(_) => {
+            log::info!(
+                "NSPanel: converting popup NSWindow to NSPanel for fullscreen-space support"
+            );
+            popup
+                .to_panel()
+                .map_err(|e| format!("to_panel conversion failed: {}", e))?
+        }
     };
 
     #[allow(non_upper_case_globals)]
     const NSWindowStyleMaskNonActivatingPanel: i32 = 1 << 7;
 
-    log::debug!("NSPanel setup step: set_level");
-    panel.set_level(NSMainMenuWindowLevel + 1);
+    let target_level = NSMainMenuWindowLevel + 1;
+    log::info!(
+        "NSPanel: setting window level to {} (NSMainMenuWindowLevel + 1)",
+        target_level
+    );
+    panel.set_level(target_level);
 
-    // Match the plugin's fullscreen example closely: a non-activating panel
-    // with fullscreen auxiliary + all-spaces collection behavior.
-    log::debug!("NSPanel setup step: set_style_mask(non-activating)");
+    log::info!("NSPanel: setting non-activating style mask");
     panel.set_style_mask(NSWindowStyleMaskNonActivatingPanel);
 
-    log::debug!("NSPanel setup step: set_collection_behaviour");
-    panel.set_collection_behaviour(
+    let target_behavior =
         NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces,
+            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces;
+    log::info!(
+        "NSPanel: setting collection behavior = FullScreenAuxiliary | CanJoinAllSpaces"
     );
-    panel.set_hides_on_deactivate(false);
+    panel.set_collection_behaviour(target_behavior);
 
-    log::info!("Configured popup window as NSPanel for macOS fullscreen spaces");
+    log::info!("NSPanel: verifying collection behavior was applied");
+    let actual = panel.collection_behaviour();
+    let expected_fullscreen_aux =
+        (actual as usize)
+            & (NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary as usize)
+            != 0;
+    let expected_all_spaces =
+        (actual as usize)
+            & (NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces as usize)
+            != 0;
+    if expected_fullscreen_aux && expected_all_spaces {
+        log::info!(
+            "NSPanel: collection behavior verified — FullScreenAuxiliary and CanJoinAllSpaces both present"
+        );
+    } else {
+        log::warn!(
+            "NSPanel: collection behavior verification: FullScreenAuxiliary={}, CanJoinAllSpaces={} (raw=0x{:X})",
+            expected_fullscreen_aux,
+            expected_all_spaces,
+            actual as usize
+        );
+    }
+
+    panel.set_hides_on_deactivate(false);
+    log::info!("NSPanel: set hides_on_deactivate = false");
+
+    log::info!(
+        "NSPanel: popup window fully configured for macOS fullscreen Spaces (level={}, collection_behavior verified)",
+        target_level
+    );
     Ok(())
 }
 
