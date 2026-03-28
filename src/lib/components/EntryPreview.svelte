@@ -39,13 +39,13 @@
 		}
 	}
 
-	function handlePaste() {
-		pasteEntry(entry.id);
+	async function handlePaste() {
+		await pasteEntry(entry.id);
 		onclose();
 	}
 
-	function handlePastePlaintext() {
-		pasteEntryPlaintext(entry.id);
+	async function handlePastePlaintext() {
+		await pasteEntryPlaintext(entry.id);
 		onclose();
 	}
 
