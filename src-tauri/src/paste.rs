@@ -15,6 +15,38 @@ pub fn remember_frontmost_app(app: &tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 pub fn remember_frontmost_app(_app: &tauri::AppHandle) {}
 
+#[cfg(desktop)]
+pub fn restore_previous_focus(app: &tauri::AppHandle) {
+    let target_app = {
+        let state = app.state::<crate::AppState>();
+        let lock_result = state.last_focused_app.lock();
+        match lock_result {
+            Ok(slot) => slot.clone(),
+            Err(_) => None,
+        }
+    };
+
+    #[cfg(target_os = "macos")]
+    if let Some(name) = target_app {
+        std::thread::spawn(move || {
+            let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg("try")
+                .arg("-e")
+                .arg(format!("tell application \"{}\" to activate", escaped))
+                .arg("-e")
+                .arg("end try")
+                .output();
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = target_app;
+    }
+}
+
 /// Paste the most recent clipboard entry as plaintext
 pub fn paste_most_recent_plaintext(app: &tauri::AppHandle) {
     let state = app.state::<crate::AppState>();

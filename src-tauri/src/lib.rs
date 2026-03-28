@@ -322,6 +322,8 @@ pub(crate) fn hide_popup_window(app: &tauri::AppHandle) {
         state
             .popup_open
             .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        paste::restore_previous_focus(app);
     }
 }
 
