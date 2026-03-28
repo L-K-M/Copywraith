@@ -269,11 +269,8 @@ fn classify_macos_paste_error(stderr: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn emit_paste_failed(app: &tauri::AppHandle, message: &str) {
-    // The popup is hidden before paste simulation. If paste fails, re-show it
-    // so the frontend notification is actually visible to the user.
     if let Some(popup) = app.get_webview_window("popup") {
-        let _ = popup.show();
-        let _ = popup.set_focus();
+        crate::show_popup_and_panel_on_main_thread(app, &popup);
     }
 
     let _ = app.emit("paste-failed", message.to_string());

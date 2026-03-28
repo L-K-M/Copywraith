@@ -330,7 +330,7 @@ pub(crate) fn hide_popup_window(app: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
-fn show_popup_and_panel_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
+pub(crate) fn show_popup_and_panel_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
     use tauri_nspanel::ManagerExt as NSPanelManagerExt;
 
     let app_for_task = app.clone();
