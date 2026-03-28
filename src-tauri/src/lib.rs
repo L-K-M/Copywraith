@@ -253,17 +253,18 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
         log::debug!("Toggle requested open for popup");
         paste::remember_frontmost_app(app);
         position_popup_near_cursor(&popup);
-        let _ = popup.unminimize();
-
         #[cfg(target_os = "macos")]
         ensure_popup_panel_for_fullscreen_spaces(app, &popup);
 
-        let _ = popup.show();
-
         #[cfg(target_os = "macos")]
-        request_panel_show_on_main_thread(app, &popup);
+        show_popup_and_panel_on_main_thread(app, &popup);
 
-        let _ = popup.set_focus();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = popup.unminimize();
+            let _ = popup.show();
+            let _ = popup.set_focus();
+        }
 
         {
             let state = app.state::<AppState>();
@@ -314,8 +315,9 @@ fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
 pub(crate) fn hide_popup_window(app: &tauri::AppHandle) {
     if let Some(popup) = app.get_webview_window("popup") {
         #[cfg(target_os = "macos")]
-        request_panel_hide_on_main_thread(app, &popup);
+        hide_popup_and_panel_on_main_thread(app, &popup);
 
+        #[cfg(not(target_os = "macos"))]
         let _ = popup.hide();
 
         let state = app.state::<AppState>();
@@ -328,32 +330,42 @@ pub(crate) fn hide_popup_window(app: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
-fn request_panel_show_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
+fn show_popup_and_panel_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
     use tauri_nspanel::ManagerExt as NSPanelManagerExt;
 
     let app_for_task = app.clone();
     if let Err(e) = popup.run_on_main_thread(move || {
+        if let Some(p) = app_for_task.get_webview_window("popup") {
+            let _ = p.unminimize();
+            let _ = p.show();
+        }
         if let Ok(panel) = app_for_task.get_webview_panel("popup") {
-            log::debug!("Running panel.show on main thread");
+            log::debug!("Running panel.show on main thread (atomic with window.show)");
             panel.show();
         }
+        if let Some(p) = app_for_task.get_webview_window("popup") {
+            let _ = p.set_focus();
+        }
     }) {
-        log::debug!("Failed to schedule panel.show on main thread: {}", e);
+        log::debug!("Failed to schedule atomic popup show on main thread: {}", e);
     }
 }
 
 #[cfg(target_os = "macos")]
-fn request_panel_hide_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
+fn hide_popup_and_panel_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
     use tauri_nspanel::ManagerExt as NSPanelManagerExt;
 
     let app_for_task = app.clone();
     if let Err(e) = popup.run_on_main_thread(move || {
         if let Ok(panel) = app_for_task.get_webview_panel("popup") {
-            log::debug!("Running panel.order_out on main thread");
+            log::debug!("Running panel.order_out on main thread (atomic with window.hide)");
             panel.order_out(None);
         }
+        if let Some(p) = app_for_task.get_webview_window("popup") {
+            let _ = p.hide();
+        }
     }) {
-        log::debug!("Failed to schedule panel.order_out on main thread: {}", e);
+        log::debug!("Failed to schedule atomic popup hide on main thread: {}", e);
     }
 }
 
