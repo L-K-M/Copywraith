@@ -193,6 +193,30 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
 #[cfg(desktop)]
 fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {
+    // On macOS the global-shortcut callback may fire on an arbitrary thread,
+    // but NSWindow operations (is_visible, set_position, unminimize, show,
+    // set_focus, hide, panel.show / order_out) must run on the main thread.
+    // Dispatch the entire toggle body there; on non-macOS platforms the
+    // callback thread is safe for window operations.
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        if let Some(popup) = app.get_webview_window("popup") {
+            let _ = popup.run_on_main_thread(move || {
+                let _ = toggle_popup_impl(&app, starred_only);
+            });
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        toggle_popup_impl(app, starred_only)
+    }
+}
+
+#[cfg(desktop)]
+fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {
     // Guard against key auto-repeat causing immediate open->close toggles.
     {
         let state = app.state::<AppState>();
@@ -243,7 +267,6 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
                     if std::time::Instant::now().duration_since(last_opened)
                         < Duration::from_millis(350)
                     {
-                        // Likely key-repeat from same physical shortcut press.
                         return Ok(());
                     }
                 }
