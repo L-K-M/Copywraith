@@ -138,11 +138,12 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
     if !shortcut_toggle.is_empty() {
         let app_handle = app.clone();
-        app.global_shortcut()
+            app.global_shortcut()
             .on_shortcut(shortcut_toggle.as_str(), move |_app, _shortcut, event| {
                 // Use Released to avoid key-repeat firing open->close while
                 // modifiers are still held.
                 if event.state == ShortcutState::Released {
+                    paste::remember_frontmost_app(&app_handle);
                     let _ = toggle_popup(&app_handle, false);
                 }
             })
@@ -162,6 +163,7 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
             app.global_shortcut()
                 .on_shortcut(shortcut_starred.as_str(), move |_app, _shortcut, event| {
                     if event.state == ShortcutState::Released {
+                        paste::remember_frontmost_app(&app_handle);
                         let _ = toggle_popup(&app_handle, true);
                     }
                 })
@@ -173,11 +175,12 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
     if !shortcut_plaintext.is_empty() {
         let app_handle = app.clone();
-        app.global_shortcut()
+            app.global_shortcut()
             .on_shortcut(
                 shortcut_plaintext.as_str(),
                 move |_app, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
+                        paste::remember_frontmost_app(&app_handle);
                         paste::paste_most_recent_plaintext(&app_handle);
                     }
                 },
@@ -251,7 +254,6 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
         }
 
         log::debug!("Toggle requested open for popup");
-        paste::remember_frontmost_app(app);
         position_popup_near_cursor(&popup);
         #[cfg(target_os = "macos")]
         ensure_popup_panel_for_fullscreen_spaces(app, &popup);
