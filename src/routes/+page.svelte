@@ -33,6 +33,9 @@
 	let filterBar: FilterBar | undefined = $state();
 	let previewEntry: ClipboardEntry | null = $state(null);
 
+	const AUTO_HIDE_DELAY_MS = 500;
+	let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
+
 	// Unlisten functions for cleanup
 	let unlistenFocus: UnlistenFn;
 	let unlistenClipboardUpdated: UnlistenFn;
@@ -67,6 +70,19 @@
 		// Track window focus
 		unlistenFocus = await appWindow.onFocusChanged(({ payload: focused }) => {
 			windowFocused.set(focused);
+
+			if (focused) {
+				if (autoHideTimer) {
+					clearTimeout(autoHideTimer);
+					autoHideTimer = null;
+				}
+			} else if (!mobile) {
+				if (autoHideTimer) clearTimeout(autoHideTimer);
+				autoHideTimer = setTimeout(() => {
+					autoHideTimer = null;
+					windowManager.close();
+				}, AUTO_HIDE_DELAY_MS);
+			}
 
 			// On mobile, capture clipboard when app resumes (gains focus)
 			if (mobile && focused) {
@@ -131,6 +147,10 @@
 	});
 
 	onDestroy(() => {
+		if (autoHideTimer) {
+			clearTimeout(autoHideTimer);
+			autoHideTimer = null;
+		}
 		unlistenFocus?.();
 		unlistenClipboardUpdated?.();
 		unlistenClipboardReordered?.();
