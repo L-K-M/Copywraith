@@ -453,9 +453,10 @@ fn panic_payload_to_string(panic_payload: &Box<dyn std::any::Any + Send>) -> Str
 }
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated)]
+#[allow(deprecated, unexpected_cfgs)]
 fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_nspanel::cocoa::appkit::{NSMainMenuWindowLevel, NSWindowCollectionBehavior};
+    use tauri_nspanel::objc::{msg_send, sel, sel_impl};
     use tauri_nspanel::{ManagerExt as NSPanelManagerExt, WebviewWindowExt};
 
     let popup = app
@@ -502,9 +503,7 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
     );
     panel.set_collection_behaviour(target_behavior);
 
-    let actual_behavior: NSWindowCollectionBehavior = unsafe {
-        tauri_nspanel::objc::msg_send![&*panel, collectionBehavior]
-    };
+    let actual_behavior: NSWindowCollectionBehavior = unsafe { msg_send![&*panel, collectionBehavior] };
     let has_fullscreen_auxiliary = actual_behavior.contains(
         NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
     );

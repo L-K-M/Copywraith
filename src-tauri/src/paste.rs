@@ -7,7 +7,8 @@ use tauri::Emitter;
 pub fn remember_frontmost_app(app: &tauri::AppHandle) {
     if let Some(name) = detect_frontmost_app_name() {
         let state = app.state::<crate::AppState>();
-        if let Ok(mut slot) = state.last_focused_app.lock() {
+        let lock_result = state.last_focused_app.lock();
+        if let Ok(mut slot) = lock_result {
             *slot = Some(name);
         }
     }
@@ -340,24 +341,26 @@ fn detect_frontmost_app_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 fn detect_frontmost_app_name_native() -> Option<String> {
-    use tauri_nspanel::cocoa::base::{id, nil};
+    use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
     use tauri_nspanel::objc::rc::autoreleasepool;
+    use tauri_nspanel::objc::runtime::Object;
     use tauri_nspanel::objc_foundation::{INSString, NSString};
 
     autoreleasepool(|| unsafe {
-        let workspace: id = tauri_nspanel::objc::msg_send![tauri_nspanel::objc::class!(NSWorkspace), sharedWorkspace];
-        if workspace == nil {
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace.is_null() {
             return None;
         }
 
-        let frontmost_application: id = tauri_nspanel::objc::msg_send![workspace, frontmostApplication];
-        if frontmost_application == nil {
+        let frontmost_application: *mut Object = msg_send![workspace, frontmostApplication];
+        if frontmost_application.is_null() {
             return None;
         }
 
-        let localized_name: id = tauri_nspanel::objc::msg_send![frontmost_application, localizedName];
-        if localized_name == nil {
+        let localized_name: *mut Object = msg_send![frontmost_application, localizedName];
+        if localized_name.is_null() {
             return None;
         }
 
