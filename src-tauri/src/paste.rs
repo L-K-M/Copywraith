@@ -146,7 +146,7 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
 /// Other platforms currently only write to clipboard and log a warning.
 fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
     #[cfg(target_os = "macos")]
-    {
+    std::thread::spawn(move || {
         let accessibility_trusted = is_accessibility_trusted();
 
         // Warn early if Accessibility permission is missing.  We do NOT bail
@@ -214,7 +214,7 @@ fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
                 emit_paste_failed(&app, &format!("Failed to run paste simulation: {}", e));
             }
         }
-    }
+    });
 
     #[cfg(not(target_os = "macos"))]
     {
