@@ -4,10 +4,13 @@ use tauri::Manager;
 use tauri::Emitter;
 
 #[cfg(target_os = "macos")]
-pub fn remember_frontmost_app(_app: &tauri::AppHandle) {
-    // No-op: the background cache thread started by start_frontmost_app_cache()
-    // continuously updates last_focused_app every ~1s, eliminating the
-    // synchronous osascript spawn that previously blocked the toggle path.
+pub fn remember_frontmost_app(app: &tauri::AppHandle) {
+    if let Some(name) = detect_frontmost_app_name() {
+        let state = app.state::<crate::AppState>();
+        if let Ok(mut slot) = state.last_focused_app.lock() {
+            *slot = Some(name);
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -138,11 +141,11 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
 /// Simulate a paste keystroke.
 ///
 /// On macOS we use AppleScript/System Events because it is more reliable than
-/// synthetic key events from a background thread in the popup flow.
+/// synthetic key events for the popup flow.
 /// Other platforms currently only write to clipboard and log a warning.
 fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
     #[cfg(target_os = "macos")]
-    std::thread::spawn(move || {
+    {
         let accessibility_trusted = is_accessibility_trusted();
 
         // Warn early if Accessibility permission is missing.  We do NOT bail
@@ -210,7 +213,7 @@ fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
                 emit_paste_failed(&app, &format!("Failed to run paste simulation: {}", e));
             }
         }
-    });
+    }
 
     #[cfg(not(target_os = "macos"))]
     {
@@ -333,6 +336,38 @@ fn preferred_paste_target(_app: &tauri::AppHandle) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn detect_frontmost_app_name() -> Option<String> {
+    detect_frontmost_app_name_native().or_else(detect_frontmost_app_name_via_osascript)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_frontmost_app_name_native() -> Option<String> {
+    use tauri_nspanel::cocoa::base::{id, nil};
+    use tauri_nspanel::objc::rc::autoreleasepool;
+    use tauri_nspanel::objc_foundation::{INSString, NSString};
+
+    autoreleasepool(|| unsafe {
+        let workspace: id = tauri_nspanel::objc::msg_send![tauri_nspanel::objc::class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            return None;
+        }
+
+        let frontmost_application: id = tauri_nspanel::objc::msg_send![workspace, frontmostApplication];
+        if frontmost_application == nil {
+            return None;
+        }
+
+        let localized_name: id = tauri_nspanel::objc::msg_send![frontmost_application, localizedName];
+        if localized_name == nil {
+            return None;
+        }
+
+        let app_name = (&*(localized_name as *mut NSString)).as_str().trim().to_string();
+        sanitize_target_app_name(app_name)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn detect_frontmost_app_name_via_osascript() -> Option<String> {
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg("tell application \"System Events\" to get name of first process whose frontmost is true")
