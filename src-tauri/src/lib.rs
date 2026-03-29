@@ -501,35 +501,13 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
         "NSPanel: setting collection behavior = FullScreenAuxiliary | CanJoinAllSpaces"
     );
     panel.set_collection_behaviour(target_behavior);
-
-    log::info!("NSPanel: verifying collection behavior was applied");
-    let actual = panel.collection_behaviour();
-    let expected_fullscreen_aux =
-        (actual as usize)
-            & (NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary as usize)
-            != 0;
-    let expected_all_spaces =
-        (actual as usize)
-            & (NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces as usize)
-            != 0;
-    if expected_fullscreen_aux && expected_all_spaces {
-        log::info!(
-            "NSPanel: collection behavior verified — FullScreenAuxiliary and CanJoinAllSpaces both present"
-        );
-    } else {
-        log::warn!(
-            "NSPanel: collection behavior verification: FullScreenAuxiliary={}, CanJoinAllSpaces={} (raw=0x{:X})",
-            expected_fullscreen_aux,
-            expected_all_spaces,
-            actual as usize
-        );
-    }
+    log::info!("NSPanel: collection behavior set");
 
     panel.set_hides_on_deactivate(false);
     log::info!("NSPanel: set hides_on_deactivate = false");
 
     log::info!(
-        "NSPanel: popup window fully configured for macOS fullscreen Spaces (level={}, collection_behavior verified)",
+        "NSPanel: popup window fully configured for macOS fullscreen Spaces (level={})",
         target_level
     );
     Ok(())

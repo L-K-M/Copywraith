@@ -22,7 +22,8 @@ pub fn start_frontmost_app_cache(app: &tauri::AppHandle) {
             loop {
                 if let Some(name) = detect_frontmost_app_name() {
                     let state = app_handle.state::<crate::AppState>();
-                    if let Ok(mut slot) = state.last_focused_app.lock() {
+                    let lock_result = state.last_focused_app.lock();
+                    if let Ok(mut slot) = lock_result {
                         *slot = Some(name);
                     }
                 }
