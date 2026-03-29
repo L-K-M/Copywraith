@@ -109,7 +109,7 @@ pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
         return;
     }
 
-    crate::hide_popup_window(app);
+    crate::hide_popup_window_for_paste(app);
 
     simulate_paste(app.clone(), target_app);
 }
@@ -134,7 +134,7 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
         return;
     }
 
-    crate::hide_popup_window(app);
+    crate::hide_popup_window_for_paste(app);
 
     simulate_paste(app.clone(), target_app);
 }
@@ -327,7 +327,9 @@ fn preferred_paste_target(app: &tauri::AppHandle) -> Option<String> {
         remembered_value
     };
 
-    remembered.or_else(detect_frontmost_app_name)
+    // Keep this path fast: avoid synchronous osascript fallback while handling
+    // a user paste action.
+    remembered.or_else(detect_frontmost_app_name_native)
 }
 
 #[cfg(not(target_os = "macos"))]

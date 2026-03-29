@@ -343,6 +343,16 @@ fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
 
 #[cfg(desktop)]
 pub(crate) fn hide_popup_window(app: &tauri::AppHandle) {
+    hide_popup_window_impl(app, true);
+}
+
+#[cfg(desktop)]
+pub(crate) fn hide_popup_window_for_paste(app: &tauri::AppHandle) {
+    hide_popup_window_impl(app, false);
+}
+
+#[cfg(desktop)]
+fn hide_popup_window_impl(app: &tauri::AppHandle, restore_focus: bool) {
     if let Some(popup) = app.get_webview_window("popup") {
         #[cfg(target_os = "macos")]
         hide_popup_and_panel_on_main_thread(app, &popup);
@@ -355,7 +365,9 @@ pub(crate) fn hide_popup_window(app: &tauri::AppHandle) {
             .popup_open
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
-        paste::restore_previous_focus(app);
+        if restore_focus {
+            paste::restore_previous_focus(app);
+        }
     }
 }
 
