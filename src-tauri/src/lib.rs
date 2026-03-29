@@ -453,7 +453,7 @@ fn panic_payload_to_string(panic_payload: &Box<dyn std::any::Any + Send>) -> Str
 }
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated, unexpected_cfgs)]
+#[allow(deprecated)]
 fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_nspanel::cocoa::appkit::{NSMainMenuWindowLevel, NSWindowCollectionBehavior};
     use tauri_nspanel::objc::{msg_send, sel, sel_impl};

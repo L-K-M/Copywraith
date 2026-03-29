@@ -341,7 +341,6 @@ fn detect_frontmost_app_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unexpected_cfgs)]
 fn detect_frontmost_app_name_native() -> Option<String> {
     use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
     use tauri_nspanel::objc::rc::autoreleasepool;
