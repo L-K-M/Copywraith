@@ -1,3 +1,6 @@
+#[cfg(desktop)]
+use clipboard_rs::{Clipboard as ClipboardRs, ClipboardContent};
+use copywraith_core::models::ClipboardFlavors;
 use tauri::Manager;
 
 #[cfg(target_os = "macos")]
@@ -79,11 +82,134 @@ pub fn restore_previous_focus(app: &tauri::AppHandle) {
 pub fn paste_most_recent_plaintext(app: &tauri::AppHandle) {
     let state = app.state::<crate::AppState>();
     if let Ok(Some(entry)) = state.storage.get_most_recent_entry() {
-        if let Some(text) = &entry.text_content {
+        if let Some(text) = entry.best_plain_text() {
             // Write plaintext to clipboard and simulate paste
-            write_and_paste_text(app, text);
+            write_and_paste_text(app, &text);
         }
     }
+}
+
+/// Write multiple text flavors (plain/html/rtf) in one transaction and paste.
+pub fn write_and_paste_flavors(app: &tauri::AppHandle, flavors: &ClipboardFlavors) {
+    let target_app = preferred_paste_target(app);
+
+    let state = app.state::<crate::AppState>();
+    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
+
+    let mut contents: Vec<ClipboardContent> = Vec::new();
+
+    let plain = flavors
+        .text_plain
+        .clone()
+        .or_else(|| {
+            flavors
+                .text_html
+                .as_ref()
+                .map(|html| copywraith_core::content::strip_html(html))
+        })
+        .or_else(|| {
+            flavors
+                .text_rtf
+                .as_ref()
+                .map(|rtf| copywraith_core::content::strip_rtf(rtf))
+        })
+        .filter(|text| !text.trim().is_empty());
+
+    if let Some(text) = plain {
+        contents.push(ClipboardContent::Text(text));
+    }
+
+    if let Some(html) = flavors
+        .text_html
+        .as_ref()
+        .filter(|html| !html.trim().is_empty())
+    {
+        contents.push(ClipboardContent::Html(html.clone()));
+    }
+
+    if let Some(rtf) = flavors
+        .text_rtf
+        .as_ref()
+        .filter(|rtf| !rtf.trim().is_empty())
+    {
+        contents.push(ClipboardContent::Rtf(rtf.clone()));
+    }
+
+    if contents.is_empty() {
+        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+            *guard = None;
+        }
+        return;
+    }
+
+    let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
+    let write_result = clipboard
+        .clipboard
+        .lock()
+        .map_err(|err| err.to_string())
+        .and_then(|ctx| ctx.set(contents).map_err(|err| err.to_string()));
+
+    if let Err(e) = write_result {
+        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+            *guard = None;
+        }
+        log::error!("Failed to write flavors to clipboard: {}", e);
+        return;
+    }
+
+    crate::hide_popup_window_for_paste(app);
+    simulate_paste(app.clone(), target_app);
+}
+
+/// Write file-list clipboard content and simulate paste.
+pub fn write_and_paste_files(app: &tauri::AppHandle, files: &[String]) {
+    if files.is_empty() {
+        return;
+    }
+
+    let target_app = preferred_paste_target(app);
+
+    let state = app.state::<crate::AppState>();
+    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
+
+    let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
+    let files_for_clipboard = files
+        .iter()
+        .map(|path| normalize_file_uri_for_write(path))
+        .collect::<Vec<_>>();
+
+    if let Err(e) = clipboard.write_files_uris(files_for_clipboard) {
+        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
+            *guard = None;
+        }
+        log::error!("Failed to write files to clipboard: {}", e);
+        return;
+    }
+
+    crate::hide_popup_window_for_paste(app);
+    simulate_paste(app.clone(), target_app);
+}
+
+fn normalize_file_uri_for_write(path: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        return path.trim_start_matches("file://").to_string();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        if path.starts_with("file://") {
+            return path.to_string();
+        }
+        return format!("file://{}", path);
+    }
+
+    #[allow(unreachable_code)]
+    path.to_string()
 }
 
 /// Write text to clipboard and simulate Cmd+V / Ctrl+V
@@ -240,10 +366,7 @@ fn run_macos_paste_script(
             .arg("-e")
             .arg("try")
             .arg("-e")
-            .arg(format!(
-                "tell application \"{}\" to activate",
-                escaped_name
-            ))
+            .arg(format!("tell application \"{}\" to activate", escaped_name))
             .arg("-e")
             .arg("end try")
             .arg("-e")
@@ -344,9 +467,9 @@ fn detect_frontmost_app_name() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn detect_frontmost_app_name_native() -> Option<String> {
-    use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
     use tauri_nspanel::objc::rc::autoreleasepool;
     use tauri_nspanel::objc::runtime::Object;
+    use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
     use tauri_nspanel::objc_foundation::{INSString, NSString};
 
     autoreleasepool(|| unsafe {
@@ -365,7 +488,10 @@ fn detect_frontmost_app_name_native() -> Option<String> {
             return None;
         }
 
-        let app_name = (&*(localized_name as *mut NSString)).as_str().trim().to_string();
+        let app_name = (&*(localized_name as *mut NSString))
+            .as_str()
+            .trim()
+            .to_string();
         sanitize_target_app_name(app_name)
     })
 }

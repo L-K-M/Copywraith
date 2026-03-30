@@ -55,8 +55,8 @@
 					<span>Size: {formatSize(entry.blob_size)}</span>
 				</div>
 			{/if}
-		{:else if entry.text_content}
-			<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.text_content}</pre>
+		{:else if entry.flavors?.text_plain || entry.text_content}
+			<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.flavors?.text_plain ?? entry.text_content}</pre>
 		{:else}
 			<div class="empty-state">No displayable content</div>
 		{/if}

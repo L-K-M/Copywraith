@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "copywraith-server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -756,6 +756,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "clipboard-rs",
  "copywraith-core",
  "env_logger",
  "log",

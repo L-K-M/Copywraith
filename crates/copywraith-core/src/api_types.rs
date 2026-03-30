@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::models::{ClipboardEntry, ContentType};
+use crate::models::{ClipboardEntry, ClipboardFlavors, ContentType};
 
 // --- Request types ---
 
@@ -10,6 +10,8 @@ pub struct CreateEntryRequest {
     pub content_type: ContentType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flavors: Option<ClipboardFlavors>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blob_base64: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

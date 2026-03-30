@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use copywraith_core::content::{base64_to_bytes, hash_bytes};
-use copywraith_core::models::{ClipboardEntry, ContentType};
+use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
 use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection};
 use ulid::Ulid;
@@ -13,6 +13,191 @@ use crate::crypto;
 pub struct Storage {
     db: Mutex<Connection>,
     blob_dir: PathBuf,
+}
+
+const ENTRY_SELECT_COLUMNS: &str =
+    "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
+
+fn has_entries_column(conn: &Connection, column: &str) -> bool {
+    conn.prepare(&format!("SELECT {} FROM entries LIMIT 0", column))
+        .is_ok()
+}
+
+fn ensure_entries_column(
+    conn: &Connection,
+    column: &str,
+    definition_sql: &str,
+) -> anyhow::Result<()> {
+    if has_entries_column(conn, column) {
+        return Ok(());
+    }
+
+    conn.execute_batch(&format!(
+        "ALTER TABLE entries ADD COLUMN {} {};",
+        column, definition_sql
+    ))?;
+    Ok(())
+}
+
+fn backfill_flavor_columns(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE entries
+         SET text_plain = text_content
+         WHERE text_plain IS NULL AND content_type = 'text' AND text_content IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE entries
+         SET text_html = text_content
+         WHERE text_html IS NULL AND content_type = 'html' AND text_content IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE entries
+         SET text_rtf = text_content
+         WHERE text_rtf IS NULL AND content_type = 'rtf' AND text_content IS NOT NULL",
+        [],
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, content_type, text_content, text_plain, text_html, text_rtf, search_text FROM entries",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (id, content_type_raw, text_content, text_plain, text_html, text_rtf, search_text) in rows {
+        let content_type = content_type_raw
+            .parse::<ContentType>()
+            .unwrap_or(ContentType::Text);
+
+        let prev_text_plain = text_plain.clone();
+        let prev_text_html = text_html.clone();
+        let prev_text_rtf = text_rtf.clone();
+
+        let flavors = ClipboardFlavors {
+            text_plain,
+            text_html,
+            text_rtf,
+            file_list: None,
+        }
+        .merge_legacy(content_type, text_content.as_deref());
+
+        let next_text_content = flavors.to_legacy_text_content(content_type);
+        let next_search_text = flavors.best_plain_text();
+        let next_text_plain = flavors.text_plain.clone();
+        let next_text_html = flavors.text_html.clone();
+        let next_text_rtf = flavors.text_rtf.clone();
+
+        if text_content != next_text_content
+            || search_text != next_search_text
+            || prev_text_plain != next_text_plain
+            || prev_text_html != next_text_html
+            || prev_text_rtf != next_text_rtf
+        {
+            conn.execute(
+                "UPDATE entries
+                 SET text_content = ?1,
+                     text_plain = ?2,
+                     text_html = ?3,
+                     text_rtf = ?4,
+                     search_text = ?5
+                 WHERE id = ?6",
+                params![
+                    next_text_content,
+                    next_text_plain,
+                    next_text_html,
+                    next_text_rtf,
+                    next_search_text,
+                    id
+                ],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn rebuild_entries_fts(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "
+        DROP TRIGGER IF EXISTS entries_ai;
+        DROP TRIGGER IF EXISTS entries_ad;
+        DROP TRIGGER IF EXISTS entries_au;
+        DROP TABLE IF EXISTS entries_fts;
+
+        CREATE VIRTUAL TABLE entries_fts USING fts5(
+            search_text,
+            content='entries',
+            content_rowid='rowid'
+        );
+
+        CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+            INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+        END;
+        CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+            INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
+        END;
+        CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
+            INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
+            INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+        END;
+        ",
+    )?;
+
+    conn.execute(
+        "INSERT INTO entries_fts(rowid, search_text)
+         SELECT rowid, COALESCE(search_text, '') FROM entries",
+        [],
+    )?;
+
+    Ok(())
+}
+
+fn encrypt_optional_text(dek: &[u8; 32], value: Option<String>) -> anyhow::Result<Option<String>> {
+    match value {
+        Some(text) if crypto::is_encrypted_text(&text) => Ok(Some(text)),
+        Some(text) => Ok(Some(crypto::encrypt_text(dek, &text)?)),
+        None => Ok(None),
+    }
+}
+
+fn decrypt_optional_text(dek: &[u8; 32], value: Option<String>) -> anyhow::Result<Option<String>> {
+    match value {
+        Some(text) if !crypto::is_encrypted_text(&text) => Ok(Some(text)),
+        Some(text) => Ok(Some(crypto::decrypt_text(dek, &text)?)),
+        None => Ok(None),
+    }
+}
+
+fn decrypt_entry_text_fields(entry: &mut ClipboardEntry, dek: &[u8; 32]) -> anyhow::Result<()> {
+    entry.text_content = decrypt_optional_text(dek, entry.text_content.take())?;
+    entry.flavors.text_plain = decrypt_optional_text(dek, entry.flavors.text_plain.take())?;
+    entry.flavors.text_html = decrypt_optional_text(dek, entry.flavors.text_html.take())?;
+    entry.flavors.text_rtf = decrypt_optional_text(dek, entry.flavors.text_rtf.take())?;
+
+    entry.flavors = entry
+        .flavors
+        .clone()
+        .merge_legacy(entry.content_type, entry.text_content.as_deref());
+    entry.text_content = entry
+        .text_content
+        .clone()
+        .or_else(|| entry.flavors.to_legacy_text_content(entry.content_type));
+
+    Ok(())
 }
 
 impl Storage {
@@ -31,6 +216,10 @@ impl Storage {
                 id TEXT PRIMARY KEY,
                 content_type TEXT NOT NULL,
                 text_content TEXT,
+                text_plain TEXT,
+                text_html TEXT,
+                text_rtf TEXT,
+                search_text TEXT,
                 blob_hash TEXT,
                 blob_size INTEGER,
                 content_hash TEXT NOT NULL,
@@ -48,20 +237,20 @@ impl Storage {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_content_hash ON entries(content_hash);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-                text_content,
+                search_text,
                 content='entries',
                 content_rowid='rowid'
             );
 
             CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
-                INSERT INTO entries_fts(rowid, text_content) VALUES (new.rowid, new.text_content);
+                INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
             END;
             CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-                INSERT INTO entries_fts(entries_fts, rowid, text_content) VALUES('delete', old.rowid, old.text_content);
+                INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
             END;
             CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
-                INSERT INTO entries_fts(entries_fts, rowid, text_content) VALUES('delete', old.rowid, old.text_content);
-                INSERT INTO entries_fts(rowid, text_content) VALUES (new.rowid, new.text_content);
+                INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
+                INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
             END;
             ",
         )?;
@@ -74,6 +263,14 @@ impl Storage {
             conn.execute_batch("ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;")?;
         }
 
+        ensure_entries_column(&conn, "text_plain", "TEXT")?;
+        ensure_entries_column(&conn, "text_html", "TEXT")?;
+        ensure_entries_column(&conn, "text_rtf", "TEXT")?;
+        ensure_entries_column(&conn, "search_text", "TEXT")?;
+
+        backfill_flavor_columns(&conn)?;
+        rebuild_entries_fts(&conn)?;
+
         Ok(Self {
             db: Mutex::new(conn),
             blob_dir,
@@ -83,7 +280,7 @@ impl Storage {
     pub fn create_entry(
         &self,
         content_type: ContentType,
-        text_content: Option<&str>,
+        flavors: &ClipboardFlavors,
         blob_base64: Option<&str>,
         source_app: Option<&str>,
         starred: Option<bool>,
@@ -95,8 +292,10 @@ impl Storage {
         // Check for existing entry with same content hash
         let existing: Option<ClipboardEntry> = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
-                 FROM entries WHERE content_hash = ?1",
+                &format!(
+                    "SELECT {} FROM entries WHERE content_hash = ?1",
+                    ENTRY_SELECT_COLUMNS
+                ),
                 params![content_hash],
                 |row| row_to_entry(row),
             )
@@ -112,12 +311,16 @@ impl Storage {
                 "UPDATE entries SET updated_at = ?1, starred = ?2 WHERE id = ?3",
                 params![now.to_rfc3339(), next_starred as i32, entry.id],
             )?;
-            // Decrypt text_content for the response
-            if let (Some(dek), Some(ref tc)) = (dek, &entry.text_content) {
-                entry.text_content = Some(crypto::decrypt_text(dek, tc)?);
+            // Decrypt text flavors for the response
+            if let Some(dek) = dek {
+                decrypt_entry_text_fields(&mut entry, dek)?;
             }
             return Ok((entry, false));
         }
+
+        let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
+        let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
+        let search_text = resolved_flavors.best_plain_text();
 
         // Process blob data
         let (blob_hash, blob_size) = if let Some(b64) = blob_base64 {
@@ -148,23 +351,47 @@ impl Storage {
         let id = Ulid::new().to_string();
         let starred = starred.unwrap_or(false);
 
-        let sensitive = text_content
+        let sensitive = search_text
+            .as_ref()
             .map(|t| contains_sensitive_data(t))
             .unwrap_or(false);
 
-        // Encrypt text_content if DEK is available
-        let stored_text = match (dek, text_content) {
-            (Some(dek), Some(tc)) => Some(crypto::encrypt_text(dek, tc)?),
-            (_, tc) => tc.map(|s| s.to_string()),
+        // Encrypt text fields if DEK is available
+        let (
+            stored_text_content,
+            stored_text_plain,
+            stored_text_html,
+            stored_text_rtf,
+            stored_search_text,
+        ) = if let Some(dek) = dek {
+            (
+                encrypt_optional_text(dek, legacy_text_content.clone())?,
+                encrypt_optional_text(dek, resolved_flavors.text_plain.clone())?,
+                encrypt_optional_text(dek, resolved_flavors.text_html.clone())?,
+                encrypt_optional_text(dek, resolved_flavors.text_rtf.clone())?,
+                encrypt_optional_text(dek, search_text.clone())?,
+            )
+        } else {
+            (
+                legacy_text_content.clone(),
+                resolved_flavors.text_plain.clone(),
+                resolved_flavors.text_html.clone(),
+                resolved_flavors.text_rtf.clone(),
+                search_text.clone(),
+            )
         };
 
         db.execute(
-            "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, sensitive, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 id,
                 content_type.as_str(),
-                stored_text,
+                stored_text_content,
+                stored_text_plain,
+                stored_text_html,
+                stored_text_rtf,
+                stored_search_text,
                 blob_hash,
                 blob_size.map(|s| s as i64),
                 content_hash,
@@ -179,10 +406,11 @@ impl Storage {
         let entry = ClipboardEntry {
             id,
             content_type,
-            text_content: text_content.map(|s| s.to_string()), // return plaintext
+            text_content: legacy_text_content,
             blob_hash,
             blob_size,
             source_app: source_app.map(|s| s.to_string()),
+            flavors: resolved_flavors,
             starred,
             sensitive,
             created_at: now,
@@ -200,8 +428,7 @@ impl Storage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
-                 FROM entries WHERE id = ?1",
+                &format!("SELECT {} FROM entries WHERE id = ?1", ENTRY_SELECT_COLUMNS),
                 params![id],
                 |row| row_to_entry(row),
             )
@@ -209,9 +436,7 @@ impl Storage {
 
         match (entry, dek) {
             (Some(mut e), Some(dek)) => {
-                if let Some(ref tc) = e.text_content {
-                    e.text_content = Some(crypto::decrypt_text(dek, tc)?);
-                }
+                decrypt_entry_text_fields(&mut e, dek)?;
                 Ok(Some(e))
             }
             (e, _) => Ok(e),
@@ -250,7 +475,7 @@ impl Storage {
 
         if use_fts {
             if let Some(q) = search {
-                conditions.push(format!("f.text_content MATCH ?{}", params_vec.len() + 1));
+                conditions.push(format!("f.search_text MATCH ?{}", params_vec.len() + 1));
                 params_vec.push(Box::new(q.to_string()));
             }
         }
@@ -270,10 +495,10 @@ impl Storage {
         if memory_search {
             // Encrypted search: load all matching entries, decrypt, filter, paginate in memory
             let query_sql = format!(
-                "SELECT e.id, e.content_type, e.text_content, e.blob_hash, e.blob_size, e.source_app, e.starred, e.sensitive, e.created_at, e.updated_at
+                "SELECT {}
                  FROM entries e {} {}
                  ORDER BY e.updated_at DESC",
-                fts_join, where_clause,
+                ENTRY_SELECT_COLUMNS, fts_join, where_clause,
             );
 
             let mut stmt = db.prepare(&query_sql)?;
@@ -287,13 +512,15 @@ impl Storage {
             let dek = dek.unwrap(); // safe: memory_search implies dek.is_some()
             let mut filtered = Vec::new();
             for mut entry in all_entries {
-                if let Some(ref tc) = entry.text_content {
-                    let plain = crypto::decrypt_text(dek, tc).unwrap_or_default();
+                if decrypt_entry_text_fields(&mut entry, dek).is_err() {
+                    continue;
+                }
+
+                if let Some(plain) = entry.best_plain_text() {
                     if plain
                         .to_lowercase()
                         .contains(search_term.as_deref().unwrap_or(""))
                     {
-                        entry.text_content = Some(plain);
                         filtered.push(entry);
                     }
                 }
@@ -323,10 +550,11 @@ impl Storage {
             };
 
             let query_sql = format!(
-                "SELECT e.id, e.content_type, e.text_content, e.blob_hash, e.blob_size, e.source_app, e.starred, e.sensitive, e.created_at, e.updated_at
+                "SELECT {}
                  FROM entries e {} {}
                  ORDER BY e.updated_at DESC
                  LIMIT ?{} OFFSET ?{}",
+                ENTRY_SELECT_COLUMNS,
                 fts_join,
                 where_clause,
                 params_vec.len() + 1,
@@ -347,9 +575,7 @@ impl Storage {
             // Decrypt text_content if DEK is available
             if let Some(dek) = dek {
                 for entry in &mut entries {
-                    if let Some(ref tc) = entry.text_content {
-                        entry.text_content = Some(crypto::decrypt_text(dek, tc)?);
-                    }
+                    decrypt_entry_text_fields(entry, dek)?;
                 }
             }
 
@@ -420,26 +646,96 @@ impl Storage {
     // Migration: encrypt existing plaintext data
     // -----------------------------------------------------------------------
 
-    /// Encrypt all existing unencrypted text_content values in place.
+    /// Encrypt all existing unencrypted text flavor values in place.
     pub fn encrypt_all_entries(&self, dek: &[u8; 32]) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
 
-        let mut stmt =
-            db.prepare("SELECT id, text_content FROM entries WHERE text_content IS NOT NULL")?;
+        let mut stmt = db.prepare(
+            "SELECT id, text_content, text_plain, text_html, text_rtf, search_text FROM entries",
+        )?;
 
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        let rows: Vec<(
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        for (id, tc) in &rows {
-            if crypto::is_encrypted_text(tc) {
-                continue; // already encrypted
+        for (id, text_content, text_plain, text_html, text_rtf, search_text) in rows {
+            let mut changed = false;
+
+            let encrypted_text_content = match text_content {
+                Some(value) if !crypto::is_encrypted_text(&value) => {
+                    changed = true;
+                    Some(crypto::encrypt_text(dek, &value)?)
+                }
+                other => other,
+            };
+
+            let encrypted_text_plain = match text_plain {
+                Some(value) if !crypto::is_encrypted_text(&value) => {
+                    changed = true;
+                    Some(crypto::encrypt_text(dek, &value)?)
+                }
+                other => other,
+            };
+
+            let encrypted_text_html = match text_html {
+                Some(value) if !crypto::is_encrypted_text(&value) => {
+                    changed = true;
+                    Some(crypto::encrypt_text(dek, &value)?)
+                }
+                other => other,
+            };
+
+            let encrypted_text_rtf = match text_rtf {
+                Some(value) if !crypto::is_encrypted_text(&value) => {
+                    changed = true;
+                    Some(crypto::encrypt_text(dek, &value)?)
+                }
+                other => other,
+            };
+
+            let encrypted_search_text = match search_text {
+                Some(value) if !crypto::is_encrypted_text(&value) => {
+                    changed = true;
+                    Some(crypto::encrypt_text(dek, &value)?)
+                }
+                other => other,
+            };
+
+            if changed {
+                db.execute(
+                    "UPDATE entries
+                     SET text_content = ?1,
+                         text_plain = ?2,
+                         text_html = ?3,
+                         text_rtf = ?4,
+                         search_text = ?5
+                     WHERE id = ?6",
+                    params![
+                        encrypted_text_content,
+                        encrypted_text_plain,
+                        encrypted_text_html,
+                        encrypted_text_rtf,
+                        encrypted_search_text,
+                        id
+                    ],
+                )?;
             }
-            let encrypted = crypto::encrypt_text(dek, tc)?;
-            db.execute(
-                "UPDATE entries SET text_content = ?1 WHERE id = ?2",
-                params![encrypted, id],
-            )?;
         }
 
         Ok(())
@@ -467,24 +763,35 @@ impl Storage {
 
 /// Helper: parse a SQLite row into a ClipboardEntry.
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
+    let content_type = row
+        .get::<_, String>(1)?
+        .parse::<ContentType>()
+        .unwrap_or(ContentType::Text);
+    let legacy_text_content: Option<String> = row.get(2)?;
+    let flavors = ClipboardFlavors {
+        text_plain: row.get(3)?,
+        text_html: row.get(4)?,
+        text_rtf: row.get(5)?,
+        file_list: None,
+    }
+    .merge_legacy(content_type, legacy_text_content.as_deref());
+
     Ok(ClipboardEntry {
         id: row.get(0)?,
-        content_type: row
-            .get::<_, String>(1)?
-            .parse::<ContentType>()
-            .unwrap_or(ContentType::Text),
-        text_content: row.get(2)?,
-        blob_hash: row.get(3)?,
-        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-        source_app: row.get(5)?,
-        starred: row.get::<_, i32>(6)? != 0,
-        sensitive: row.get::<_, i32>(7)? != 0,
+        content_type,
+        text_content: legacy_text_content.or_else(|| flavors.to_legacy_text_content(content_type)),
+        blob_hash: row.get(6)?,
+        blob_size: row.get::<_, Option<i64>>(7)?.map(|s| s as u64),
+        source_app: row.get(8)?,
+        flavors,
+        starred: row.get::<_, i32>(9)? != 0,
+        sensitive: row.get::<_, i32>(10)? != 0,
         created_at: row
-            .get::<_, String>(8)?
+            .get::<_, String>(11)?
             .parse()
             .unwrap_or_else(|_| Utc::now()),
         updated_at: row
-            .get::<_, String>(9)?
+            .get::<_, String>(12)?
             .parse()
             .unwrap_or_else(|_| Utc::now()),
     })

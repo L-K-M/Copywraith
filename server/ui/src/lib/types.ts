@@ -1,7 +1,15 @@
+export interface ClipboardFlavors {
+	text_plain?: string | null;
+	text_html?: string | null;
+	text_rtf?: string | null;
+	file_list?: string[] | null;
+}
+
 export interface EntryResponse {
 	id: string;
 	content_type: string;
 	text_content: string | null;
+	flavors?: ClipboardFlavors | null;
 	blob_hash: string | null;
 	blob_size: number | null;
 	source_app: string | null;

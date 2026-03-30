@@ -34,14 +34,25 @@
 	}
 
 	function getPreview(entry: EntryResponse): string {
-		if (entry.text_content) {
-			let text = entry.text_content;
-			if (entry.content_type === 'html') {
-				text = htmlToPlainText(text);
-			} else if (entry.content_type === 'rtf') {
-				text = rtfToPlainText(text);
-			}
+		const plain = entry.flavors?.text_plain;
+		if (plain) {
+			return plain.length > 200 ? plain.substring(0, 200) + '...' : plain;
+		}
+
+		const html = entry.flavors?.text_html ?? (entry.content_type === 'html' ? entry.text_content : null);
+		if (html) {
+			const text = htmlToPlainText(html);
 			return text.length > 200 ? text.substring(0, 200) + '...' : text;
+		}
+
+		const rtf = entry.flavors?.text_rtf ?? (entry.content_type === 'rtf' ? entry.text_content : null);
+		if (rtf) {
+			const text = rtfToPlainText(rtf);
+			return text.length > 200 ? text.substring(0, 200) + '...' : text;
+		}
+
+		if (entry.text_content) {
+			return entry.text_content.length > 200 ? entry.text_content.substring(0, 200) + '...' : entry.text_content;
 		}
 		if (entry.content_type === 'file') return '[File]';
 		if (entry.content_type === 'image') return '[Image]';

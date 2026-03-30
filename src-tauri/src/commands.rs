@@ -5,6 +5,9 @@ use crate::models::{EntryForFrontend, Settings};
 use crate::AppState;
 use copywraith_core::models::ContentType;
 
+#[cfg(mobile)]
+use copywraith_core::models::ClipboardFlavors;
+
 #[cfg(desktop)]
 use crate::paste;
 
@@ -30,20 +33,16 @@ pub async fn get_entries(
         .into_iter()
         .map(|e| {
             let preview = e.preview(200);
+            let plain_text = e.best_plain_text();
 
             // For sensitive entries, mask the full text so we never send
             // secrets to the frontend JS context.
             let full_text = if e.sensitive {
-                e.text_content.map(|t| {
-                    let plain = match e.content_type {
-                        ContentType::Html => copywraith_core::content::strip_html(&t),
-                        ContentType::Rtf => copywraith_core::content::strip_rtf(&t),
-                        _ => t.trim().to_string(),
-                    };
-                    copywraith_core::content::mask_sensitive(&plain, 200)
-                })
+                plain_text
+                    .as_ref()
+                    .map(|plain| copywraith_core::content::mask_sensitive(plain, 200))
             } else {
-                e.text_content
+                plain_text
             };
 
             EntryForFrontend {
@@ -126,16 +125,14 @@ pub async fn paste_entry(
                     }
                 }
             }
-            ContentType::Html => {
-                if let Some(text) = &entry.text_content {
-                    let plaintext = strip_html(text);
-                    paste::write_and_paste_text(&app, &plaintext);
+            ContentType::File => {
+                let flavors = entry.resolved_flavors();
+                if let Some(files) = flavors.file_list.as_deref() {
+                    paste::write_and_paste_files(&app, files);
                 }
             }
             _ => {
-                if let Some(text) = &entry.text_content {
-                    paste::write_and_paste_text(&app, text);
-                }
+                paste::write_and_paste_flavors(&app, &entry.resolved_flavors());
             }
         }
     }
@@ -163,9 +160,7 @@ pub async fn paste_entry_plaintext(
 
     #[cfg(desktop)]
     {
-        if let Some(text) = &entry.text_content {
-            // Strip HTML tags for plaintext paste
-            let plaintext = strip_html(text);
+        if let Some(plaintext) = entry.best_plain_text() {
             paste::write_and_paste_text(&app, &plaintext);
         }
     }
@@ -188,21 +183,24 @@ fn write_to_clipboard_mobile(
 ) -> Result<(), String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
-    let text = match &entry.text_content {
-        Some(t) => {
-            if force_plaintext || entry.content_type == ContentType::Html {
-                strip_html(t)
-            } else {
-                t.clone()
-            }
-        }
-        None => {
-            if entry.content_type == ContentType::Image {
-                // Android clipboard-manager only supports text; image copy not available
-                return Ok(());
-            }
-            return Ok(());
-        }
+    if entry.content_type == ContentType::Image {
+        // Android clipboard-manager only supports text; image copy not available
+        return Ok(());
+    }
+
+    let text = if force_plaintext {
+        entry.best_plain_text()
+    } else {
+        let flavors = entry.resolved_flavors();
+        flavors
+            .text_plain
+            .or_else(|| flavors.best_plain_text())
+            .or_else(|| entry.text_content.clone())
+    }
+    .unwrap_or_default();
+
+    if text.trim().is_empty() {
+        return Ok(());
     };
 
     app.clipboard()
@@ -240,10 +238,14 @@ pub async fn capture_clipboard(
             return Ok(false);
         }
 
-        let content_hash = copywraith_core::content::hash_text(&text);
+        let flavors = ClipboardFlavors {
+            text_plain: Some(text.clone()),
+            ..ClipboardFlavors::default()
+        };
+        let content_hash = flavors.payload_hash(ContentType::Text, None);
         match state
             .storage
-            .insert_entry(ContentType::Text, Some(&text), None, &content_hash, None)
+            .insert_entry(ContentType::Text, &flavors, None, &content_hash, None)
         {
             Ok(Some(entry)) => {
                 let _ = app.emit("clipboard-updated", &entry);
@@ -316,9 +318,4 @@ pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-/// Simple HTML tag stripping
-fn strip_html(html: &str) -> String {
-    copywraith_core::content::strip_html(html)
 }

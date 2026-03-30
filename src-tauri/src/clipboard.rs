@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use copywraith_core::content::{hash_bytes, hash_text};
-use copywraith_core::models::ContentType;
+use copywraith_core::content::hash_bytes;
+use copywraith_core::models::{ClipboardFlavors, ContentType};
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_clipboard::Clipboard;
 
@@ -58,19 +58,17 @@ pub fn start_monitoring(
 
 /// Handle a clipboard change by reading current clipboard contents and storing them.
 ///
-/// Priority order: Image > File > Text > HTML > RTF
+/// Priority order for primary entry type: Image > File > Text/HTML/RTF bundle.
 /// If an image is present, we store the image so the UI can render a thumbnail
-/// preview. If files are present, we store them as a file list. For text-based
-/// payloads, we prefer plain text whenever it is available so pasted output
-/// remains byte-for-byte close to what the source app provided (avoids storing
-/// HTML entity-encoded text from some editors).
+/// preview. If files are present, we store them as a file-list entry. For
+/// text-based payloads we capture all available standard flavors together
+/// (`text/plain`, `text/html`, `text/rtf`) in one logical entry.
 fn handle_clipboard_change(
     app: &tauri::AppHandle,
     clipboard: &Clipboard,
     storage: &Arc<LocalStorage>,
     sync_client: &Arc<SyncClient>,
 ) {
-    let plain_text = read_plain_text(clipboard);
     let source_app = read_cached_source_app(app);
 
     // Check for image first so copied screenshots/files with image payload
@@ -86,7 +84,7 @@ fn handle_clipboard_change(
                             storage,
                             sync_client,
                             ContentType::Image,
-                            None,
+                            &ClipboardFlavors::default(),
                             Some(&bytes),
                             &content_hash,
                             source_app.as_deref(),
@@ -112,7 +110,7 @@ fn handle_clipboard_change(
                         storage,
                         sync_client,
                         ContentType::Image,
-                        None,
+                        &ClipboardFlavors::default(),
                         Some(&bytes),
                         &content_hash,
                         source_app.as_deref(),
@@ -120,14 +118,17 @@ fn handle_clipboard_change(
                     return;
                 }
 
-                let file_list = files.join("\n");
-                let content_hash = hash_text(&file_list);
+                let flavors = ClipboardFlavors {
+                    file_list: Some(files),
+                    ..ClipboardFlavors::default()
+                };
+                let content_hash = flavors.payload_hash(ContentType::File, None);
                 store_entry(
                     app,
                     storage,
                     sync_client,
                     ContentType::File,
-                    Some(&file_list),
+                    &flavors,
                     None,
                     &content_hash,
                     source_app.as_deref(),
@@ -137,70 +138,23 @@ fn handle_clipboard_change(
         }
     }
 
-    // Check for HTML
-    if clipboard.has_html().unwrap_or(false) {
-        if let Ok(html) = clipboard.read_html() {
-            if !html.trim().is_empty() {
-                if let Some(text) = plain_text.as_ref() {
-                    let content_hash = hash_text(text);
-                    store_entry(
-                        app,
-                        storage,
-                        sync_client,
-                        ContentType::Text,
-                        Some(text),
-                        None,
-                        &content_hash,
-                        source_app.as_deref(),
-                    );
-                    return;
-                }
+    let flavors = read_text_flavors(clipboard);
+    if !flavors.is_empty() {
+        let content_type = if flavors.text_plain.is_some() {
+            ContentType::Text
+        } else if flavors.text_html.is_some() {
+            ContentType::Html
+        } else {
+            ContentType::Rtf
+        };
 
-                let content_hash = hash_text(&html);
-                store_entry(
-                    app,
-                    storage,
-                    sync_client,
-                    ContentType::Html,
-                    Some(&html),
-                    None,
-                    &content_hash,
-                    source_app.as_deref(),
-                );
-                return;
-            }
-        }
-    }
-
-    // Check for RTF
-    if clipboard.has_rtf().unwrap_or(false) {
-        if let Ok(rtf) = clipboard.read_rtf() {
-            if !rtf.is_empty() {
-                let content_hash = hash_text(&rtf);
-                store_entry(
-                    app,
-                    storage,
-                    sync_client,
-                    ContentType::Rtf,
-                    Some(&rtf),
-                    None,
-                    &content_hash,
-                    source_app.as_deref(),
-                );
-                return;
-            }
-        }
-    }
-
-    // Fall back to plain text
-    if let Some(text) = plain_text {
-        let content_hash = hash_text(&text);
+        let content_hash = flavors.payload_hash(content_type, None);
         store_entry(
             app,
             storage,
             sync_client,
-            ContentType::Text,
-            Some(&text),
+            content_type,
+            &flavors,
             None,
             &content_hash,
             source_app.as_deref(),
@@ -208,23 +162,50 @@ fn handle_clipboard_change(
     }
 }
 
-fn read_plain_text(clipboard: &Clipboard) -> Option<String> {
-    if !clipboard.has_text().unwrap_or(false) {
-        return None;
-    }
+fn read_text_flavors(clipboard: &Clipboard) -> ClipboardFlavors {
+    let text_plain = if clipboard.has_text().unwrap_or(false) {
+        clipboard
+            .read_text()
+            .ok()
+            .filter(|text| !text.trim().is_empty())
+    } else {
+        None
+    };
 
-    let text = clipboard.read_text().ok()?;
-    if text.trim().is_empty() {
-        return None;
-    }
+    let text_html = if clipboard.has_html().unwrap_or(false) {
+        clipboard
+            .read_html()
+            .ok()
+            .filter(|html| !html.trim().is_empty())
+    } else {
+        None
+    };
 
-    Some(text)
+    let text_rtf = if clipboard.has_rtf().unwrap_or(false) {
+        clipboard
+            .read_rtf()
+            .ok()
+            .filter(|rtf| !rtf.trim().is_empty())
+    } else {
+        None
+    };
+
+    ClipboardFlavors {
+        text_plain,
+        text_html,
+        text_rtf,
+        file_list: None,
+    }
 }
 
 #[cfg(desktop)]
 fn read_cached_source_app(app: &tauri::AppHandle) -> Option<String> {
     let state = app.state::<crate::AppState>();
-    state.last_focused_app.lock().ok().and_then(|guard| guard.clone())
+    state
+        .last_focused_app
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
 }
 
 #[cfg(not(desktop))]
@@ -238,14 +219,14 @@ fn store_entry(
     storage: &Arc<LocalStorage>,
     sync_client: &Arc<SyncClient>,
     content_type: ContentType,
-    text_content: Option<&str>,
+    flavors: &ClipboardFlavors,
     blob_content: Option<&[u8]>,
     content_hash: &str,
     source_app: Option<&str>,
 ) {
     match storage.insert_entry(
         content_type,
-        text_content,
+        flavors,
         blob_content,
         content_hash,
         source_app,

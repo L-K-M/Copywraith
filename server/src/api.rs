@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{Modify, OpenApi, ToSchema};
 
 use copywraith_core::api_types::*;
-use copywraith_core::models::ContentType;
+use copywraith_core::models::{ClipboardFlavors, ContentType};
 
 use crate::crypto;
 use crate::AppState;
@@ -333,10 +333,15 @@ async fn create_entry(
     ensure_authorized(state.as_ref(), &headers)?;
 
     let dek = get_dek(&state);
+    let flavors = req
+        .flavors
+        .clone()
+        .unwrap_or_else(ClipboardFlavors::default)
+        .merge_legacy(req.content_type, req.text_content.as_deref());
 
     let (entry, created) = state.storage.create_entry(
         req.content_type,
-        req.text_content.as_deref(),
+        &flavors,
         req.blob_base64.as_deref(),
         req.source_app.as_deref(),
         req.starred,
@@ -706,15 +711,24 @@ fn get_dek(state: &AppState) -> Option<[u8; 32]> {
     crypto.get_dek()
 }
 
-/// Mask `text_content` on sensitive entries so the server never sends
+/// Mask text payloads on sensitive entries so the server never sends
 /// the full secret over the wire. Shows first 3 characters + bullets.
 fn mask_sensitive_entry(
     mut entry: copywraith_core::models::ClipboardEntry,
 ) -> copywraith_core::models::ClipboardEntry {
     if entry.sensitive {
-        entry.text_content = entry
-            .text_content
-            .map(|text| copywraith_core::content::mask_sensitive(&text, 60));
+        if let Some(plain) = entry.best_plain_text() {
+            let masked = copywraith_core::content::mask_sensitive(&plain, 60);
+            entry.text_content = Some(masked.clone());
+            entry.flavors.text_plain = Some(masked);
+        } else {
+            entry.text_content = None;
+            entry.flavors.text_plain = None;
+        }
+
+        entry.flavors.text_html = None;
+        entry.flavors.text_rtf = None;
+        entry.flavors.file_list = None;
     }
     entry
 }

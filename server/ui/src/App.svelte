@@ -228,20 +228,17 @@
 			document.body.appendChild(a);
 			a.click();
 			document.body.removeChild(a);
-		} else if (entry.text_content) {
-			const ext =
-				entry.content_type === 'html'
-					? 'html'
-					: entry.content_type === 'rtf'
-						? 'rtf'
-						: 'txt';
-			const mime =
-				entry.content_type === 'html'
-					? 'text/html'
-					: entry.content_type === 'rtf'
-						? 'application/rtf'
-						: 'text/plain';
-			const blob = new Blob([entry.text_content], { type: mime });
+		} else {
+			const html = entry.flavors?.text_html ?? (entry.content_type === 'html' ? entry.text_content : null);
+			const rtf = entry.flavors?.text_rtf ?? (entry.content_type === 'rtf' ? entry.text_content : null);
+			const plain = entry.flavors?.text_plain ?? entry.text_content;
+
+			const payload = html || rtf || plain;
+			if (!payload) return;
+
+			const ext = html ? 'html' : rtf ? 'rtf' : 'txt';
+			const mime = html ? 'text/html' : rtf ? 'application/rtf' : 'text/plain';
+			const blob = new Blob([payload], { type: mime });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;

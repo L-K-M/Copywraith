@@ -2,41 +2,167 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use chrono::Utc;
-use copywraith_core::models::{ClipboardEntry, ContentType};
+use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
 use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection, OptionalExtension};
 use ulid::Ulid;
 
 use crate::models::Settings;
 
+const ENTRY_SELECT_COLUMNS: &str =
+    "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
+
 pub struct LocalStorage {
     db: Mutex<Connection>,
     blob_dir: std::path::PathBuf,
 }
 
-/// Parse a SQLite row (with the standard 10-column SELECT) into a ClipboardEntry.
+/// Parse a SQLite row (with the standard entry SELECT columns) into a ClipboardEntry.
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
+    let content_type = row
+        .get::<_, String>(1)?
+        .parse::<ContentType>()
+        .unwrap_or(ContentType::Text);
+    let legacy_text_content: Option<String> = row.get(2)?;
+    let flavors = ClipboardFlavors {
+        text_plain: row.get(3)?,
+        text_html: row.get(4)?,
+        text_rtf: row.get(5)?,
+        file_list: None,
+    }
+    .merge_legacy(content_type, legacy_text_content.as_deref());
+
     Ok(ClipboardEntry {
         id: row.get(0)?,
-        content_type: row
-            .get::<_, String>(1)?
-            .parse::<ContentType>()
-            .unwrap_or(ContentType::Text),
-        text_content: row.get(2)?,
-        blob_hash: row.get(3)?,
-        blob_size: row.get::<_, Option<i64>>(4)?.map(|s| s as u64),
-        source_app: row.get(5)?,
-        starred: row.get::<_, i32>(6)? != 0,
-        sensitive: row.get::<_, i32>(7)? != 0,
+        content_type,
+        text_content: legacy_text_content.or_else(|| flavors.to_legacy_text_content(content_type)),
+        blob_hash: row.get(6)?,
+        blob_size: row.get::<_, Option<i64>>(7)?.map(|s| s as u64),
+        source_app: row.get(8)?,
+        flavors,
+        starred: row.get::<_, i32>(9)? != 0,
+        sensitive: row.get::<_, i32>(10)? != 0,
         created_at: row
-            .get::<_, String>(8)?
+            .get::<_, String>(11)?
             .parse()
             .unwrap_or_else(|_| Utc::now()),
         updated_at: row
-            .get::<_, String>(9)?
+            .get::<_, String>(12)?
             .parse()
             .unwrap_or_else(|_| Utc::now()),
     })
+}
+
+fn has_entries_column(conn: &Connection, column: &str) -> bool {
+    conn.prepare(&format!("SELECT {} FROM entries LIMIT 0", column))
+        .is_ok()
+}
+
+fn ensure_entries_column(
+    conn: &Connection,
+    column: &str,
+    definition_sql: &str,
+) -> anyhow::Result<()> {
+    if has_entries_column(conn, column) {
+        return Ok(());
+    }
+
+    conn.execute_batch(&format!(
+        "ALTER TABLE entries ADD COLUMN {} {};",
+        column, definition_sql
+    ))?;
+    Ok(())
+}
+
+fn backfill_flavor_columns(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE entries
+         SET text_plain = text_content
+         WHERE text_plain IS NULL AND content_type = 'text' AND text_content IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE entries
+         SET text_html = text_content
+         WHERE text_html IS NULL AND content_type = 'html' AND text_content IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE entries
+         SET text_rtf = text_content
+         WHERE text_rtf IS NULL AND content_type = 'rtf' AND text_content IS NOT NULL",
+        [],
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, content_type, text_content, text_plain, text_html, text_rtf, search_text FROM entries",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (id, content_type_raw, text_content, text_plain, text_html, text_rtf, search_text) in rows {
+        let content_type = content_type_raw
+            .parse::<ContentType>()
+            .unwrap_or(ContentType::Text);
+
+        let prev_text_plain = text_plain.clone();
+        let prev_text_html = text_html.clone();
+        let prev_text_rtf = text_rtf.clone();
+
+        let flavors = ClipboardFlavors {
+            text_plain,
+            text_html,
+            text_rtf,
+            file_list: None,
+        }
+        .merge_legacy(content_type, text_content.as_deref());
+
+        let next_text_content = flavors.to_legacy_text_content(content_type);
+        let next_search_text = flavors.best_plain_text();
+        let next_text_plain = flavors.text_plain.clone();
+        let next_text_html = flavors.text_html.clone();
+        let next_text_rtf = flavors.text_rtf.clone();
+
+        if text_content != next_text_content
+            || search_text != next_search_text
+            || prev_text_plain != next_text_plain
+            || prev_text_html != next_text_html
+            || prev_text_rtf != next_text_rtf
+        {
+            conn.execute(
+                "UPDATE entries
+                 SET text_content = ?1,
+                     text_plain = ?2,
+                     text_html = ?3,
+                     text_rtf = ?4,
+                     search_text = ?5
+                 WHERE id = ?6",
+                params![
+                    next_text_content,
+                    next_text_plain,
+                    next_text_html,
+                    next_text_rtf,
+                    next_search_text,
+                    id
+                ],
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 impl LocalStorage {
@@ -54,6 +180,10 @@ impl LocalStorage {
                 id TEXT PRIMARY KEY,
                 content_type TEXT NOT NULL,
                 text_content TEXT,
+                text_plain TEXT,
+                text_html TEXT,
+                text_rtf TEXT,
+                search_text TEXT,
                 blob_hash TEXT,
                 blob_size INTEGER,
                 content_hash TEXT NOT NULL,
@@ -85,6 +215,13 @@ impl LocalStorage {
             conn.execute_batch("ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;")?;
         }
 
+        ensure_entries_column(&conn, "text_plain", "TEXT")?;
+        ensure_entries_column(&conn, "text_html", "TEXT")?;
+        ensure_entries_column(&conn, "text_rtf", "TEXT")?;
+        ensure_entries_column(&conn, "search_text", "TEXT")?;
+
+        backfill_flavor_columns(&conn)?;
+
         Ok(Self {
             db: Mutex::new(conn),
             blob_dir,
@@ -94,12 +231,16 @@ impl LocalStorage {
     pub fn insert_entry(
         &self,
         content_type: ContentType,
-        text_content: Option<&str>,
+        flavors: &ClipboardFlavors,
         blob_data: Option<&[u8]>,
         content_hash: &str,
         source_app: Option<&str>,
     ) -> anyhow::Result<Option<ClipboardEntry>> {
         let db = self.db.lock().unwrap();
+
+        let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
+        let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
+        let search_text = resolved_flavors.best_plain_text();
 
         // Check for duplicate
         let existing_id: Option<String> = db
@@ -140,17 +281,22 @@ impl LocalStorage {
         let now = Utc::now();
         let id = Ulid::new().to_string();
 
-        let sensitive = text_content
+        let sensitive = search_text
+            .as_ref()
             .map(|t| contains_sensitive_data(t))
             .unwrap_or(false);
 
         db.execute(
-            "INSERT INTO entries (id, content_type, text_content, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, 0, ?9, ?10)",
+            "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, 0, ?13, ?14)",
             params![
                 id,
                 content_type.as_str(),
-                text_content,
+                legacy_text_content,
+                resolved_flavors.text_plain,
+                resolved_flavors.text_html,
+                resolved_flavors.text_rtf,
+                search_text,
                 blob_hash,
                 blob_size.map(|s| s as i64),
                 content_hash,
@@ -161,13 +307,17 @@ impl LocalStorage {
             ],
         )?;
 
+        let entry_flavors = flavors.clone().merge_legacy(content_type, None);
+        let entry_text_content = entry_flavors.to_legacy_text_content(content_type);
+
         Ok(Some(ClipboardEntry {
             id,
             content_type,
-            text_content: text_content.map(|s| s.to_string()),
+            text_content: entry_text_content,
             blob_hash,
             blob_size,
             source_app: source_app.map(|s| s.to_string()),
+            flavors: entry_flavors,
             starred: false,
             sensitive,
             created_at: now,
@@ -212,7 +362,7 @@ impl LocalStorage {
 
         if let Some(q) = search {
             if !q.is_empty() {
-                conditions.push(format!("text_content LIKE ?{}", param_values.len() + 1));
+                conditions.push(format!("search_text LIKE ?{}", param_values.len() + 1));
                 param_values.push(Box::new(format!("%{}%", q)));
             }
         }
@@ -224,10 +374,11 @@ impl LocalStorage {
         };
 
         let sql = format!(
-            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
+            "SELECT {}
              FROM entries {}
              ORDER BY updated_at DESC
              LIMIT ?{} OFFSET ?{}",
+            ENTRY_SELECT_COLUMNS,
             where_clause,
             param_values.len() + 1,
             param_values.len() + 2,
@@ -251,8 +402,7 @@ impl LocalStorage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
-                 FROM entries WHERE id = ?1",
+                &format!("SELECT {} FROM entries WHERE id = ?1", ENTRY_SELECT_COLUMNS),
                 params![id],
                 |row| row_to_entry(row),
             )
@@ -359,8 +509,10 @@ impl LocalStorage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
-                 FROM entries ORDER BY updated_at DESC LIMIT 1",
+                &format!(
+                    "SELECT {} FROM entries ORDER BY updated_at DESC LIMIT 1",
+                    ENTRY_SELECT_COLUMNS
+                ),
                 [],
                 |row| row_to_entry(row),
             )
@@ -370,10 +522,10 @@ impl LocalStorage {
 
     pub fn get_unsynced_entries(&self) -> anyhow::Result<Vec<ClipboardEntry>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare(
-            "SELECT id, content_type, text_content, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at
-             FROM entries WHERE synced = 0 ORDER BY created_at ASC LIMIT 50",
-        )?;
+        let mut stmt = db.prepare(&format!(
+            "SELECT {} FROM entries WHERE synced = 0 ORDER BY created_at ASC LIMIT 50",
+            ENTRY_SELECT_COLUMNS
+        ))?;
 
         let entries = stmt
             .query_map([], |row| row_to_entry(row))?

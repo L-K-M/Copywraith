@@ -2,8 +2,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use copywraith_core::api_types::{CreateEntryRequest, EntryResponse, ListEntriesResponse};
-use copywraith_core::content::{bytes_to_base64, hash_bytes, hash_text};
-use copywraith_core::models::{ClipboardEntry, ContentType};
+use copywraith_core::content::{bytes_to_base64, hash_bytes};
+use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
 use serde::Serialize;
 
 use crate::{models::Settings, storage::LocalStorage};
@@ -144,13 +144,9 @@ impl SyncClient {
             return; // No server configured, skip sync
         }
 
-        let content_hash = if let Some(ref text) = entry.text_content {
-            hash_text(text)
-        } else if let Some(ref hash) = entry.blob_hash {
-            hash.clone()
-        } else {
-            return;
-        };
+        let flavors = entry.resolved_flavors();
+
+        let content_hash = flavors.payload_hash(entry.content_type, entry.blob_hash.as_deref());
 
         let blob_base64 = if let Some(ref hash) = entry.blob_hash {
             storage
@@ -164,7 +160,12 @@ impl SyncClient {
 
         let req = CreateEntryRequest {
             content_type: entry.content_type,
-            text_content: entry.text_content.clone(),
+            text_content: flavors.to_legacy_text_content(entry.content_type),
+            flavors: if flavors.is_empty() {
+                None
+            } else {
+                Some(flavors.clone())
+            },
             blob_base64,
             source_app: entry.source_app.clone(),
             starred: Some(entry.starred),
@@ -424,11 +425,12 @@ impl SyncClient {
         storage: &LocalStorage,
     ) -> anyhow::Result<bool> {
         let mut blob_data: Option<Vec<u8>> = None;
+        let remote_flavors = resolved_remote_flavors(&remote.entry);
 
         let content_hash = match remote.entry.content_type {
             ContentType::Image => {
                 if let Some(hash) = remote.entry.blob_hash.clone() {
-                    hash
+                    remote_flavors.payload_hash(ContentType::Image, Some(&hash))
                 } else {
                     let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
                     if data.is_empty() {
@@ -436,15 +438,10 @@ impl SyncClient {
                     }
                     let hash = hash_bytes(&data);
                     blob_data = Some(data);
-                    hash
+                    remote_flavors.payload_hash(ContentType::Image, Some(&hash))
                 }
             }
-            _ => {
-                let Some(text) = remote.entry.text_content.as_ref() else {
-                    return Ok(false);
-                };
-                hash_text(text)
-            }
+            _ => remote_flavors.payload_hash(remote.entry.content_type, None),
         };
 
         if storage.has_content_hash(&content_hash)? {
@@ -472,7 +469,7 @@ impl SyncClient {
 
         let inserted = storage.insert_entry(
             remote.entry.content_type,
-            remote.entry.text_content.as_deref(),
+            &remote_flavors,
             blob_data.as_deref(),
             &content_hash,
             remote.entry.source_app.as_deref(),
@@ -586,6 +583,13 @@ impl SyncClient {
         Err(last_error
             .unwrap_or_else(|| anyhow::anyhow!("Failed to download blob for {}", remote.entry.id)))
     }
+}
+
+fn resolved_remote_flavors(entry: &ClipboardEntry) -> ClipboardFlavors {
+    entry
+        .flavors
+        .clone()
+        .merge_legacy(entry.content_type, entry.text_content.as_deref())
 }
 
 fn configured_server_urls(settings: &Settings) -> Vec<ServerEndpoint> {
