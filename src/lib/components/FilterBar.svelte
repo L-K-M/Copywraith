@@ -23,6 +23,20 @@
 		debouncedLoad();
 	}
 
+	function clearFilter() {
+		if (!$filterText) {
+			return;
+		}
+
+		filterText.set('');
+		debouncedLoad();
+	}
+
+	function handleClearFilter() {
+		clearFilter();
+		filterInput?.focus();
+	}
+
 	function handleStarredChange(checked: boolean) {
 		starredOnly.set(checked);
 		debouncedLoad();
@@ -48,10 +62,7 @@
 		}
 
 		if (e.key === 'Escape') {
-			if ($filterText) {
-				filterText.set('');
-				debouncedLoad();
-			}
+			clearFilter();
 		}
 	}
 </script>
@@ -67,6 +78,16 @@
 			oninput={handleInput}
 			onkeydown={handleKeydown}
 		/>
+		{#if $filterText}
+			<button
+				type="button"
+				class="clear-filter-btn"
+				onclick={handleClearFilter}
+				aria-label="Clear filter"
+			>
+				Clear
+			</button>
+		{/if}
 	</div>
 	<div class="filter-options">
 		<Checkbox
@@ -91,11 +112,37 @@
 
 	.filter-input-wrapper {
 		flex: 1;
+		position: relative;
 	}
 
 	.filter-input {
 		width: 100%;
 		box-sizing: border-box;
+		padding-right: 54px;
+	}
+
+	.clear-filter-btn {
+		position: absolute;
+		right: 6px;
+		top: 50%;
+		transform: translateY(-50%);
+		height: 20px;
+		min-width: 42px;
+		padding: 0 6px;
+		border: 1px solid #000;
+		border-right-color: #666;
+		border-bottom-color: #666;
+		background: #ddd;
+		font-size: 11px;
+		line-height: 1;
+		cursor: pointer;
+	}
+
+	.clear-filter-btn:active {
+		border-right-color: #000;
+		border-bottom-color: #000;
+		border-left-color: #666;
+		border-top-color: #666;
 	}
 
 	.filter-options {

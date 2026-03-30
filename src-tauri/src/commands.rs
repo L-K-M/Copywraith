@@ -320,17 +320,5 @@ pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
 
 /// Simple HTML tag stripping
 fn strip_html(html: &str) -> String {
-    let mut result = String::with_capacity(html.len());
-    let mut in_tag = false;
-
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => result.push(ch),
-            _ => {}
-        }
-    }
-
-    result
+    copywraith_core::content::strip_html(html)
 }

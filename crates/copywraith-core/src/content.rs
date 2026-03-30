@@ -89,30 +89,9 @@ pub fn strip_html(html: &str) -> String {
         if !in_tag && !in_style && !in_script {
             // Decode HTML entities
             if chars[i] == '&' {
-                let rest: String = chars[i..].iter().take(10).collect();
-                if rest.starts_with("&nbsp;") {
-                    result.push(' ');
-                    i += 6;
-                    continue;
-                } else if rest.starts_with("&amp;") {
-                    result.push('&');
-                    i += 5;
-                    continue;
-                } else if rest.starts_with("&lt;") {
-                    result.push('<');
-                    i += 4;
-                    continue;
-                } else if rest.starts_with("&gt;") {
-                    result.push('>');
-                    i += 4;
-                    continue;
-                } else if rest.starts_with("&quot;") {
-                    result.push('"');
-                    i += 6;
-                    continue;
-                } else if rest.starts_with("&#39;") {
-                    result.push('\'');
-                    i += 5;
+                if let Some((decoded, consumed)) = decode_html_entity(&chars[i..]) {
+                    result.push(decoded);
+                    i += consumed;
                     continue;
                 }
             }
@@ -130,6 +109,45 @@ pub fn strip_html(html: &str) -> String {
 // Helper to find byte index from char index in a lowercase string
 fn lower_byte_index(chars: &[char], char_idx: usize) -> usize {
     chars[..char_idx].iter().map(|c| c.len_utf8()).sum()
+}
+
+fn decode_html_entity(chars: &[char]) -> Option<(char, usize)> {
+    const MAX_ENTITY_LEN: usize = 16;
+
+    if chars.first().copied()? != '&' {
+        return None;
+    }
+
+    let semicolon_index = chars
+        .iter()
+        .take(MAX_ENTITY_LEN)
+        .position(|ch| *ch == ';')?;
+    if semicolon_index < 2 {
+        return None;
+    }
+
+    let entity: String = chars[1..semicolon_index].iter().collect();
+    let decoded = match entity.as_str() {
+        "nbsp" => Some(' '),
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" | "#39" => Some('\''),
+        _ => decode_numeric_html_entity(&entity),
+    }?;
+
+    Some((decoded, semicolon_index + 1))
+}
+
+fn decode_numeric_html_entity(entity: &str) -> Option<char> {
+    if let Some(hex) = entity.strip_prefix("#x").or_else(|| entity.strip_prefix("#X")) {
+        u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+    } else if let Some(decimal) = entity.strip_prefix('#') {
+        decimal.parse::<u32>().ok().and_then(char::from_u32)
+    } else {
+        None
+    }
 }
 
 /// Strip RTF control words and groups to extract plain text.
@@ -354,6 +372,12 @@ mod tests {
     #[test]
     fn test_strip_html_entities() {
         assert_eq!(strip_html("a &amp; b &lt; c &gt; d"), "a & b < c > d");
+    }
+
+    #[test]
+    fn test_strip_html_numeric_entities() {
+        assert_eq!(strip_html("Popup&#32;position"), "Popup position");
+        assert_eq!(strip_html("A&#x20;B"), "A B");
     }
 
     #[test]

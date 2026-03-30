@@ -315,7 +315,7 @@ fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), S
 
 #[cfg(desktop)]
 fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
-    const CURSOR_OFFSET_PX: f64 = 14.0;
+    const CURSOR_OFFSET_LOGICAL_PX: f64 = 14.0;
 
     let cursor = match popup.cursor_position() {
         Ok(pos) => pos,
@@ -326,19 +326,108 @@ fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
         }
     };
 
-    let final_x = (cursor.x + CURSOR_OFFSET_PX).round() as i32;
-    let final_y = (cursor.y + CURSOR_OFFSET_PX).round() as i32;
+    let monitor = match resolve_monitor_for_cursor(popup, cursor) {
+        Some(monitor) => monitor,
+        None => {
+            log::debug!(
+                "Could not resolve a monitor for cursor position; centering popup"
+            );
+            let _ = popup.center();
+            return;
+        }
+    };
+
+    let popup_size = popup
+        .outer_size()
+        .or_else(|_| popup.inner_size())
+        .unwrap_or_else(|_| tauri::PhysicalSize::new(560_u32, 480_u32));
+
+    let cursor_logical = cursor.to_logical::<f64>(monitor.scale_factor());
+    let candidate_logical = tauri::LogicalPosition::new(
+        cursor_logical.x + CURSOR_OFFSET_LOGICAL_PX,
+        cursor_logical.y + CURSOR_OFFSET_LOGICAL_PX,
+    );
+    let candidate_position = candidate_logical.to_physical::<i32>(monitor.scale_factor());
+
+    let work_area = monitor.work_area();
+    let final_x = clamp_popup_axis(
+        candidate_position.x,
+        popup_size.width,
+        work_area.position.x,
+        work_area.size.width,
+    );
+    let final_y = clamp_popup_axis(
+        candidate_position.y,
+        popup_size.height,
+        work_area.position.y,
+        work_area.size.height,
+    );
 
     log::debug!(
-        "Popup cursor=({}, {}), final_position=({}, {})",
+        "Popup cursor=({}, {}), candidate_position=({}, {}), work_area=({}, {}, {}x{}), popup_size={}x{}, final_position=({}, {})",
         cursor.x.round() as i32,
         cursor.y.round() as i32,
+        candidate_position.x,
+        candidate_position.y,
+        work_area.position.x,
+        work_area.position.y,
+        work_area.size.width,
+        work_area.size.height,
+        popup_size.width,
+        popup_size.height,
         final_x,
         final_y
     );
 
-    // Use physical coordinates because cursor_position() is physical.
     let _ = popup.set_position(tauri::PhysicalPosition::new(final_x, final_y));
+}
+
+#[cfg(desktop)]
+fn resolve_monitor_for_cursor(
+    popup: &tauri::WebviewWindow,
+    cursor: tauri::PhysicalPosition<f64>,
+) -> Option<tauri::window::Monitor> {
+    popup
+        .available_monitors()
+        .ok()
+        .and_then(|monitors| {
+            monitors
+                .into_iter()
+                .find(|monitor| monitor_contains_cursor(monitor, cursor))
+        })
+        .or_else(|| popup.current_monitor().ok().flatten())
+}
+
+#[cfg(desktop)]
+fn monitor_contains_cursor(
+    monitor: &tauri::window::Monitor,
+    cursor: tauri::PhysicalPosition<f64>,
+) -> bool {
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+
+    let left = f64::from(monitor_position.x);
+    let top = f64::from(monitor_position.y);
+    let right = left + f64::from(monitor_size.width);
+    let bottom = top + f64::from(monitor_size.height);
+
+    cursor.x >= left && cursor.x < right && cursor.y >= top && cursor.y < bottom
+}
+
+#[cfg(desktop)]
+fn clamp_popup_axis(candidate: i32, popup_extent: u32, work_start: i32, work_extent: u32) -> i32 {
+    let candidate = i64::from(candidate);
+    let popup_extent = i64::from(popup_extent);
+    let work_start = i64::from(work_start);
+    let work_extent = i64::from(work_extent);
+
+    let max_origin = if popup_extent >= work_extent {
+        work_start
+    } else {
+        work_start + work_extent - popup_extent
+    };
+
+    candidate.clamp(work_start, max_origin) as i32
 }
 
 #[cfg(desktop)]
