@@ -58,13 +58,12 @@ pub fn start_monitoring(
 
 /// Handle a clipboard change by reading current clipboard contents and storing them.
 ///
-/// Priority order: Image > File > HTML > RTF > Text
-/// We pick the richest content type available. If an image is present, we store
-/// the image so the UI can render a thumbnail preview. If files are present, we
-/// store them as a file list. For
-/// text-based content, we prefer HTML > RTF > plain text, except Office-style
-/// HTML wrappers where we prefer plain text to avoid storing raw `<html ...>`
-/// markup for normal text copies from Word.
+/// Priority order: Image > File > Text > HTML > RTF
+/// If an image is present, we store the image so the UI can render a thumbnail
+/// preview. If files are present, we store them as a file list. For text-based
+/// payloads, we prefer plain text whenever it is available so pasted output
+/// remains byte-for-byte close to what the source app provided (avoids storing
+/// HTML entity-encoded text from some editors).
 fn handle_clipboard_change(
     app: &tauri::AppHandle,
     clipboard: &Clipboard,
@@ -142,21 +141,19 @@ fn handle_clipboard_change(
     if clipboard.has_html().unwrap_or(false) {
         if let Ok(html) = clipboard.read_html() {
             if !html.trim().is_empty() {
-                if should_prefer_plain_text_for_html(&html) {
-                    if let Some(text) = plain_text.as_ref() {
-                        let content_hash = hash_text(text);
-                        store_entry(
-                            app,
-                            storage,
-                            sync_client,
-                            ContentType::Text,
-                            Some(text),
-                            None,
-                            &content_hash,
-                            source_app.as_deref(),
-                        );
-                        return;
-                    }
+                if let Some(text) = plain_text.as_ref() {
+                    let content_hash = hash_text(text);
+                    store_entry(
+                        app,
+                        storage,
+                        sync_client,
+                        ContentType::Text,
+                        Some(text),
+                        None,
+                        &content_hash,
+                        source_app.as_deref(),
+                    );
+                    return;
                 }
 
                 let content_hash = hash_text(&html);
@@ -222,14 +219,6 @@ fn read_plain_text(clipboard: &Clipboard) -> Option<String> {
     }
 
     Some(text)
-}
-
-fn should_prefer_plain_text_for_html(html: &str) -> bool {
-    let lower = html.to_ascii_lowercase();
-    lower.contains("urn:schemas-microsoft-com:office:office")
-        || lower.contains("urn:schemas-microsoft-com:office:word")
-        || lower.contains("class=\"msonormal\"")
-        || lower.contains("mso-")
 }
 
 #[cfg(desktop)]
