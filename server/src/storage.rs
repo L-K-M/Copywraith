@@ -5,7 +5,7 @@ use chrono::Utc;
 use copywraith_core::content::{base64_to_bytes, hash_bytes};
 use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
 use copywraith_core::sensitive::contains_sensitive_data;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use ulid::Ulid;
 
 use crate::crypto;
@@ -17,6 +17,9 @@ pub struct Storage {
 
 const ENTRY_SELECT_COLUMNS: &str =
     "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
+
+const ENTRIES_FTS_SCHEMA_VERSION_KEY: &str = "entries_fts_schema_version";
+const ENTRIES_FTS_SCHEMA_VERSION: i64 = 1;
 
 fn has_entries_column(conn: &Connection, column: &str) -> bool {
     conn.prepare(&format!("SELECT {} FROM entries LIMIT 0", column))
@@ -166,6 +169,54 @@ fn rebuild_entries_fts(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn sqlite_object_exists(
+    conn: &Connection,
+    object_type: &str,
+    object_name: &str,
+) -> anyhow::Result<bool> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2 LIMIT 1",
+            params![object_type, object_name],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    Ok(exists.is_some())
+}
+
+fn ensure_entries_fts_schema(conn: &Connection) -> anyhow::Result<()> {
+    let stored_version = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            params![ENTRIES_FTS_SCHEMA_VERSION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|value| value.parse::<i64>().ok());
+
+    let fts_objects_present = sqlite_object_exists(conn, "table", "entries_fts")?
+        && sqlite_object_exists(conn, "trigger", "entries_ai")?
+        && sqlite_object_exists(conn, "trigger", "entries_ad")?
+        && sqlite_object_exists(conn, "trigger", "entries_au")?;
+
+    if stored_version == Some(ENTRIES_FTS_SCHEMA_VERSION) && fts_objects_present {
+        return Ok(());
+    }
+
+    rebuild_entries_fts(conn)?;
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![
+            ENTRIES_FTS_SCHEMA_VERSION_KEY,
+            ENTRIES_FTS_SCHEMA_VERSION.to_string()
+        ],
+    )?;
+
+    Ok(())
+}
+
 fn encrypt_optional_text(dek: &[u8; 32], value: Option<String>) -> anyhow::Result<Option<String>> {
     match value {
         Some(text) if crypto::is_encrypted_text(&text) => Ok(Some(text)),
@@ -230,6 +281,11 @@ impl Storage {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries(updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_entries_starred ON entries(starred) WHERE starred = 1;
@@ -269,7 +325,7 @@ impl Storage {
         ensure_entries_column(&conn, "search_text", "TEXT")?;
 
         backfill_flavor_columns(&conn)?;
-        rebuild_entries_fts(&conn)?;
+        ensure_entries_fts_schema(&conn)?;
 
         Ok(Self {
             db: Mutex::new(conn),
