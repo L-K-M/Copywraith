@@ -91,16 +91,20 @@ pub fn run() {
             // Desktop: start clipboard monitoring and register global shortcuts
             #[cfg(desktop)]
             {
-                clipboard::start_monitoring(
-                    app_handle.clone(),
-                    storage.clone(),
-                    sync_client.clone(),
-                );
-
                 paste::start_frontmost_app_cache(&app_handle);
 
                 let settings = storage.get_settings();
                 register_shortcuts(&app_handle, &settings);
+
+                // Start clipboard monitoring shortly after setup completes so
+                // startup remains responsive even if monitor startup is slow.
+                let monitor_app = app_handle.clone();
+                let monitor_storage = storage.clone();
+                let monitor_sync_client = sync_client.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    clipboard::start_monitoring(monitor_app, monitor_storage, monitor_sync_client);
+                });
             }
 
             // Start periodic two-way sync loop (push unsynced + pull remote)

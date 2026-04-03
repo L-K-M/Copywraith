@@ -118,7 +118,7 @@ From repository root:
 
 ```bash
 # Test
-npx tauri dev
+npm run tauri dev
 
 # With log output
 RUST_LOG=debug npm run tauri dev

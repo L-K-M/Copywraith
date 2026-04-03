@@ -94,73 +94,36 @@ fn backfill_flavor_columns(conn: &Connection) -> anyhow::Result<()> {
         [],
     )?;
 
-    let mut stmt = conn.prepare(
-        "SELECT id, content_type, text_content, text_plain, text_html, text_rtf, search_text FROM entries",
+    // Keep startup migrations lightweight: avoid loading and rewriting the entire
+    // history table on every launch. We only fill clearly-missing search_text
+    // values here; new and updated entries always compute search_text at write
+    // time.
+    conn.execute(
+        "UPDATE entries
+         SET search_text = COALESCE(text_plain, text_content)
+         WHERE search_text IS NULL
+           AND content_type = 'text'
+           AND (text_plain IS NOT NULL OR text_content IS NOT NULL)",
+        [],
     )?;
 
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(stmt);
+    conn.execute(
+        "UPDATE entries
+         SET search_text = COALESCE(text_html, text_content)
+         WHERE search_text IS NULL
+           AND content_type = 'html'
+           AND (text_html IS NOT NULL OR text_content IS NOT NULL)",
+        [],
+    )?;
 
-    for (id, content_type_raw, text_content, text_plain, text_html, text_rtf, search_text) in rows {
-        let content_type = content_type_raw
-            .parse::<ContentType>()
-            .unwrap_or(ContentType::Text);
-
-        let prev_text_plain = text_plain.clone();
-        let prev_text_html = text_html.clone();
-        let prev_text_rtf = text_rtf.clone();
-
-        let flavors = ClipboardFlavors {
-            text_plain,
-            text_html,
-            text_rtf,
-            file_list: None,
-        }
-        .merge_legacy(content_type, text_content.as_deref());
-
-        let next_text_content = flavors.to_legacy_text_content(content_type);
-        let next_search_text = flavors.best_plain_text();
-        let next_text_plain = flavors.text_plain.clone();
-        let next_text_html = flavors.text_html.clone();
-        let next_text_rtf = flavors.text_rtf.clone();
-
-        if text_content != next_text_content
-            || search_text != next_search_text
-            || prev_text_plain != next_text_plain
-            || prev_text_html != next_text_html
-            || prev_text_rtf != next_text_rtf
-        {
-            conn.execute(
-                "UPDATE entries
-                 SET text_content = ?1,
-                     text_plain = ?2,
-                     text_html = ?3,
-                     text_rtf = ?4,
-                     search_text = ?5
-                 WHERE id = ?6",
-                params![
-                    next_text_content,
-                    next_text_plain,
-                    next_text_html,
-                    next_text_rtf,
-                    next_search_text,
-                    id
-                ],
-            )?;
-        }
-    }
+    conn.execute(
+        "UPDATE entries
+         SET search_text = COALESCE(text_rtf, text_content)
+         WHERE search_text IS NULL
+           AND content_type = 'rtf'
+           AND (text_rtf IS NOT NULL OR text_content IS NOT NULL)",
+        [],
+    )?;
 
     Ok(())
 }
