@@ -39,11 +39,16 @@ async function getEntriesWithTimeout(options: {
 	}
 }
 
-function syncSelection(list: ClipboardEntry[]) {
+function syncSelection(list: ClipboardEntry[], forceFirst = false) {
 	const selectedId = get(selectedEntryId);
 
 	if (list.length === 0) {
 		selectedEntryId.set(null);
+		return;
+	}
+
+	if (forceFirst) {
+		selectedEntryId.set(list[0].id);
 		return;
 	}
 
@@ -52,7 +57,29 @@ function syncSelection(list: ClipboardEntry[]) {
 	}
 }
 
-export async function loadEntries() {
+export function selectFirstEntry(options?: { forceReselect?: boolean }) {
+	const list = get(entries);
+	if (list.length === 0) {
+		selectedEntryId.set(null);
+		return;
+	}
+
+	const firstId = list[0].id;
+	if (options?.forceReselect && get(selectedEntryId) === firstId) {
+		selectedEntryId.set(null);
+		queueMicrotask(() => {
+			const current = get(entries);
+			if (current.length > 0) {
+				selectedEntryId.set(current[0].id);
+			}
+		});
+		return;
+	}
+
+	selectedEntryId.set(firstId);
+}
+
+export async function loadEntries(options?: { forceSelectFirst?: boolean }) {
 	const requestId = ++loadRequestId;
 	isLoading.set(true);
 
@@ -71,7 +98,7 @@ export async function loadEntries() {
 		}
 
 		entries.set(result);
-		syncSelection(result);
+		syncSelection(result, options?.forceSelectFirst ?? false);
 	} catch (e) {
 		console.error('Failed to load entries:', e);
 	} finally {

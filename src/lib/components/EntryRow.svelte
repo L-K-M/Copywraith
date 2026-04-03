@@ -35,11 +35,13 @@
 
 	let {
 		entry,
+		isFirst = false,
 		selected = false,
 		onselect,
 		onpreview
 	}: {
 		entry: ClipboardEntry;
+		isFirst?: boolean;
 		selected?: boolean;
 		onselect?: (id: string) => void;
 		onpreview?: (entry: ClipboardEntry) => void;
@@ -64,7 +66,7 @@
 
 	$effect(() => {
 		if (selected && rowElement) {
-			rowElement.scrollIntoView({ block: 'nearest' });
+			rowElement.scrollIntoView({ block: isFirst ? 'start' : 'nearest' });
 		}
 	});
 

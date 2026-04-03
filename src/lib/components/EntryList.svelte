@@ -23,9 +23,10 @@
 		empty={$entries.length === 0 && !$isLoading}
 		emptyText="No clipboard entries"
 	>
-		{#each $entries as entry (entry.id)}
+		{#each $entries as entry, index (entry.id)}
 			<EntryRow
 				{entry}
+				isFirst={index === 0}
 				selected={$selectedEntryId === entry.id}
 				onselect={selectEntry}
 				{onpreview}

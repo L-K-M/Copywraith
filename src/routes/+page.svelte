@@ -13,6 +13,7 @@
 		loadEntries,
 		moveSelection,
 		pasteSelectedEntry,
+		selectFirstEntry,
 		starredOnly
 	} from '$lib/util/clipboardStore';
 	import { notify } from '$lib/util/notifications';
@@ -107,7 +108,8 @@
 		if (!mobile) {
 			unlistenPopupShow = await listen<boolean>('popup-show', (event) => {
 				starredOnly.set(event.payload);
-				loadEntries();
+				selectFirstEntry({ forceReselect: true });
+				loadEntries({ forceSelectFirst: true });
 				// Auto-focus the filter field
 				setTimeout(() => {
 					filterBar?.focus();
