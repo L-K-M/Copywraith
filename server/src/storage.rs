@@ -19,7 +19,8 @@ const ENTRY_SELECT_COLUMNS: &str =
     "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
 
 const ENTRIES_FTS_SCHEMA_VERSION_KEY: &str = "entries_fts_schema_version";
-const ENTRIES_FTS_SCHEMA_VERSION: i64 = 1;
+const ENTRIES_FTS_SCHEMA_VERSION: i64 = 2;
+const ENCRYPTED_TEXT_PREFIX_LIKE: &str = "ENC:1:%";
 
 fn has_entries_column(conn: &Connection, column: &str) -> bool {
     conn.prepare(&format!("SELECT {} FROM entries LIMIT 0", column))
@@ -135,7 +136,8 @@ fn backfill_flavor_columns(conn: &Connection) -> anyhow::Result<()> {
 
 fn rebuild_entries_fts(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
-        "
+        &format!(
+            "
         DROP TRIGGER IF EXISTS entries_ai;
         DROP TRIGGER IF EXISTS entries_ad;
         DROP TRIGGER IF EXISTS entries_au;
@@ -147,22 +149,39 @@ fn rebuild_entries_fts(conn: &Connection) -> anyhow::Result<()> {
             content_rowid='rowid'
         );
 
-        CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+        CREATE TRIGGER entries_ai AFTER INSERT ON entries
+        WHEN new.search_text IS NOT NULL AND new.search_text NOT LIKE '{encrypted_prefix}' BEGIN
             INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
         END;
         CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
-            INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
+            INSERT INTO entries_fts(entries_fts, rowid, search_text)
+            SELECT 'delete', old.rowid, old.search_text
+            WHERE old.search_text IS NOT NULL AND old.search_text NOT LIKE '{encrypted_prefix}';
         END;
         CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
-            INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
-            INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+            INSERT INTO entries_fts(entries_fts, rowid, search_text)
+            SELECT 'delete', old.rowid, old.search_text
+            WHERE old.search_text IS NOT NULL AND old.search_text NOT LIKE '{encrypted_prefix}';
+            INSERT INTO entries_fts(rowid, search_text)
+            SELECT new.rowid, new.search_text
+            WHERE new.search_text IS NOT NULL AND new.search_text NOT LIKE '{encrypted_prefix}';
         END;
         ",
+            encrypted_prefix = ENCRYPTED_TEXT_PREFIX_LIKE,
+        ),
     )?;
 
     conn.execute(
         "INSERT INTO entries_fts(rowid, search_text)
-         SELECT rowid, COALESCE(search_text, '') FROM entries",
+         SELECT rowid, search_text
+         FROM entries
+         WHERE search_text IS NOT NULL
+           AND search_text NOT LIKE ?1",
+        params![ENCRYPTED_TEXT_PREFIX_LIKE],
+    )?;
+
+    conn.execute(
+        "INSERT INTO entries_fts(entries_fts) VALUES('optimize')",
         [],
     )?;
 
@@ -298,15 +317,22 @@ impl Storage {
                 content_rowid='rowid'
             );
 
-            CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+            CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries
+            WHEN new.search_text IS NOT NULL AND new.search_text NOT LIKE 'ENC:1:%' BEGIN
                 INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
             END;
             CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-                INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
+                INSERT INTO entries_fts(entries_fts, rowid, search_text)
+                SELECT 'delete', old.rowid, old.search_text
+                WHERE old.search_text IS NOT NULL AND old.search_text NOT LIKE 'ENC:1:%';
             END;
             CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
-                INSERT INTO entries_fts(entries_fts, rowid, search_text) VALUES('delete', old.rowid, old.search_text);
-                INSERT INTO entries_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+                INSERT INTO entries_fts(entries_fts, rowid, search_text)
+                SELECT 'delete', old.rowid, old.search_text
+                WHERE old.search_text IS NOT NULL AND old.search_text NOT LIKE 'ENC:1:%';
+                INSERT INTO entries_fts(rowid, search_text)
+                SELECT new.rowid, new.search_text
+                WHERE new.search_text IS NOT NULL AND new.search_text NOT LIKE 'ENC:1:%';
             END;
             ",
         )?;
