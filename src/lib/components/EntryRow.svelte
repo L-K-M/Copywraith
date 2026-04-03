@@ -239,7 +239,7 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 14px;
+		font-size: 24px;
 	}
 
 	.sensitive-content {
@@ -327,7 +327,7 @@
 		}
 
 		.text-preview {
-			font-size: 15px;
+			font-size: 16px;
 		}
 
 		.image-preview {
