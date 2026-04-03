@@ -1,6 +1,6 @@
 services:
   copywraith-server:
-    image: ${COPYWRAITH_SERVER_IMAGE_REPO:-copywraith-server}:${COPYWRAITH_SERVER_IMAGE_TAG:-0.1.4}
+    image: ${COPYWRAITH_SERVER_IMAGE_REPO:-copywraith-server}:${COPYWRAITH_SERVER_IMAGE_TAG:-0.1.5}
     build:
       context: ..
       dockerfile: server/Dockerfile
