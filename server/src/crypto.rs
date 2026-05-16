@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use anyhow::Context;
 use argon2::Argon2;
 use hkdf::Hkdf;
 use rand::RngCore;
@@ -49,23 +50,28 @@ pub struct CryptoState {
 
 impl CryptoState {
     /// Load auth config from disk. Does NOT unlock (no DEK in memory yet).
-    pub fn load(data_dir: &Path) -> Self {
+    pub fn load(data_dir: &Path) -> anyhow::Result<Self> {
         let auth_path = data_dir.join("auth.json");
         let auth_config = if auth_path.exists() {
-            match std::fs::read_to_string(&auth_path) {
-                Ok(json) => serde_json::from_str::<AuthConfig>(&json).ok(),
-                Err(_) => None,
-            }
+            let json = std::fs::read_to_string(&auth_path).with_context(|| {
+                format!("Failed to read auth config at {}", auth_path.display())
+            })?;
+            Some(serde_json::from_str::<AuthConfig>(&json).with_context(|| {
+                format!(
+                    "Invalid auth config JSON at {}. Refusing to start to avoid data-loss during re-setup.",
+                    auth_path.display()
+                )
+            })?)
         } else {
             None
         };
 
-        CryptoState {
+        Ok(CryptoState {
             data_dir: data_dir.to_path_buf(),
             auth_config,
             dek: None,
             password_hash_cache: None,
-        }
+        })
     }
 
     pub fn is_initialized(&self) -> bool {
@@ -492,7 +498,7 @@ mod tests {
     #[test]
     fn test_setup_and_unlock() {
         let dir = tempfile::tempdir().unwrap();
-        let mut state = CryptoState::load(dir.path());
+        let mut state = CryptoState::load(dir.path()).unwrap();
 
         assert!(!state.is_initialized());
         assert!(!state.is_unlocked());
@@ -519,7 +525,7 @@ mod tests {
     #[test]
     fn test_change_password() {
         let dir = tempfile::tempdir().unwrap();
-        let mut state = CryptoState::load(dir.path());
+        let mut state = CryptoState::load(dir.path()).unwrap();
 
         state.setup_password("old-password").unwrap();
         let dek_before = state.get_dek().unwrap();

@@ -208,26 +208,60 @@
 		}
 	}
 
-	function handleDownloadById(id: string) {
-		api.fetchEntry(id)
-			.then((entry) => triggerDownload(entry))
-			.catch((e) => {
-				errorMessage = `Failed to download entry: ${e.message}`;
-			});
+	async function handleDownloadById(id: string) {
+		try {
+			const entry = await api.fetchEntry(id);
+			await triggerDownload(entry);
+		} catch (e: any) {
+			if (e.message === 'Unauthorized') {
+				screen = 'unlock';
+				return;
+			}
+			errorMessage = `Failed to download entry: ${e.message}`;
+		}
 	}
 
-	function handleDownloadEntry(entry: EntryResponse) {
-		triggerDownload(entry);
+	async function handleDownloadEntry(entry: EntryResponse) {
+		try {
+			await triggerDownload(entry);
+		} catch (e: any) {
+			if (e.message === 'Unauthorized') {
+				screen = 'unlock';
+				return;
+			}
+			errorMessage = `Failed to download entry: ${e.message}`;
+		}
 	}
 
-	function triggerDownload(entry: EntryResponse) {
+	function extensionFromMime(mimeType: string): string {
+		switch (mimeType.toLowerCase()) {
+			case 'image/png':
+				return 'png';
+			case 'image/jpeg':
+				return 'jpg';
+			case 'image/gif':
+				return 'gif';
+			case 'image/webp':
+				return 'webp';
+			case 'image/bmp':
+				return 'bmp';
+			default:
+				return 'png';
+		}
+	}
+
+	async function triggerDownload(entry: EntryResponse) {
 		if (entry.content_type === 'image' && entry.blob_url) {
+			const blob = await api.fetchBlob(entry.blob_url);
+			const objectUrl = URL.createObjectURL(blob);
+			const extension = extensionFromMime(blob.type || 'image/png');
 			const a = document.createElement('a');
-			a.href = entry.blob_url;
-			a.download = `clipboard-${entry.id.substring(0, 8)}.png`;
+			a.href = objectUrl;
+			a.download = `clipboard-${entry.id.substring(0, 8)}.${extension}`;
 			document.body.appendChild(a);
 			a.click();
 			document.body.removeChild(a);
+			URL.revokeObjectURL(objectUrl);
 		} else {
 			const html = entry.flavors?.text_html ?? (entry.content_type === 'html' ? entry.text_content : null);
 			const rtf = entry.flavors?.text_rtf ?? (entry.content_type === 'rtf' ? entry.text_content : null);

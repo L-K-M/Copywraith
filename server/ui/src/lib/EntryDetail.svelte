@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { MovableDialog, Button } from '@lkmc/system7-ui';
+	import * as api from './api';
 	import type { EntryResponse } from './types';
 
 	let {
@@ -11,6 +12,44 @@
 		onclose: () => void;
 		ondownload: (entry: EntryResponse) => void;
 	} = $props();
+
+	let imageObjectUrl = $state<string | null>(null);
+	let imageLoadFailed = $state(false);
+
+	$effect(() => {
+		let disposed = false;
+		let localObjectUrl: string | null = null;
+
+		imageObjectUrl = null;
+		imageLoadFailed = false;
+
+		if (entry.content_type !== 'image' || !entry.blob_url) {
+			return;
+		}
+
+		api
+			.fetchBlobObjectUrl(entry.blob_url)
+			.then((objectUrl) => {
+				if (disposed) {
+					URL.revokeObjectURL(objectUrl);
+					return;
+				}
+				localObjectUrl = objectUrl;
+				imageObjectUrl = objectUrl;
+			})
+			.catch(() => {
+				if (!disposed) {
+					imageLoadFailed = true;
+				}
+			});
+
+		return () => {
+			disposed = true;
+			if (localObjectUrl) {
+				URL.revokeObjectURL(localObjectUrl);
+			}
+		};
+	});
 
 	function formatDate(iso: string | null): string {
 		if (!iso) return '--';
@@ -48,13 +87,17 @@
 			</div>
 		{/if}
 
-		{#if entry.content_type === 'image' && entry.blob_url}
-			<img class="img-full" src={entry.blob_url} alt="Clipboard content preview" />
+		{#if entry.content_type === 'image' && imageObjectUrl}
+			<img class="img-full" src={imageObjectUrl} alt="Clipboard content preview" />
 			{#if entry.blob_size}
 				<div class="meta size-meta">
 					<span>Size: {formatSize(entry.blob_size)}</span>
 				</div>
 			{/if}
+		{:else if entry.content_type === 'image' && imageLoadFailed}
+			<div class="empty-state">Image unavailable (authentication failed or blob missing).</div>
+		{:else if entry.content_type === 'image'}
+			<div class="empty-state">Loading image...</div>
 		{:else if entry.flavors?.text_plain || entry.text_content}
 			<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.flavors?.text_plain ?? entry.text_content}</pre>
 		{:else}

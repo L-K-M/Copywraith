@@ -135,9 +135,8 @@ fn backfill_flavor_columns(conn: &Connection) -> anyhow::Result<()> {
 }
 
 fn rebuild_entries_fts(conn: &Connection) -> anyhow::Result<()> {
-    conn.execute_batch(
-        &format!(
-            "
+    conn.execute_batch(&format!(
+        "
         DROP TRIGGER IF EXISTS entries_ai;
         DROP TRIGGER IF EXISTS entries_ad;
         DROP TRIGGER IF EXISTS entries_au;
@@ -167,9 +166,8 @@ fn rebuild_entries_fts(conn: &Connection) -> anyhow::Result<()> {
             WHERE new.search_text IS NOT NULL AND new.search_text NOT LIKE '{encrypted_prefix}';
         END;
         ",
-            encrypted_prefix = ENCRYPTED_TEXT_PREFIX_LIKE,
-        ),
-    )?;
+        encrypted_prefix = ENCRYPTED_TEXT_PREFIX_LIKE,
+    ))?;
 
     conn.execute(
         "INSERT INTO entries_fts(rowid, search_text)
@@ -529,12 +527,19 @@ impl Storage {
         &self,
         limit: u32,
         offset: u32,
+        before_updated_at: Option<&str>,
+        before_id: Option<&str>,
         content_type: Option<ContentType>,
         starred_only: bool,
         search: Option<&str>,
         dek: Option<&[u8; 32]>,
     ) -> anyhow::Result<(Vec<ClipboardEntry>, u64)> {
         let db = self.db.lock().unwrap();
+        let effective_offset = if before_updated_at.is_some() {
+            0
+        } else {
+            offset
+        };
 
         // When encryption is active and a search term is provided, we can't use
         // FTS on ciphertext. Fall back to in-memory substring search.
@@ -553,6 +558,23 @@ impl Storage {
 
         if starred_only {
             conditions.push("e.starred = 1".to_string());
+        }
+
+        if let Some(cursor_ts) = before_updated_at {
+            if let Some(cursor_id) = before_id {
+                conditions.push(format!(
+                    "(e.updated_at < ?{} OR (e.updated_at = ?{} AND e.id < ?{}))",
+                    params_vec.len() + 1,
+                    params_vec.len() + 2,
+                    params_vec.len() + 3,
+                ));
+                params_vec.push(Box::new(cursor_ts.to_string()));
+                params_vec.push(Box::new(cursor_ts.to_string()));
+                params_vec.push(Box::new(cursor_id.to_string()));
+            } else {
+                conditions.push(format!("e.updated_at < ?{}", params_vec.len() + 1));
+                params_vec.push(Box::new(cursor_ts.to_string()));
+            }
         }
 
         if use_fts {
@@ -579,7 +601,7 @@ impl Storage {
             let query_sql = format!(
                 "SELECT {}
                  FROM entries e {} {}
-                 ORDER BY e.updated_at DESC",
+                 ORDER BY e.updated_at DESC, e.id DESC",
                 ENTRY_SELECT_COLUMNS, fts_join, where_clause,
             );
 
@@ -609,7 +631,7 @@ impl Storage {
             }
 
             let total = filtered.len() as u64;
-            let start = offset as usize;
+            let start = effective_offset as usize;
             let end = (start + limit as usize).min(filtered.len());
             let page = if start < filtered.len() {
                 filtered[start..end].to_vec()
@@ -634,7 +656,7 @@ impl Storage {
             let query_sql = format!(
                 "SELECT {}
                  FROM entries e {} {}
-                 ORDER BY e.updated_at DESC
+                 ORDER BY e.updated_at DESC, e.id DESC
                  LIMIT ?{} OFFSET ?{}",
                 ENTRY_SELECT_COLUMNS,
                 fts_join,
@@ -644,7 +666,7 @@ impl Storage {
             );
 
             params_vec.push(Box::new(limit as i64));
-            params_vec.push(Box::new(offset as i64));
+            params_vec.push(Box::new(effective_offset as i64));
 
             let mut stmt = db.prepare(&query_sql)?;
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =

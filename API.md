@@ -63,3 +63,4 @@ If no password is configured yet, protected endpoints return `403` until passwor
 - Sensitive text is masked in API responses.
 - Blob payloads are fetched separately with `/api/entries/{id}/blob`.
 - `GET /api/entries` supports pagination and filtering via query params (`limit`, `offset`, `content_type`, `starred_only`, `search`).
+- For stable sync pagination on mutable datasets, it also supports cursor params `before_updated_at` + `before_id` (descending by `(updated_at, id)`).

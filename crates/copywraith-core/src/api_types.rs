@@ -33,6 +33,16 @@ pub struct ListEntriesParams {
     pub limit: u32,
     #[serde(default)]
     pub offset: u32,
+    /// Cursor bound for descending `(updated_at, id)` pagination.
+    ///
+    /// When set (optionally with `before_id`), results include only rows older
+    /// than this boundary. This avoids offset drift while rows are being
+    /// inserted/updated concurrently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_updated_at: Option<String>,
+    /// Tiebreaker cursor for rows sharing `before_updated_at`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<ContentType>,
     #[serde(default)]

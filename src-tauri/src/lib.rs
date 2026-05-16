@@ -146,7 +146,7 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
     if !shortcut_toggle.is_empty() {
         let app_handle = app.clone();
-            app.global_shortcut()
+        app.global_shortcut()
             .on_shortcut(shortcut_toggle.as_str(), move |_app, _shortcut, event| {
                 // Use Released to avoid key-repeat firing open->close while
                 // modifiers are still held.
@@ -183,7 +183,7 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
     if !shortcut_plaintext.is_empty() {
         let app_handle = app.clone();
-            app.global_shortcut()
+        app.global_shortcut()
             .on_shortcut(
                 shortcut_plaintext.as_str(),
                 move |_app, _shortcut, event| {
@@ -247,17 +247,13 @@ fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), S
         let recorded_open = state.popup_open.load(std::sync::atomic::Ordering::SeqCst);
 
         let popup_open = if recorded_open && !actually_visible {
-            log::debug!(
-                "popup_open=true but window invisible; reconciling to closed"
-            );
+            log::debug!("popup_open=true but window invisible; reconciling to closed");
             state
                 .popup_open
                 .store(false, std::sync::atomic::Ordering::SeqCst);
             false
         } else if !recorded_open && actually_visible {
-            log::debug!(
-                "popup_open=false but window visible; reconciling to open"
-            );
+            log::debug!("popup_open=false but window visible; reconciling to open");
             state
                 .popup_open
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -333,9 +329,7 @@ fn position_popup_near_cursor(popup: &tauri::WebviewWindow) {
     let monitor = match resolve_monitor_for_cursor(popup, cursor) {
         Some(monitor) => monitor,
         None => {
-            log::debug!(
-                "Could not resolve a monitor for cursor position; centering popup"
-            );
+            log::debug!("Could not resolve a monitor for cursor position; centering popup");
             let _ = popup.center();
             return;
         }
@@ -465,7 +459,10 @@ fn hide_popup_window_impl(app: &tauri::AppHandle, restore_focus: bool) {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn show_popup_and_panel_on_main_thread(app: &tauri::AppHandle, popup: &tauri::WebviewWindow) {
+pub(crate) fn show_popup_and_panel_on_main_thread(
+    app: &tauri::AppHandle,
+    popup: &tauri::WebviewWindow,
+) {
     use tauri_nspanel::ManagerExt as NSPanelManagerExt;
 
     let app_for_task = app.clone();
@@ -523,7 +520,10 @@ fn ensure_popup_panel_for_fullscreen_spaces(app: &tauri::AppHandle, popup: &taur
         match result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                log::warn!("NSPanel fullscreen-space setup failed (will retry next open): {}", e);
+                log::warn!(
+                    "NSPanel fullscreen-space setup failed (will retry next open): {}",
+                    e
+                );
                 app_for_task
                     .state::<AppState>()
                     .popup_panel_initialized
@@ -600,18 +600,15 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
     log::info!("NSPanel: setting non-activating style mask");
     panel.set_style_mask(NSWindowStyleMaskNonActivatingPanel);
 
-    let target_behavior =
-        NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces;
-    log::info!(
-        "NSPanel: setting collection behavior = FullScreenAuxiliary | CanJoinAllSpaces"
-    );
+    let target_behavior = NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
+        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces;
+    log::info!("NSPanel: setting collection behavior = FullScreenAuxiliary | CanJoinAllSpaces");
     panel.set_collection_behaviour(target_behavior);
 
-    let actual_behavior: NSWindowCollectionBehavior = unsafe { msg_send![&*panel, collectionBehavior] };
-    let has_fullscreen_auxiliary = actual_behavior.contains(
-        NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
-    );
+    let actual_behavior: NSWindowCollectionBehavior =
+        unsafe { msg_send![&*panel, collectionBehavior] };
+    let has_fullscreen_auxiliary = actual_behavior
+        .contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary);
     let has_can_join_all_spaces = actual_behavior
         .contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces);
     if has_fullscreen_auxiliary && has_can_join_all_spaces {

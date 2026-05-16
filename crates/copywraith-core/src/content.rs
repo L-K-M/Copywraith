@@ -141,7 +141,10 @@ fn decode_html_entity(chars: &[char]) -> Option<(char, usize)> {
 }
 
 fn decode_numeric_html_entity(entity: &str) -> Option<char> {
-    if let Some(hex) = entity.strip_prefix("#x").or_else(|| entity.strip_prefix("#X")) {
+    if let Some(hex) = entity
+        .strip_prefix("#x")
+        .or_else(|| entity.strip_prefix("#X"))
+    {
         u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
     } else if let Some(decimal) = entity.strip_prefix('#') {
         decimal.parse::<u32>().ok().and_then(char::from_u32)

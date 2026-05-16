@@ -382,6 +382,7 @@ async fn create_entry(
     params(ListEntriesParams),
     responses(
         (status = 200, description = "List entries with pagination and filtering", body = ListEntriesResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 403, description = "Password setup required", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -394,19 +395,34 @@ async fn list_entries(
 ) -> Result<Json<ListEntriesResponse>, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
+    if params.before_id.is_some() && params.before_updated_at.is_none() {
+        return Err(AppError::BadRequest(
+            "before_id requires before_updated_at".to_string(),
+        ));
+    }
+
     let dek = get_dek(&state);
     let limit = copywraith_core::api_types::clamp_limit(params.limit);
+    let before_updated_at = params.before_updated_at.as_deref();
+    let before_id = params.before_id.as_deref();
+    let effective_offset = if before_updated_at.is_some() {
+        0
+    } else {
+        params.offset
+    };
 
     let (entries, total) = state.storage.list_entries(
         limit,
-        params.offset,
+        effective_offset,
+        before_updated_at,
+        before_id,
         params.content_type,
         params.starred_only,
         params.search.as_deref(),
         dek.as_ref(),
     )?;
 
-    let has_more = (params.offset + limit) < total as u32;
+    let has_more = (effective_offset + limit) < total as u32;
     let entries = entries
         .into_iter()
         .map(|e| {

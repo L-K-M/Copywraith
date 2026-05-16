@@ -13,6 +13,23 @@ function apiUrl(path: string): string {
 	return `${API_BASE}${normalizedPath}`;
 }
 
+function resolveBlobUrl(blobUrl: string): string {
+	if (blobUrl.startsWith('http://') || blobUrl.startsWith('https://')) {
+		return blobUrl;
+	}
+
+	if (blobUrl.startsWith('/api/')) {
+		const apiSuffix = blobUrl.slice('/api'.length);
+		return `${normalizeBase(API_BASE)}${apiSuffix}`;
+	}
+
+	if (blobUrl.startsWith('/')) {
+		return blobUrl;
+	}
+
+	return apiUrl(blobUrl);
+}
+
 function candidateApiBases(): string[] {
 	const candidates = new Set<string>();
 
@@ -203,4 +220,19 @@ export async function fetchHealth(): Promise<HealthResponse> {
 	const resp = await fetch(apiUrl('/health'), { headers: buildHeaders() });
 	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 	return resp.json();
+}
+
+export async function fetchBlob(blobUrl: string): Promise<Blob> {
+	const resp = await fetch(resolveBlobUrl(blobUrl), { headers: buildHeaders() });
+	if (resp.status === 401) {
+		clearSession();
+		throw new Error('Unauthorized');
+	}
+	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+	return resp.blob();
+}
+
+export async function fetchBlobObjectUrl(blobUrl: string): Promise<string> {
+	const blob = await fetchBlob(blobUrl);
+	return URL.createObjectURL(blob);
 }

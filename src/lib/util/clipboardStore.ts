@@ -11,9 +11,11 @@ export const starredOnly = writable(false);
 export const selectedEntryId = writable<string | null>(null);
 
 const LOAD_ENTRIES_TIMEOUT_MS = 10_000;
+const ERROR_NOTIFY_DEBOUNCE_MS = 5_000;
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let loadRequestId = 0;
+let lastLoadErrorAt = 0;
 
 async function getEntriesWithTimeout(options: {
 	limit: number;
@@ -101,6 +103,11 @@ export async function loadEntries(options?: { forceSelectFirst?: boolean }) {
 		syncSelection(result, options?.forceSelectFirst ?? false);
 	} catch (e) {
 		console.error('Failed to load entries:', e);
+		const now = Date.now();
+		if (now - lastLoadErrorAt > ERROR_NOTIFY_DEBOUNCE_MS) {
+			lastLoadErrorAt = now;
+			notify('error', 'Failed to load clipboard entries');
+		}
 	} finally {
 		if (requestId === loadRequestId) {
 			isLoading.set(false);
@@ -146,6 +153,7 @@ export async function toggleStar(id: string) {
 		);
 	} catch (e) {
 		console.error('Failed to toggle star:', e);
+		notify('error', 'Failed to update starred state');
 	}
 }
 
@@ -159,6 +167,7 @@ export async function deleteEntry(id: string) {
 		});
 	} catch (e) {
 		console.error('Failed to delete entry:', e);
+		notify('error', 'Failed to delete entry');
 	}
 }
 
@@ -171,6 +180,7 @@ export async function pasteEntry(id: string) {
 		}
 	} catch (e) {
 		console.error('Failed to paste entry:', e);
+		notify('error', 'Failed to paste entry');
 	}
 }
 
@@ -182,5 +192,6 @@ export async function pasteEntryPlaintext(id: string) {
 		}
 	} catch (e) {
 		console.error('Failed to paste entry as plaintext:', e);
+		notify('error', 'Failed to paste entry as plaintext');
 	}
 }

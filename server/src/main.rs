@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     let storage = Storage::new(&data_dir)?;
 
-    let crypto_state = CryptoState::load(&data_dir);
+    let crypto_state = CryptoState::load(&data_dir)?;
     if crypto_state.is_initialized() {
         tracing::info!("Password protection enabled (auth.json found)");
     } else {

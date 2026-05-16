@@ -10,6 +10,7 @@
 		TextFileIcon,
 		TrashIcon
 	} from '@lkmc/system7-ui';
+	import * as api from './api';
 	import type { EntryResponse } from './types';
 
 	let {
@@ -25,6 +26,44 @@
 		ondownload: (id: string) => void;
 		ondelete: (id: string) => void;
 	} = $props();
+
+	let imageObjectUrl = $state<string | null>(null);
+	let imagePreviewFailed = $state(false);
+
+	$effect(() => {
+		let disposed = false;
+		let localObjectUrl: string | null = null;
+
+		imageObjectUrl = null;
+		imagePreviewFailed = false;
+
+		if (entry.content_type !== 'image' || !entry.blob_url) {
+			return;
+		}
+
+		api
+			.fetchBlobObjectUrl(entry.blob_url)
+			.then((objectUrl) => {
+				if (disposed) {
+					URL.revokeObjectURL(objectUrl);
+					return;
+				}
+				localObjectUrl = objectUrl;
+				imageObjectUrl = objectUrl;
+			})
+			.catch(() => {
+				if (!disposed) {
+					imagePreviewFailed = true;
+				}
+			});
+
+		return () => {
+			disposed = true;
+			if (localObjectUrl) {
+				URL.revokeObjectURL(localObjectUrl);
+			}
+		};
+	});
 
 	function formatDate(iso: string | null): string {
 		if (!iso) return '--';
@@ -126,8 +165,10 @@
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="preview" onclick={() => onview(entry.id)}>
-			{#if entry.content_type === 'image' && entry.blob_url}
-				<img class="img-preview" src={entry.blob_url} alt="Clipboard preview" />
+			{#if entry.content_type === 'image' && imageObjectUrl}
+				<img class="img-preview" src={imageObjectUrl} alt="Clipboard preview" />
+			{:else if entry.content_type === 'image'}
+				<span>{imagePreviewFailed ? '[Image unavailable]' : '[Image]'}</span>
 			{:else}
 				<span class:sensitive-content={entry.sensitive}>{getPreview(entry)}</span>
 			{/if}

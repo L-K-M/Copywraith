@@ -202,14 +202,21 @@ impl SyncClient {
             (state.initialized, state.last_seen_server_id.clone())
         };
 
-        let mut offset = 0;
+        let mut before_cursor: Option<(String, String)> = None;
         let mut pulled = 0usize;
         let mut cursor_after_sync: Option<String> = None;
         let mut active_endpoint: Option<ServerEndpoint> = None;
 
         loop {
             let Some((page, used_index)) = self
-                .fetch_entries_page_with_fallback(&server_urls, &api_key, PAGE_SIZE, offset)
+                .fetch_entries_page_with_fallback(
+                    &server_urls,
+                    &api_key,
+                    PAGE_SIZE,
+                    before_cursor
+                        .as_ref()
+                        .map(|(updated_at, id)| (updated_at.as_str(), id.as_str())),
+                )
                 .await?
             else {
                 let endpoint_status = self
@@ -262,7 +269,14 @@ impl SyncClient {
                 break;
             }
 
-            offset += PAGE_SIZE;
+            let Some(last_entry) = page.entries.last() else {
+                break;
+            };
+
+            before_cursor = Some((
+                last_entry.entry.updated_at.to_rfc3339(),
+                last_entry.entry.id.clone(),
+            ));
         }
 
         if let Some(cursor) = cursor_after_sync {
@@ -354,15 +368,28 @@ impl SyncClient {
         server_urls: &[ServerEndpoint],
         api_key: &str,
         page_size: u32,
-        offset: u32,
+        before_cursor: Option<(&str, &str)>,
     ) -> anyhow::Result<Option<(ListEntriesResponse, usize)>> {
         for (index, endpoint) in server_urls.iter().enumerate() {
-            let url = format!(
-                "{}/api/entries?limit={}&offset={}",
-                endpoint.url, page_size, offset
-            );
+            let mut url = match reqwest::Url::parse(&format!("{}/api/entries", endpoint.url)) {
+                Ok(url) => url,
+                Err(e) => {
+                    log::warn!("Invalid server URL {}: {}", endpoint.url, e);
+                    continue;
+                }
+            };
 
-            let mut request = self.http.get(&url);
+            {
+                let mut query = url.query_pairs_mut();
+                query.append_pair("limit", &page_size.to_string());
+                query.append_pair("offset", "0");
+                if let Some((before_updated_at, before_id)) = before_cursor {
+                    query.append_pair("before_updated_at", before_updated_at);
+                    query.append_pair("before_id", before_id);
+                }
+            }
+
+            let mut request = self.http.get(url);
             if !api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
             }

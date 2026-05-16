@@ -26,6 +26,7 @@
 			shortcutPastePlaintext = settings.shortcut_paste_plaintext;
 		} catch (e) {
 			console.error('Failed to load settings:', e);
+			notify('error', 'Failed to load settings');
 		}
 	});
 
