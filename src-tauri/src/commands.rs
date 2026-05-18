@@ -194,6 +194,7 @@ fn write_to_clipboard_mobile(
         let flavors = entry.resolved_flavors();
         flavors
             .text_plain
+            .clone()
             .or_else(|| flavors.best_plain_text())
             .or_else(|| entry.text_content.clone())
     }
