@@ -1,6 +1,16 @@
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { TauriService } from '$lib/tauri';
 
+type ResizeDirection =
+	| 'East'
+	| 'North'
+	| 'NorthEast'
+	| 'NorthWest'
+	| 'South'
+	| 'SouthEast'
+	| 'SouthWest'
+	| 'West';
+
 const TITLE_BAR_HEIGHT = 36;
 
 export class WindowManager {
@@ -18,6 +28,10 @@ export class WindowManager {
 
 	async startDragging(): Promise<void> {
 		await this.appWindow.startDragging();
+	}
+
+	async startResizeDragging(direction: ResizeDirection): Promise<void> {
+		await this.appWindow.startResizeDragging(direction);
 	}
 
 	async toggleShade(): Promise<boolean> {

@@ -173,6 +173,10 @@
 		windowManager.startDragging();
 	}
 
+	function handleWindowResize(direction: Parameters<WindowManager['startResizeDragging']>[0]) {
+		void windowManager.startResizeDragging(direction);
+	}
+
 	function handleSettingsOpen() {
 		showSettings = true;
 	}
@@ -263,6 +267,57 @@
 			<StatusBar />
 		</main>
 	{/if}
+
+	{#if !$isMobile && !isWindowShaded}
+		<button
+			type="button"
+			class="resize-handle resize-handle-n"
+			onmousedown={() => handleWindowResize('North')}
+			aria-label="Resize north"
+		></button>
+		<button
+			type="button"
+			class="resize-handle resize-handle-e"
+			onmousedown={() => handleWindowResize('East')}
+			aria-label="Resize east"
+		></button>
+		<button
+			type="button"
+			class="resize-handle resize-handle-s"
+			onmousedown={() => handleWindowResize('South')}
+			aria-label="Resize south"
+		></button>
+		<button
+			type="button"
+			class="resize-handle resize-handle-w"
+			onmousedown={() => handleWindowResize('West')}
+			aria-label="Resize west"
+		></button>
+		<button
+			type="button"
+			class="resize-handle resize-handle-ne"
+			onmousedown={() => handleWindowResize('NorthEast')}
+			aria-label="Resize north east"
+		></button>
+		<button
+			type="button"
+			class="resize-handle resize-handle-se"
+			onmousedown={() => handleWindowResize('SouthEast')}
+			aria-label="Resize south east"
+		></button>
+		<button
+			type="button"
+			class="resize-handle resize-handle-sw"
+			onmousedown={() => handleWindowResize('SouthWest')}
+			aria-label="Resize south west"
+		></button>
+		<button
+			type="button"
+			class="resize-handle resize-handle-nw"
+			onmousedown={() => handleWindowResize('NorthWest')}
+			aria-label="Resize north west"
+		></button>
+	{/if}
 </div>
 
 {#if showSettings}
@@ -275,6 +330,7 @@
 
 <style>
 	.window-frame {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		height: 100vh;
@@ -314,5 +370,83 @@
 
 	.window-frame.mobile .app-content {
 		padding-bottom: var(--safe-area-bottom);
+	}
+
+	.resize-handle {
+		position: absolute;
+		z-index: 20;
+		padding: 0;
+		border: 0;
+		background: transparent;
+	}
+
+	.resize-handle-n,
+	.resize-handle-s {
+		left: 14px;
+		right: 14px;
+		height: 6px;
+		cursor: ns-resize;
+	}
+
+	.resize-handle-e,
+	.resize-handle-w {
+		top: 39px;
+		bottom: 14px;
+		width: 6px;
+		cursor: ew-resize;
+	}
+
+	.resize-handle-n {
+		top: -1px;
+	}
+
+	.resize-handle-e {
+		right: -1px;
+	}
+
+	.resize-handle-s {
+		bottom: -1px;
+	}
+
+	.resize-handle-w {
+		left: -1px;
+	}
+
+	.resize-handle-ne,
+	.resize-handle-se,
+	.resize-handle-sw,
+	.resize-handle-nw {
+		width: 14px;
+		height: 14px;
+	}
+
+	.resize-handle-ne,
+	.resize-handle-sw {
+		cursor: nesw-resize;
+	}
+
+	.resize-handle-se,
+	.resize-handle-nw {
+		cursor: nwse-resize;
+	}
+
+	.resize-handle-ne {
+		top: -1px;
+		right: -1px;
+	}
+
+	.resize-handle-se {
+		right: -1px;
+		bottom: -1px;
+	}
+
+	.resize-handle-sw {
+		bottom: -1px;
+		left: -1px;
+	}
+
+	.resize-handle-nw {
+		top: -1px;
+		left: -1px;
 	}
 </style>

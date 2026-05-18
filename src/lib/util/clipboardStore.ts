@@ -6,16 +6,20 @@ import type { ClipboardEntry } from '$lib/types';
 
 export const entries = writable<ClipboardEntry[]>([]);
 export const isLoading = writable(false);
+export const isLoadingMore = writable(false);
+export const hasMoreEntries = writable(false);
 export const filterText = writable('');
 export const starredOnly = writable(false);
 export const selectedEntryId = writable<string | null>(null);
 
+const PAGE_SIZE = 100;
 const LOAD_ENTRIES_TIMEOUT_MS = 10_000;
 const ERROR_NOTIFY_DEBOUNCE_MS = 5_000;
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let loadRequestId = 0;
 let lastLoadErrorAt = 0;
+let nextOffset = 0;
 
 async function getEntriesWithTimeout(options: {
 	limit: number;
@@ -84,12 +88,14 @@ export function selectFirstEntry(options?: { forceReselect?: boolean }) {
 export async function loadEntries(options?: { forceSelectFirst?: boolean }) {
 	const requestId = ++loadRequestId;
 	isLoading.set(true);
+	isLoadingMore.set(false);
+	hasMoreEntries.set(false);
 
 	try {
 		const filter = get(filterText);
 		const starred = get(starredOnly);
 		const result = await getEntriesWithTimeout({
-			limit: 100,
+			limit: PAGE_SIZE,
 			offset: 0,
 			starred_only: starred,
 			search: filter || undefined
@@ -99,7 +105,9 @@ export async function loadEntries(options?: { forceSelectFirst?: boolean }) {
 			return;
 		}
 
+		nextOffset = result.length;
 		entries.set(result);
+		hasMoreEntries.set(result.length === PAGE_SIZE);
 		syncSelection(result, options?.forceSelectFirst ?? false);
 	} catch (e) {
 		console.error('Failed to load entries:', e);
@@ -111,6 +119,53 @@ export async function loadEntries(options?: { forceSelectFirst?: boolean }) {
 	} finally {
 		if (requestId === loadRequestId) {
 			isLoading.set(false);
+		}
+	}
+}
+
+export async function loadMoreEntries() {
+	if (get(isLoading) || get(isLoadingMore) || !get(hasMoreEntries)) {
+		return;
+	}
+
+	const requestId = loadRequestId;
+	const offset = nextOffset;
+	isLoadingMore.set(true);
+
+	try {
+		const filter = get(filterText);
+		const starred = get(starredOnly);
+		const result = await getEntriesWithTimeout({
+			limit: PAGE_SIZE,
+			offset,
+			starred_only: starred,
+			search: filter || undefined
+		});
+
+		if (requestId !== loadRequestId) {
+			return;
+		}
+
+		nextOffset += result.length;
+		hasMoreEntries.set(result.length === PAGE_SIZE);
+
+		entries.update((list) => {
+			const existingIds = new Set(list.map((entry) => entry.id));
+			const appended = result.filter((entry) => !existingIds.has(entry.id));
+			const updated = [...list, ...appended];
+			syncSelection(updated);
+			return updated;
+		});
+	} catch (e) {
+		console.error('Failed to load more entries:', e);
+		const now = Date.now();
+		if (now - lastLoadErrorAt > ERROR_NOTIFY_DEBOUNCE_MS) {
+			lastLoadErrorAt = now;
+			notify('error', 'Failed to load more clipboard entries');
+		}
+	} finally {
+		if (requestId === loadRequestId) {
+			isLoadingMore.set(false);
 		}
 	}
 }
@@ -162,6 +217,7 @@ export async function deleteEntry(id: string) {
 		await TauriService.deleteEntry(id);
 		entries.update((list) => {
 			const updated = list.filter((entry) => entry.id !== id);
+			nextOffset = Math.min(nextOffset, updated.length);
 			syncSelection(updated);
 			return updated;
 		});

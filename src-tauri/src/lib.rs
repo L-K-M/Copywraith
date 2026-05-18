@@ -588,6 +588,8 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
     };
 
     #[allow(non_upper_case_globals)]
+    const NSWindowStyleMaskResizable: i32 = 1 << 3;
+    #[allow(non_upper_case_globals)]
     const NSWindowStyleMaskNonActivatingPanel: i32 = 1 << 7;
 
     let target_level = NSMainMenuWindowLevel + 1;
@@ -597,8 +599,16 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
     );
     panel.set_level(target_level);
 
-    log::info!("NSPanel: setting non-activating style mask");
-    panel.set_style_mask(NSWindowStyleMaskNonActivatingPanel);
+    let current_style_mask_raw: usize = unsafe { msg_send![&*panel, styleMask] };
+    let current_style_mask = current_style_mask_raw as i32;
+    let target_style_mask =
+        current_style_mask | NSWindowStyleMaskResizable | NSWindowStyleMaskNonActivatingPanel;
+    log::info!(
+        "NSPanel: setting style mask raw={:#x} -> {:#x} (non-activating + resizable)",
+        current_style_mask,
+        target_style_mask
+    );
+    panel.set_style_mask(target_style_mask);
 
     let target_behavior = NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
         | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces;
