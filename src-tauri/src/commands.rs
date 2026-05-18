@@ -1,7 +1,8 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::models::{EntryForFrontend, Settings};
+use crate::sync;
 use crate::AppState;
 use copywraith_core::models::ContentType;
 
@@ -260,6 +261,114 @@ pub async fn capture_clipboard(
             }
             Ok(None) => Ok(false), // duplicate content
             Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn sync_now(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<sync::PullSyncResult, String> {
+    let storage = state.storage.clone();
+    let sync_client = state.sync_client.clone();
+    let configured_endpoint = sync::first_configured_endpoint(&storage);
+
+    let _ = app.emit(
+        "sync-endpoint-status",
+        sync::checking_status_for_configured_endpoint(
+            configured_endpoint.as_ref(),
+            "Manual sync check started.",
+        ),
+    );
+
+    let _ = app.emit(
+        "sync-endpoint-status",
+        sync::checking_status_for_configured_endpoint(
+            configured_endpoint.as_ref(),
+            "Pushing local unsynced entries to the server.",
+        ),
+    );
+
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(35),
+        sync_client.sync_unsynced_entries(&storage),
+    )
+    .await
+    .is_err()
+    {
+        let status = configured_endpoint
+            .as_ref()
+            .map(|endpoint| {
+                sync::SyncEndpointStatus::unreachable_endpoint(
+                    endpoint,
+                    "Timed out while pushing local unsynced entries.",
+                )
+            })
+            .unwrap_or_else(|| sync::checking_status(&storage, "No configured server endpoint."));
+        let _ = app.emit("sync-endpoint-status", &status);
+        return Ok(sync::PullSyncResult {
+            pulled: 0,
+            endpoint_status: status,
+        });
+    }
+
+    let _ = app.emit(
+        "sync-endpoint-status",
+        sync::checking_status_for_configured_endpoint(
+            configured_endpoint.as_ref(),
+            "Pulling remote entries from the server.",
+        ),
+    );
+
+    let pull_result = tokio::time::timeout(
+        std::time::Duration::from_secs(35),
+        sync_client.pull_new_entries(&storage),
+    )
+    .await;
+
+    match pull_result {
+        Err(_) => {
+            let status = configured_endpoint
+                .as_ref()
+                .map(|endpoint| {
+                    sync::SyncEndpointStatus::unreachable_endpoint(
+                        endpoint,
+                        "Timed out while pulling remote entries.",
+                    )
+                })
+                .unwrap_or_else(|| sync::checking_status(&storage, "No configured server endpoint."));
+            let _ = app.emit("sync-endpoint-status", &status);
+            Ok(sync::PullSyncResult {
+                pulled: 0,
+                endpoint_status: status,
+            })
+        }
+        Ok(Ok(result)) => {
+            let _ = app.emit("sync-endpoint-status", &result.endpoint_status);
+            if result.pulled > 0 {
+                let _ = app.emit("clipboard-updated", ());
+            }
+            Ok(result)
+        }
+        Ok(Err(e)) => {
+            let fallback_status = configured_endpoint
+                .as_ref()
+                .map(|endpoint| {
+                    sync::SyncEndpointStatus::unreachable_endpoint(endpoint, e.to_string())
+                })
+                .unwrap_or_else(|| sync::SyncEndpointStatus {
+                    state: "unreachable".to_string(),
+                    role: None,
+                    url: None,
+                    message: Some(e.to_string()),
+                    checked_at: Some(chrono::Utc::now().to_rfc3339()),
+                });
+            let _ = app.emit(
+                "sync-endpoint-status",
+                &fallback_status,
+            );
+            Err(e.to_string())
         }
     }
 }

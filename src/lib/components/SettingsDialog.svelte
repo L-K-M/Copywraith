@@ -2,7 +2,6 @@
 	import { Button, MovableDialog } from '@lkmc/system7-ui';
 	import { TauriService } from '$lib/tauri';
 	import { isMobile } from '$lib/util/platform';
-	import type { Settings } from '$lib/types';
 	import { notify } from '$lib/util/notifications';
 	import { onMount } from 'svelte';
 
@@ -33,8 +32,8 @@
 	async function handleSave() {
 		try {
 			await TauriService.updateSettings({
-				server_url_primary: primaryServerUrl,
-				server_url_fallback: fallbackServerUrl,
+				server_url_primary: normalizeServerUrl(primaryServerUrl),
+				server_url_fallback: normalizeServerUrl(fallbackServerUrl),
 				api_key: apiKey,
 				shortcut_toggle_popup: shortcutTogglePopup,
 				shortcut_starred_popup: shortcutStarredPopup,
@@ -43,36 +42,47 @@
 			if (!$isMobile) {
 				await TauriService.reregisterShortcuts();
 			}
+			void TauriService.syncNow().catch((e) => {
+				console.error('Failed to refresh sync status after saving settings:', e);
+			});
 			notify('success', 'Settings saved');
 			onclose();
 		} catch (e) {
 			notify('error', `Failed to save settings: ${e}`);
 		}
 	}
+
+	function normalizeServerUrl(url: string) {
+		return url.trim().replace(/\/+$/, '');
+	}
 </script>
 
-<MovableDialog title="Settings" {onclose} width="380px">
+{#snippet settingsForm()}
 	<div class="settings-form">
 		<div class="s7-form-group">
-			<label for="primary-server-url">Primary Server URL</label>
+			<label for="primary-server-url">Local Server URL</label>
 			<input
 				id="primary-server-url"
-				type="text"
+				type="url"
 				class="s7-input"
 				placeholder="http://192.168.1.5:3742"
 				bind:value={primaryServerUrl}
 			/>
+			<div class="field-hint">Used first. This can be your local Wi-Fi address.</div>
 		</div>
 
 		<div class="s7-form-group">
-			<label for="fallback-server-url">Fallback Server URL</label>
+			<label for="fallback-server-url">VPN Server URL</label>
 			<input
 				id="fallback-server-url"
-				type="text"
+				type="url"
 				class="s7-input"
 				placeholder="http://100.64.0.10:3742"
 				bind:value={fallbackServerUrl}
 			/>
+			<div class="field-hint">
+				Used when the local server cannot be reached. This can be your Tailscale/VPN address.
+			</div>
 		</div>
 
 		<div class="s7-form-group">
@@ -85,8 +95,8 @@
 				bind:value={apiKey}
 			/>
 			<div class="field-hint">
-				Use the same password configured on the server admin UI. Copywraith sends it as
-				an `Authorization: Bearer ...` header.
+				Use the same password configured on the server admin UI. Copywraith sends it as an
+				Authorization: Bearer header.
 			</div>
 		</div>
 
@@ -132,11 +142,15 @@
 			</div>
 		{/if}
 
-		<div class="s7-actions">
+		<div class="settings-actions s7-actions">
 			<Button onclick={onclose}>Cancel</Button>
 			<Button variant="primary" onclick={handleSave}>Save</Button>
 		</div>
 	</div>
+{/snippet}
+
+<MovableDialog title="Settings" {onclose} width="380px">
+	{@render settingsForm()}
 </MovableDialog>
 
 <style>
@@ -175,5 +189,23 @@
 		color: #666;
 		line-height: 1.35;
 		margin-top: 2px;
+	}
+
+	:global(.s7-dialog .s7-form-group) {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	:global(.s7-dialog .s7-input) {
+		width: 100%;
+		box-sizing: border-box;
+	}
+
+	:global(.s7-dialog .settings-actions) {
+		display: flex;
+		justify-content: flex-end;
+		gap: 10px;
+		padding-top: 4px;
 	}
 </style>

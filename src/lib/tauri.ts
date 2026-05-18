@@ -1,5 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ClipboardEntry, Settings } from './types';
+import type { SyncEndpointStatusInput } from './util/syncStatusStore';
+
+export interface SyncNowResult {
+	pulled: number;
+	endpoint_status: SyncEndpointStatusInput;
+}
 
 export class TauriService {
 	static async getEntries(options?: {
@@ -51,6 +57,11 @@ export class TauriService {
 	/** Read the current system clipboard and save it as a new entry (mobile). */
 	static async captureClipboard(): Promise<boolean> {
 		return await invoke('capture_clipboard');
+	}
+
+	/** Push local changes and pull the latest entries from the server now. */
+	static async syncNow(): Promise<SyncNowResult> {
+		return await invoke('sync_now');
 	}
 
 	/** Returns the current platform: "android", "ios", "macos", "windows", "linux". */

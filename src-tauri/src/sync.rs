@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use copywraith_core::api_types::{CreateEntryRequest, EntryResponse, ListEntriesResponse};
 use copywraith_core::content::{bytes_to_base64, hash_bytes};
@@ -13,30 +13,38 @@ pub struct SyncEndpointStatus {
     pub state: String,
     pub role: Option<String>,
     pub url: Option<String>,
+    pub message: Option<String>,
+    pub checked_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
 pub struct PullSyncResult {
     pub pulled: usize,
     pub endpoint_status: SyncEndpointStatus,
 }
 
+struct FetchEntriesResult {
+    page: ListEntriesResponse,
+    endpoint_index: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndpointRole {
-    Primary,
-    Fallback,
+pub enum EndpointRole {
+    Local,
+    Vpn,
 }
 
 impl EndpointRole {
     fn as_str(self) -> &'static str {
         match self {
-            EndpointRole::Primary => "primary",
-            EndpointRole::Fallback => "fallback",
+            EndpointRole::Local => "local",
+            EndpointRole::Vpn => "vpn",
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct ServerEndpoint {
+pub struct ServerEndpoint {
     role: EndpointRole,
     url: String,
 }
@@ -47,14 +55,18 @@ impl SyncEndpointStatus {
             state: "disabled".to_string(),
             role: None,
             url: None,
+            message: Some("No server URL is configured in Settings.".to_string()),
+            checked_at: Some(now_rfc3339()),
         }
     }
 
-    fn unreachable() -> Self {
+    pub fn unreachable_endpoint(endpoint: &ServerEndpoint, message: impl Into<String>) -> Self {
         Self {
             state: "unreachable".to_string(),
-            role: None,
-            url: None,
+            role: Some(endpoint.role.as_str().to_string()),
+            url: Some(endpoint.url.clone()),
+            message: Some(message.into()),
+            checked_at: Some(now_rfc3339()),
         }
     }
 
@@ -63,8 +75,38 @@ impl SyncEndpointStatus {
             state: "online".to_string(),
             role: Some(endpoint.role.as_str().to_string()),
             url: Some(endpoint.url.clone()),
+            message: Some("Last sync check completed successfully.".to_string()),
+            checked_at: Some(now_rfc3339()),
         }
     }
+}
+
+fn checking_status_for_endpoint(endpoint: Option<&ServerEndpoint>, message: impl Into<String>) -> SyncEndpointStatus {
+    SyncEndpointStatus {
+        state: "checking".to_string(),
+        role: endpoint.map(|endpoint| endpoint.role.as_str().to_string()),
+        url: endpoint.map(|endpoint| endpoint.url.clone()),
+        message: Some(message.into()),
+        checked_at: Some(now_rfc3339()),
+    }
+}
+
+pub fn checking_status(storage: &LocalStorage, message: impl Into<String>) -> SyncEndpointStatus {
+    let settings = storage.get_settings();
+    let server_urls = configured_server_urls(&settings);
+    checking_status_for_endpoint(server_urls.first(), message)
+}
+
+pub fn first_configured_endpoint(storage: &LocalStorage) -> Option<ServerEndpoint> {
+    let settings = storage.get_settings();
+    configured_server_urls(&settings).into_iter().next()
+}
+
+pub fn checking_status_for_configured_endpoint(
+    endpoint: Option<&ServerEndpoint>,
+    message: impl Into<String>,
+) -> SyncEndpointStatus {
+    checking_status_for_endpoint(endpoint, message)
 }
 
 struct PullState {
@@ -208,7 +250,7 @@ impl SyncClient {
         let mut active_endpoint: Option<ServerEndpoint> = None;
 
         loop {
-            let Some((page, used_index)) = self
+            let Some(fetch_result) = self
                 .fetch_entries_page_with_fallback(
                     &server_urls,
                     &api_key,
@@ -219,15 +261,24 @@ impl SyncClient {
                 )
                 .await?
             else {
-                let endpoint_status = self
-                    .recent_responding_status()
-                    .unwrap_or_else(SyncEndpointStatus::unreachable);
+                let endpoint_status = self.recent_responding_status().unwrap_or_else(|| {
+                    let attempted = server_urls
+                        .first()
+                        .expect("server_urls is non-empty after sync config check");
+                    SyncEndpointStatus::unreachable_endpoint(
+                        attempted,
+                        "No configured server endpoint responded while pulling entries.",
+                    )
+                });
 
                 return Ok(PullSyncResult {
                     pulled,
                     endpoint_status,
                 });
             };
+
+            let page = fetch_result.page;
+            let used_index = fetch_result.endpoint_index;
 
             if used_index > 0 {
                 server_urls.swap(0, used_index);
@@ -293,7 +344,15 @@ impl SyncClient {
             .as_ref()
             .map(SyncEndpointStatus::online)
             .or_else(|| self.recent_responding_status())
-            .unwrap_or_else(SyncEndpointStatus::unreachable);
+            .unwrap_or_else(|| {
+                let attempted = server_urls
+                    .first()
+                    .expect("server_urls is non-empty after sync config check");
+                SyncEndpointStatus::unreachable_endpoint(
+                    attempted,
+                    "No configured server endpoint responded while pulling entries.",
+                )
+            });
 
         Ok(PullSyncResult {
             pulled,
@@ -369,7 +428,7 @@ impl SyncClient {
         api_key: &str,
         page_size: u32,
         before_cursor: Option<(&str, &str)>,
-    ) -> anyhow::Result<Option<(ListEntriesResponse, usize)>> {
+    ) -> anyhow::Result<Option<FetchEntriesResult>> {
         for (index, endpoint) in server_urls.iter().enumerate() {
             let mut url = match reqwest::Url::parse(&format!("{}/api/entries", endpoint.url)) {
                 Ok(url) => url,
@@ -430,7 +489,12 @@ impl SyncClient {
             }
 
             match response.json::<ListEntriesResponse>().await {
-                Ok(page) => return Ok(Some((page, index))),
+                Ok(page) => {
+                    return Ok(Some(FetchEntriesResult {
+                        page,
+                        endpoint_index: index,
+                    }))
+                }
                 Err(e) => {
                     log::warn!(
                         "Failed to parse entries response from {}: {}",
@@ -612,6 +676,13 @@ impl SyncClient {
     }
 }
 
+fn now_rfc3339() -> String {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0));
+    chrono::DateTime::<chrono::Utc>::from(UNIX_EPOCH + duration).to_rfc3339()
+}
+
 fn resolved_remote_flavors(entry: &ClipboardEntry) -> ClipboardFlavors {
     entry
         .flavors
@@ -623,8 +694,8 @@ fn configured_server_urls(settings: &Settings) -> Vec<ServerEndpoint> {
     let mut urls: Vec<ServerEndpoint> = Vec::new();
 
     for (raw, role) in [
-        (&settings.server_url_primary, EndpointRole::Primary),
-        (&settings.server_url_fallback, EndpointRole::Fallback),
+        (&settings.server_url_primary, EndpointRole::Local),
+        (&settings.server_url_fallback, EndpointRole::Vpn),
     ] {
         let normalized = raw.trim().trim_end_matches('/');
         if normalized.is_empty() {

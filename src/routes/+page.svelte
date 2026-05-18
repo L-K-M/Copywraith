@@ -7,7 +7,10 @@
 	import { windowFocused } from '$lib/util/windowState';
 	import { notifications } from '$lib/util/notifications';
 	import { platform, isMobile } from '$lib/util/platform';
-	import { syncEndpointStatus, type SyncEndpointStatus } from '$lib/util/syncStatusStore';
+	import {
+		setSyncEndpointStatus,
+		type SyncEndpointStatusInput
+	} from '$lib/util/syncStatusStore';
 	import type { ClipboardEntry } from '$lib/types';
 	import {
 		loadEntries,
@@ -44,28 +47,34 @@
 	let unlistenPopupShow: UnlistenFn;
 	let unlistenSyncEndpointStatus: UnlistenFn;
 	let unlistenPasteFailed: UnlistenFn;
+	let mobileRefreshInFlight = false;
 
 	onMount(async () => {
 		// Detect platform first so all components can adapt
+		let detectedPlatform = '';
 		try {
-			const p = await TauriService.getPlatform();
-			platform.set(p);
+			detectedPlatform = await TauriService.getPlatform();
+			platform.set(detectedPlatform);
 		} catch {
 			platform.set('');
 		}
 
-		// Load initial entries without blocking listener setup
+		try {
+			unlistenSyncEndpointStatus = await listen<SyncEndpointStatusInput>(
+				'sync-endpoint-status',
+				(event) => setSyncEndpointStatus(event.payload)
+			);
+		} catch (e) {
+			console.error('Failed to listen for sync endpoint status:', e);
+		}
+
+		const mobile = detectedPlatform === 'android' || detectedPlatform === 'ios';
+
+		// Load cached entries immediately, then refresh mobile from clipboard/server.
 		void loadEntries();
 
-		const mobile = $isMobile;
-
-		// On mobile, capture the current clipboard content on app open
 		if (mobile) {
-			try {
-				await TauriService.captureClipboard();
-			} catch (e) {
-				console.error('Failed to capture clipboard:', e);
-			}
+			void refreshMobileEntries('App opened on mobile.');
 		}
 
 		// Track window focus
@@ -85,13 +94,9 @@
 				}, AUTO_HIDE_DELAY_MS);
 			}
 
-			// On mobile, capture clipboard when app resumes (gains focus)
+			// On mobile, refresh clipboard and server state when the app resumes.
 			if (mobile && focused) {
-				TauriService.captureClipboard()
-					.then((captured: boolean) => {
-						if (captured) loadEntries();
-					})
-					.catch(() => {});
+				void refreshMobileEntries('App resumed on mobile.');
 			}
 		});
 
@@ -116,25 +121,6 @@
 				}, 50);
 			});
 		}
-
-		unlistenSyncEndpointStatus = await listen<SyncEndpointStatus>(
-			'sync-endpoint-status',
-			(event) => {
-				const payload = event.payload;
-				const state =
-					payload.state === 'online' ||
-					payload.state === 'disabled' ||
-					payload.state === 'unreachable'
-						? payload.state
-						: 'unreachable';
-
-				syncEndpointStatus.set({
-					state,
-					role: payload.role ?? null,
-					url: payload.url ?? null
-				});
-			}
-		);
 
 		// Desktop: show user-visible feedback when paste simulation fails
 		// (e.g. missing Accessibility permission).
@@ -179,6 +165,75 @@
 
 	function handleSettingsOpen() {
 		showSettings = true;
+	}
+
+	async function refreshMobileEntries(reason = 'Manual mobile refresh.') {
+		if (mobileRefreshInFlight) return;
+		mobileRefreshInFlight = true;
+		const configuredEndpoint = await getConfiguredSyncEndpoint();
+		setSyncEndpointStatus({
+			state: 'checking',
+			role: configuredEndpoint.role,
+			url: configuredEndpoint.url,
+			message: `${reason} Refreshing clipboard and contacting the sync server.`
+		});
+
+		const capturePromise = withTimeout(
+			TauriService.captureClipboard(),
+			5000,
+			'Clipboard capture did not respond within 5 seconds.'
+		);
+
+		try {
+			const result = await withTimeout(
+				TauriService.syncNow(),
+				45000,
+				'Sync did not finish within 45 seconds. Check the server URL and network.'
+			);
+			setSyncEndpointStatus(result.endpoint_status);
+		} catch (e) {
+			console.error('Failed to sync entries:', e);
+			setSyncEndpointStatus({
+				state: 'unreachable',
+				role: configuredEndpoint.role,
+				url: configuredEndpoint.url,
+				message: String(e)
+			});
+		}
+
+		try {
+			await capturePromise;
+		} catch (e) {
+			console.error('Failed to capture clipboard:', e);
+		} finally {
+			await loadEntries();
+			mobileRefreshInFlight = false;
+		}
+	}
+
+	async function getConfiguredSyncEndpoint() {
+		try {
+			const settings = await TauriService.getSettings();
+			if (settings.server_url_primary) {
+				return { role: 'local', url: settings.server_url_primary };
+			}
+			if (settings.server_url_fallback) {
+				return { role: 'vpn', url: settings.server_url_fallback };
+			}
+		} catch (e) {
+			console.error('Failed to read sync settings:', e);
+		}
+
+		return { role: null, url: null };
+	}
+
+	function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string) {
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<T>((_, reject) => {
+			timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+		});
+
+		return Promise.race([promise.finally(() => clearTimeout(timeoutId)), timeout]);
 	}
 
 	function handleGlobalKeydown(e: KeyboardEvent) {

@@ -232,6 +232,9 @@ From the repository root:
 # Verifies Rust/Android toolchains, fixes stale NDK_HOME, then runs Android dev
 ./scripts/android-dev-bootstrap.sh
 
+# Verifies Rust/Android toolchains, fixes stale NDK_HOME, then builds and installs a packaged APK
+./scripts/android-release-bootstrap.sh
+
 # Persists ANDROID_HOME/NDK_HOME into your shell profile and macOS launchctl env
 ./scripts/android-env-persist.sh
 ```
@@ -242,6 +245,26 @@ Connect a device or start an emulator, then:
 
 ```bash
 npx tauri android dev
+```
+
+Android dev builds are not standalone installs. They load the Vite dev server
+from your computer on port `1420`, so reopening a dev-installed app later will
+fail with a `Failed to request http://<computer-ip>:1420/` error unless the dev
+server is still running and reachable from the phone.
+
+For a standalone test install that does not depend on Vite, build a packaged
+debug APK instead:
+
+```bash
+npx tauri android build --debug
+adb install -r src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+```
+
+If Android rejects the install because an older dev/release build has a different
+signature, uninstall first:
+
+```bash
+adb uninstall ch.lkmc.copywraith
 ```
 
 ### Android app icon
@@ -262,6 +285,31 @@ the app once and reinstall (some launchers cache app icons).
 npx tauri android build
 ```
 
+Or use the release bootstrap helper:
+
+```bash
+./scripts/android-release-bootstrap.sh
+```
+
+By default this builds a debug-signed packaged APK and installs it with `adb`,
+so it is standalone and does not depend on the Vite dev server.
+
+Useful options:
+
+```bash
+# Build only, without installing
+INSTALL=0 ./scripts/android-release-bootstrap.sh
+
+# Build an unsigned/signed release artifact instead of a debug-signed local install
+DEBUG=0 INSTALL=0 ./scripts/android-release-bootstrap.sh
+
+# Build APK and AAB
+BUILD_APK=1 BUILD_AAB=1 INSTALL=0 ./scripts/android-release-bootstrap.sh
+
+# Build all Android ABIs instead of only aarch64
+TAURI_TARGETS=all ./scripts/android-release-bootstrap.sh
+```
+
 The unsigned APK is written to `src-tauri/gen/android/app/build/outputs/apk/`.
 For a signed release build, configure signing in
 `src-tauri/gen/android/app/build.gradle.kts` per the
@@ -269,6 +317,9 @@ For a signed release build, configure signing in
 
 ### Android troubleshooting
 
+- **`Failed to request http://<ip>:1420/` after reopening the app** -- the installed
+  app is a dev build from `npx tauri android dev`. Keep the dev command running,
+  or install a packaged debug APK with `npx tauri android build --debug`.
 - **`NDK_HOME` doesn't point to an existing directory** -- unset the variable
   (`unset NDK_HOME`) or update it to the path printed by `sdkmanager` during init.
   If the printed path does not actually exist, install NDK from Android Studio

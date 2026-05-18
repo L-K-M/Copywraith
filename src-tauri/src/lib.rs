@@ -123,6 +123,7 @@ pub fn run() {
             commands::update_settings,
             commands::reregister_shortcuts,
             commands::capture_clipboard,
+            commands::sync_now,
             commands::get_platform,
             commands::hide_popup,
         ])
@@ -686,6 +687,8 @@ fn start_sync_loop(
                             state: "unreachable".to_string(),
                             role: None,
                             url: None,
+                            message: Some(e.to_string()),
+                            checked_at: Some(chrono::Utc::now().to_rfc3339()),
                         },
                     );
                     // Exponential backoff on failure, capped at MAX_INTERVAL_SECS

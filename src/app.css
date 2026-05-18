@@ -4,3 +4,34 @@ body {
 	overflow: hidden;
 	background: transparent;
 }
+
+body .s7-backdrop {
+	box-sizing: border-box;
+	padding: calc(env(safe-area-inset-top, 0px) + 12px)
+		calc(env(safe-area-inset-right, 0px) + 12px)
+		calc(env(safe-area-inset-bottom, 0px) + 12px)
+		calc(env(safe-area-inset-left, 0px) + 12px);
+}
+
+body .s7-backdrop > .s7-dialog {
+	box-sizing: border-box;
+	max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px);
+	max-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+}
+
+body .s7-backdrop > .s7-dialog > .modal-content {
+	min-height: 0;
+	overflow: auto;
+}
+
+@supports (height: 100dvh) {
+	body .s7-backdrop > .s7-dialog {
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+	}
+}
+
+@supports (width: 100dvw) {
+	body .s7-backdrop > .s7-dialog {
+		max-width: calc(100dvw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px);
+	}
+}

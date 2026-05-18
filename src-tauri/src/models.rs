@@ -17,6 +17,7 @@ pub struct EntryForFrontend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Settings {
     pub server_url_primary: String,
     pub server_url_fallback: String,

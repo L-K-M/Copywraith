@@ -7,6 +7,7 @@
 		pasteSelectedEntry
 	} from '$lib/util/clipboardStore';
 	import { Button, Checkbox } from '@lkmc/system7-ui';
+	import { isMobile } from '$lib/util/platform';
 
 	let { onsettings }: { onsettings?: () => void } = $props();
 
@@ -73,7 +74,7 @@
 			bind:this={filterInput}
 			type="text"
 			class="s7-input filter-input"
-			placeholder="Filter clipboard..."
+			placeholder={$isMobile ? 'Filter...' : 'Filter clipboard...'}
 			value={$filterText}
 			oninput={handleInput}
 			onkeydown={handleKeydown}
@@ -151,5 +152,24 @@
 		gap: 8px;
 		flex-shrink: 0;
 		white-space: nowrap;
+	}
+
+	@media (max-width: 520px) {
+		.filter-bar {
+			flex-wrap: wrap;
+			align-items: stretch;
+			padding: 5px 6px;
+			gap: 6px;
+		}
+
+		.filter-input-wrapper {
+			flex: 1 1 100%;
+			min-width: 0;
+		}
+
+		.filter-options {
+			width: 100%;
+			justify-content: space-between;
+		}
 	}
 </style>
