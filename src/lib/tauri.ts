@@ -12,6 +12,11 @@ export interface ImportPendingSharesResult {
 	skipped: number;
 }
 
+export interface PendingSharesStatus {
+	pending: boolean;
+	staged: boolean;
+}
+
 export class TauriService {
 	static async getEntries(options?: {
 		limit?: number;
@@ -67,6 +72,11 @@ export class TauriService {
 	/** Import Android share-sheet payloads staged by the native Activity. */
 	static async importPendingShares(): Promise<ImportPendingSharesResult> {
 		return await invoke('import_pending_shares');
+	}
+
+	/** Check whether Android share-sheet payloads are waiting to import. */
+	static async hasPendingShares(): Promise<PendingSharesStatus> {
+		return await invoke('has_pending_shares');
 	}
 
 	/** Push local changes and pull the latest entries from the server now. */

@@ -30,17 +30,23 @@
 
 	const appWindow = getCurrentWindow();
 	const windowManager = new WindowManager();
+	type ProgressTone = 'normal' | 'success' | 'error';
 
 	let isWindowShaded = $state(false);
 	let showSettings = $state(false);
 	let errorMessage = $state('');
 	let filterBar: FilterBar | undefined = $state();
 	let previewEntry: ClipboardEntry | null = $state(null);
-	let mobileProgressVisible = $state(false);
-	let mobileProgressValue = $state(0);
-	let mobileProgressTitle = $state('Syncing');
-	let mobileProgressMessage = $state('Preparing mobile refresh...');
-	let mobileProgressDetail = $state('');
+	let shareProgressVisible = $state(false);
+	let shareProgressValue = $state(0);
+	let shareProgressTitle = $state('Importing Shared Items');
+	let shareProgressMessage = $state('Preparing Android share import...');
+	let shareProgressDetail = $state('');
+	let mobileSyncProgressVisible = $state(false);
+	let mobileSyncProgressValue = $state(0);
+	let mobileSyncProgressLabel = $state('Preparing sync...');
+	let mobileSyncProgressDetail = $state('');
+	let mobileSyncProgressTone: ProgressTone = $state('normal');
 
 	const AUTO_HIDE_DELAY_MS = 500;
 	let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -53,7 +59,8 @@
 	let unlistenSyncEndpointStatus: UnlistenFn;
 	let unlistenPasteFailed: UnlistenFn;
 	let mobileRefreshInFlight = false;
-	let mobileProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
+	let shareProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
+	let mobileSyncProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 	onMount(async () => {
 		// Detect platform first so all components can adapt
@@ -145,9 +152,13 @@
 			clearTimeout(autoHideTimer);
 			autoHideTimer = null;
 		}
-		if (mobileProgressHideTimer) {
-			clearTimeout(mobileProgressHideTimer);
-			mobileProgressHideTimer = null;
+		if (shareProgressHideTimer) {
+			clearTimeout(shareProgressHideTimer);
+			shareProgressHideTimer = null;
+		}
+		if (mobileSyncProgressHideTimer) {
+			clearTimeout(mobileSyncProgressHideTimer);
+			mobileSyncProgressHideTimer = null;
 		}
 		unlistenFocus?.();
 		unlistenClipboardUpdated?.();
@@ -180,8 +191,9 @@
 	async function refreshMobileEntries(reason = 'Manual mobile refresh.') {
 		if (mobileRefreshInFlight) return;
 		mobileRefreshInFlight = true;
-		showMobileProgress('Preparing Sync', reason, 5);
 		const configuredEndpoint = await getConfiguredSyncEndpoint();
+		let hadWarning = false;
+		showMobileSyncProgress('Preparing mobile sync...', 5, reason);
 		setSyncEndpointStatus({
 			state: 'checking',
 			role: configuredEndpoint.role,
@@ -189,61 +201,90 @@
 			message: `${reason} Refreshing clipboard and contacting the sync server.`
 		});
 
-		try {
-			updateMobileProgress('Importing Shared Items', 'Checking Android share-sheet payloads.', 15);
-			const shareResult = await withTimeout(
-				TauriService.importPendingShares(),
-				10000,
-				'Android shared-item import did not respond within 10 seconds.'
-			);
-			if (shareResult.imported > 0) {
-				updateMobileProgress(
-					'Updating List',
-					`Imported ${shareResult.imported} shared item${shareResult.imported === 1 ? '' : 's'} locally.`,
-					35
+
+		if ($platform === 'android') {
+			try {
+				const pendingShares = await withTimeout(
+					TauriService.hasPendingShares(),
+					5000,
+					'Android shared-item check did not respond within 5 seconds.'
 				);
-				await loadEntries();
-				notify(
-					'success',
-					`Imported ${shareResult.imported} shared item${shareResult.imported === 1 ? '' : 's'}.`
-				);
-			} else {
-				updateMobileProgress('Importing Shared Items', 'No new shared items were waiting.', 30);
+
+				if (pendingShares.pending) {
+					showShareProgress(
+						'Importing Shared Items',
+						pendingShares.staged
+							? 'Reading the current Android share-sheet payload.'
+							: 'Reading staged Android share-sheet payloads.',
+						10
+					);
+
+					try {
+						updateShareProgress('Importing Shared Items', 'Saving shared items locally.', 45);
+						const shareResult = await withTimeout(
+							TauriService.importPendingShares(),
+							10000,
+							'Android shared-item import did not respond within 10 seconds.'
+						);
+						if (shareResult.imported > 0) {
+							updateShareProgress(
+								'Updating List',
+								`Imported ${shareResult.imported} shared item${shareResult.imported === 1 ? '' : 's'} locally.`,
+								80
+							);
+							await loadEntries();
+							notify(
+								'success',
+								`Imported ${shareResult.imported} shared item${shareResult.imported === 1 ? '' : 's'}.`
+							);
+							updateShareProgress('Share Import Complete', 'Shared items are now in local history.', 100);
+						} else {
+							updateShareProgress('No Shared Items Imported', 'No new shared items were waiting.', 100);
+						}
+					} catch (e) {
+						hadWarning = true;
+						console.error('Failed to import Android shared items:', e);
+						updateShareProgress('Share Import Failed', 'Could not import shared items.', 100, String(e));
+					} finally {
+						scheduleShareProgressHide();
+					}
+				}
+			} catch (e) {
+				hadWarning = true;
+				console.error('Failed to check Android shared items:', e);
 			}
-		} catch (e) {
-			console.error('Failed to import Android shared items:', e);
-			updateMobileProgress('Share Import Failed', 'Could not import shared items.', 30, String(e));
 		}
 
 		try {
-			updateMobileProgress('Capturing Clipboard', 'Checking the current mobile clipboard.', 45);
+			updateMobileSyncProgress('Capturing clipboard...', 30, 'Checking the current mobile clipboard.');
 			await withTimeout(
 				TauriService.captureClipboard(),
 				5000,
 				'Clipboard capture did not respond within 5 seconds.'
 			);
-			updateMobileProgress('Capturing Clipboard', 'Clipboard capture complete.', 55);
+			updateMobileSyncProgress('Clipboard capture complete.', 45);
 		} catch (e) {
+			hadWarning = true;
 			console.error('Failed to capture clipboard:', e);
-			updateMobileProgress('Clipboard Capture Failed', 'Could not read the mobile clipboard.', 55, String(e));
+			updateMobileSyncProgress('Clipboard capture failed.', 45, String(e), 'error');
 		}
 
 		try {
-			updateMobileProgress('Syncing Server', 'Uploading local entries and pulling server changes.', 65);
+			updateMobileSyncProgress('Syncing with server...', 65, 'Uploading local entries and pulling server changes.');
 			const result = await withTimeout(
 				TauriService.syncNow(),
 				45000,
 				'Sync did not finish within 45 seconds. Check the server URL and network.'
 			);
 			setSyncEndpointStatus(result.endpoint_status);
-			updateMobileProgress(
-				'Syncing Server',
+			updateMobileSyncProgress(
 				result.pulled > 0
 					? `Pulled ${result.pulled} server entr${result.pulled === 1 ? 'y' : 'ies'}.`
 					: 'Server sync complete.',
 				85
 			);
 		} catch (e) {
+			hadWarning = true;
 			console.error('Failed to sync entries:', e);
 			setSyncEndpointStatus({
 				state: 'unreachable',
@@ -251,41 +292,73 @@
 				url: configuredEndpoint.url,
 				message: String(e)
 			});
-			updateMobileProgress('Sync Unreachable', 'Server sync did not complete.', 85, String(e));
+			updateMobileSyncProgress('Server sync failed.', 85, String(e), 'error');
 		}
 
 		try {
-			updateMobileProgress('Reloading List', 'Refreshing local clipboard history.', 92);
+			updateMobileSyncProgress('Reloading history...', 92, 'Refreshing local clipboard history.');
 			await loadEntries();
-			updateMobileProgress('Refresh Complete', 'Clipboard history is up to date on this device.', 100);
+			updateMobileSyncProgress(
+				hadWarning ? 'Refresh finished with warnings.' : 'Clipboard history is up to date.',
+				100,
+				hadWarning ? 'Open Sync Details if entries are missing.' : '',
+				hadWarning ? 'error' : 'success'
+			);
+		} catch (e) {
+			console.error('Failed to reload clipboard history:', e);
+			updateMobileSyncProgress('List refresh failed.', 100, String(e), 'error');
 		} finally {
 			mobileRefreshInFlight = false;
-			scheduleMobileProgressHide();
+			scheduleMobileSyncProgressHide();
 		}
 	}
 
-	function showMobileProgress(title: string, message: string, value: number, detail = '') {
-		if (mobileProgressHideTimer) {
-			clearTimeout(mobileProgressHideTimer);
-			mobileProgressHideTimer = null;
+	function showShareProgress(title: string, message: string, value: number, detail = '') {
+		if (shareProgressHideTimer) {
+			clearTimeout(shareProgressHideTimer);
+			shareProgressHideTimer = null;
 		}
-		mobileProgressVisible = true;
-		updateMobileProgress(title, message, value, detail);
+		shareProgressVisible = true;
+		updateShareProgress(title, message, value, detail);
 	}
 
-	function updateMobileProgress(title: string, message: string, value: number, detail = '') {
-		mobileProgressTitle = title;
-		mobileProgressMessage = message;
-		mobileProgressValue = value;
-		mobileProgressDetail = detail;
+	function updateShareProgress(title: string, message: string, value: number, detail = '') {
+		shareProgressTitle = title;
+		shareProgressMessage = message;
+		shareProgressValue = value;
+		shareProgressDetail = detail;
 	}
 
-	function scheduleMobileProgressHide() {
-		if (mobileProgressHideTimer) clearTimeout(mobileProgressHideTimer);
-		mobileProgressHideTimer = setTimeout(() => {
-			mobileProgressVisible = false;
-			mobileProgressHideTimer = null;
+	function scheduleShareProgressHide() {
+		if (shareProgressHideTimer) clearTimeout(shareProgressHideTimer);
+		shareProgressHideTimer = setTimeout(() => {
+			shareProgressVisible = false;
+			shareProgressHideTimer = null;
 		}, 900);
+	}
+
+	function showMobileSyncProgress(label: string, value: number, detail = '', tone: ProgressTone = 'normal') {
+		if (mobileSyncProgressHideTimer) {
+			clearTimeout(mobileSyncProgressHideTimer);
+			mobileSyncProgressHideTimer = null;
+		}
+		mobileSyncProgressVisible = true;
+		updateMobileSyncProgress(label, value, detail, tone);
+	}
+
+	function updateMobileSyncProgress(label: string, value: number, detail = '', tone: ProgressTone = 'normal') {
+		mobileSyncProgressLabel = label;
+		mobileSyncProgressValue = value;
+		mobileSyncProgressDetail = detail;
+		mobileSyncProgressTone = tone;
+	}
+
+	function scheduleMobileSyncProgressHide() {
+		if (mobileSyncProgressHideTimer) clearTimeout(mobileSyncProgressHideTimer);
+		mobileSyncProgressHideTimer = setTimeout(() => {
+			mobileSyncProgressVisible = false;
+			mobileSyncProgressHideTimer = null;
+		}, 1800);
 	}
 
 	async function getConfiguredSyncEndpoint() {
@@ -396,7 +469,13 @@
 		<main class="app-content">
 			<FilterBar bind:this={filterBar} onsettings={handleSettingsOpen} />
 			<EntryList onpreview={(entry) => { previewEntry = entry; }} />
-			<StatusBar />
+			<StatusBar
+				progressVisible={mobileSyncProgressVisible}
+				progressValue={mobileSyncProgressValue}
+				progressLabel={mobileSyncProgressLabel}
+				progressDetail={mobileSyncProgressDetail}
+				progressTone={mobileSyncProgressTone}
+			/>
 		</main>
 	{/if}
 
@@ -460,19 +539,19 @@
 	<EntryPreview entry={previewEntry} onclose={() => { previewEntry = null; }} />
 {/if}
 
-{#if mobileProgressVisible && $isMobile}
+{#if shareProgressVisible && $isMobile}
 	<ModalDialog width="340px">
 		<div class="mobile-progress-dialog">
-			<div class="progress-title">{mobileProgressTitle}</div>
+			<div class="progress-title">{shareProgressTitle}</div>
 			<ProgressBar
-				value={mobileProgressValue}
+				value={shareProgressValue}
 				max={100}
 				height={16}
-				ariaLabel="Mobile sync progress"
+				ariaLabel="Shared item import progress"
 			/>
-			<div class="progress-message">{mobileProgressMessage}</div>
-			{#if mobileProgressDetail}
-				<div class="progress-detail">{mobileProgressDetail}</div>
+			<div class="progress-message">{shareProgressMessage}</div>
+			{#if shareProgressDetail}
+				<div class="progress-detail">{shareProgressDetail}</div>
 			{/if}
 		</div>
 	</ModalDialog>

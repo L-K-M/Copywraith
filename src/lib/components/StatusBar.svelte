@@ -1,10 +1,24 @@
 <script lang="ts">
-	import { MovableDialog } from '@lkmc/system7-ui';
+	import { MovableDialog, ProgressBar } from '@lkmc/system7-ui';
 	import { onMount } from 'svelte';
 	import { TauriService } from '$lib/tauri';
 	import { entries, starredOnly } from '$lib/util/clipboardStore';
 	import { isMobile } from '$lib/util/platform';
 	import { setSyncEndpointStatus, syncEndpointStatus } from '$lib/util/syncStatusStore';
+
+	let {
+		progressVisible = false,
+		progressValue = 0,
+		progressLabel = '',
+		progressDetail = '',
+		progressTone = 'normal'
+	}: {
+		progressVisible?: boolean;
+		progressValue?: number;
+		progressLabel?: string;
+		progressDetail?: string;
+		progressTone?: 'normal' | 'success' | 'error';
+	} = $props();
 
 	let entryCount = $derived($entries.length);
 	let starredLabel = $derived($starredOnly ? ' (starred)' : '');
@@ -151,13 +165,26 @@
 		</button>
 
 	</div>
-	<span class="status-hint">
-		{#if $isMobile}
-			Tap to copy
-		{:else}
-			Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
-		{/if}
-	</span>
+	{#if $isMobile && progressVisible}
+		<div class="mobile-sync-progress" class:success={progressTone === 'success'} class:error={progressTone === 'error'}>
+			<div class="mobile-sync-progress-main">
+				<span>{progressLabel}</span>
+				<strong>{Math.round(progressValue)}%</strong>
+			</div>
+			<ProgressBar value={progressValue} max={100} height={8} ariaLabel="Mobile sync progress" />
+			{#if progressDetail}
+				<div class="mobile-sync-progress-detail">{progressDetail}</div>
+			{/if}
+		</div>
+	{:else}
+		<span class="status-hint">
+			{#if $isMobile}
+				Tap to copy
+			{:else}
+				Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
+			{/if}
+		</span>
+	{/if}
 </div>
 
 {#if showSyncDetails}
@@ -282,6 +309,53 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		min-width: 0;
+	}
+
+	.mobile-sync-progress {
+		grid-column: 1 / -1;
+		justify-self: stretch;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 150px;
+		padding: 1px 0;
+		font-size: 11px;
+	}
+
+	.mobile-sync-progress-main {
+		display: flex;
+		justify-content: space-between;
+		gap: 8px;
+		line-height: 1.2;
+	}
+
+	.mobile-sync-progress-main span {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.mobile-sync-progress-main strong {
+		font-weight: normal;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.mobile-sync-progress.success .mobile-sync-progress-main {
+		color: #205c25;
+	}
+
+	.mobile-sync-progress.error .mobile-sync-progress-main,
+	.mobile-sync-progress.error .mobile-sync-progress-detail {
+		color: #8a3f00;
+	}
+
+	.mobile-sync-progress-detail {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: #555;
+		line-height: 1.2;
 	}
 
 	@media (max-width: 920px) {

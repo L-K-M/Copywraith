@@ -297,6 +297,12 @@ pub struct ImportPendingSharesResult {
 }
 
 #[derive(Debug, serde::Serialize)]
+pub struct PendingSharesStatus {
+    pub pending: bool,
+    pub staged: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct ResetSyncCursorResult {
     pub reset: bool,
 }
@@ -379,6 +385,54 @@ pub async fn import_pending_shares(
         }
 
         Ok(ImportPendingSharesResult { imported, skipped })
+    }
+}
+
+#[tauri::command]
+pub async fn has_pending_shares(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PendingSharesStatus, String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = &app;
+        let _ = &state;
+        return Ok(PendingSharesStatus {
+            pending: false,
+            staged: false,
+        });
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        use copywraith_share_target::ShareTargetExt;
+
+        let staged = app
+            .share_target()
+            .collect_pending_share()
+            .map(|status| status.staged)
+            .unwrap_or_else(|e| {
+                log::debug!("No pending Android share collected from Activity intent: {}", e);
+                false
+            });
+
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let pending_dir = data_dir.join("pending-shares");
+        let has_pending_file = std::fs::read_dir(&pending_dir)
+            .ok()
+            .map(|entries| {
+                entries.filter_map(Result::ok).any(|entry| {
+                    let path = entry.path();
+                    path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                })
+            })
+            .unwrap_or(false);
+
+        let _ = &state;
+        Ok(PendingSharesStatus {
+            pending: staged || has_pending_file,
+            staged,
+        })
     }
 }
 

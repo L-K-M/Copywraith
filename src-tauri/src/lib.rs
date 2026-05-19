@@ -125,6 +125,7 @@ pub fn run() {
             commands::update_settings,
             commands::reregister_shortcuts,
             commands::capture_clipboard,
+            commands::has_pending_shares,
             commands::import_pending_shares,
             commands::sync_now,
             commands::reset_sync_cursor,
