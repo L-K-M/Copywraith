@@ -750,6 +750,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "copywraith-share-target"
+version = "0.1.0"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "copywraith-tauri"
 version = "0.1.0"
 dependencies = [
@@ -758,6 +766,7 @@ dependencies = [
  "chrono",
  "clipboard-rs",
  "copywraith-core",
+ "copywraith-share-target",
  "env_logger",
  "log",
  "reqwest 0.12.28",

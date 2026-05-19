@@ -1,0 +1,16 @@
+[package]
+name = "copywraith-share-target"
+version = "0.1.0"
+edition = "2021"
+links = "copywraith-share-target"
+build = "build.rs"
+
+[lib]
+name = "copywraith_share_target"
+path = "src/lib.rs"
+
+[dependencies]
+tauri = { version = "2", default-features = false }
+
+[build-dependencies]
+tauri-plugin = { version = "2.4", features = ["build"] }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/copywraith-core", "server", "src-tauri"]
+members = ["crates/copywraith-core", "crates/copywraith-share-target", "server", "src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]

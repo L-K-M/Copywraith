@@ -7,6 +7,11 @@ export interface SyncNowResult {
 	endpoint_status: SyncEndpointStatusInput;
 }
 
+export interface ImportPendingSharesResult {
+	imported: number;
+	skipped: number;
+}
+
 export class TauriService {
 	static async getEntries(options?: {
 		limit?: number;
@@ -57,6 +62,11 @@ export class TauriService {
 	/** Read the current system clipboard and save it as a new entry (mobile). */
 	static async captureClipboard(): Promise<boolean> {
 		return await invoke('capture_clipboard');
+	}
+
+	/** Import Android share-sheet payloads staged by the native Activity. */
+	static async importPendingShares(): Promise<ImportPendingSharesResult> {
+		return await invoke('import_pending_shares');
 	}
 
 	/** Push local changes and pull the latest entries from the server now. */

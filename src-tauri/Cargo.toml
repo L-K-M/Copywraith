@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 copywraith-core = { path = "../crates/copywraith-core" }
+copywraith-share-target = { path = "../crates/copywraith-share-target" }
 tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true }

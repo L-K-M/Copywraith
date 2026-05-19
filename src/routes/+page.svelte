@@ -178,11 +178,31 @@
 			message: `${reason} Refreshing clipboard and contacting the sync server.`
 		});
 
-		const capturePromise = withTimeout(
-			TauriService.captureClipboard(),
-			5000,
-			'Clipboard capture did not respond within 5 seconds.'
-		);
+		try {
+			const shareResult = await withTimeout(
+				TauriService.importPendingShares(),
+				10000,
+				'Android shared-item import did not respond within 10 seconds.'
+			);
+			if (shareResult.imported > 0) {
+				notify(
+					'success',
+					`Imported ${shareResult.imported} shared item${shareResult.imported === 1 ? '' : 's'}.`
+				);
+			}
+		} catch (e) {
+			console.error('Failed to import Android shared items:', e);
+		}
+
+		try {
+			await withTimeout(
+				TauriService.captureClipboard(),
+				5000,
+				'Clipboard capture did not respond within 5 seconds.'
+			);
+		} catch (e) {
+			console.error('Failed to capture clipboard:', e);
+		}
 
 		try {
 			const result = await withTimeout(
@@ -202,11 +222,8 @@
 		}
 
 		try {
-			await capturePromise;
-		} catch (e) {
-			console.error('Failed to capture clipboard:', e);
-		} finally {
 			await loadEntries();
+		} finally {
 			mobileRefreshInFlight = false;
 		}
 	}

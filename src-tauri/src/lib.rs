@@ -52,7 +52,9 @@ pub fn run() {
     // Android: official clipboard-manager plugin for read/write
     #[cfg(target_os = "android")]
     {
-        builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+        builder = builder
+            .plugin(tauri_plugin_clipboard_manager::init())
+            .plugin(copywraith_share_target::init());
     }
 
     builder
@@ -123,6 +125,7 @@ pub fn run() {
             commands::update_settings,
             commands::reregister_shortcuts,
             commands::capture_clipboard,
+            commands::import_pending_shares,
             commands::sync_now,
             commands::get_platform,
             commands::hide_popup,

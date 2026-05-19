@@ -1,6 +1,9 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use tauri::{Emitter, State};
 
+#[cfg(target_os = "android")]
+use tauri::Manager;
+
 use crate::models::{EntryForFrontend, Settings};
 use crate::sync;
 use crate::AppState;
@@ -250,7 +253,7 @@ pub async fn capture_clipboard(
             .insert_entry(ContentType::Text, &flavors, None, &content_hash, None)
         {
             Ok(Some(entry)) => {
-                let _ = app.emit("clipboard-updated", &entry);
+                let _ = app.emit("clipboard-updated", entry.clone());
                 // Trigger background sync for the new entry
                 let sync = state.sync_client.clone();
                 let storage = state.storage.clone();
@@ -263,6 +266,241 @@ pub async fn capture_clipboard(
             Err(e) => Err(e.to_string()),
         }
     }
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, serde::Deserialize)]
+struct PendingShareBatch {
+    #[serde(default)]
+    items: Vec<PendingShareItem>,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, serde::Deserialize)]
+struct PendingShareItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    stored_path: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ImportPendingSharesResult {
+    pub imported: usize,
+    pub skipped: usize,
+}
+
+/// Import Android share-sheet payloads persisted by the native Activity.
+#[tauri::command]
+pub async fn import_pending_shares(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ImportPendingSharesResult, String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = &app;
+        let _ = &state;
+        return Ok(ImportPendingSharesResult {
+            imported: 0,
+            skipped: 0,
+        });
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let pending_dir = data_dir.join("pending-shares");
+        let processed_dir = pending_dir.join("processed");
+        let failed_dir = pending_dir.join("failed");
+        std::fs::create_dir_all(&processed_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&failed_dir).map_err(|e| e.to_string())?;
+
+        let mut imported = 0usize;
+        let mut skipped = 0usize;
+
+        let entries = match std::fs::read_dir(&pending_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ImportPendingSharesResult { imported, skipped });
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+
+            let import_result = import_pending_share_file(&app, &state, &path);
+            let target_dir = if import_result.is_ok() {
+                &processed_dir
+            } else {
+                &failed_dir
+            };
+            let target = target_dir.join(
+                path.file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("share.json")),
+            );
+            let _ = std::fs::rename(&path, target);
+
+            match import_result {
+                Ok((new_imports, new_skips)) => {
+                    imported += new_imports;
+                    skipped += new_skips;
+                }
+                Err(e) => {
+                    skipped += 1;
+                    log::warn!("Failed to import pending Android share {:?}: {}", path, e);
+                }
+            }
+        }
+
+        if imported > 0 {
+            let _ = app.emit("clipboard-updated", ());
+        }
+
+        Ok(ImportPendingSharesResult { imported, skipped })
+    }
+}
+
+#[cfg(target_os = "android")]
+fn import_pending_share_file(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    path: &std::path::Path,
+) -> anyhow::Result<(usize, usize)> {
+    let data = std::fs::read_to_string(path)?;
+    let batch: PendingShareBatch = serde_json::from_str(&data)?;
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+
+    for item in batch.items {
+        match import_pending_share_item(state, &item) {
+            Ok(Some(entry)) => {
+                imported += 1;
+                let _ = app.emit("clipboard-updated", &entry);
+                let sync = state.sync_client.clone();
+                let storage = state.storage.clone();
+                tauri::async_runtime::spawn(async move {
+                    sync.sync_entry(&entry, &storage).await;
+                });
+            }
+            Ok(None) => skipped += 1,
+            Err(e) => {
+                skipped += 1;
+                log::warn!("Failed to import Android share item from {:?}: {}", path, e);
+            }
+        }
+    }
+
+    Ok((imported, skipped))
+}
+
+#[cfg(target_os = "android")]
+fn import_pending_share_item(
+    state: &State<'_, AppState>,
+    item: &PendingShareItem,
+) -> anyhow::Result<Option<copywraith_core::models::ClipboardEntry>> {
+    match item.item_type.as_str() {
+        "text" => import_pending_text_share(state, item),
+        "file" => import_pending_file_share(state, item),
+        other => {
+            log::warn!("Skipping unsupported Android share item type: {}", other);
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn import_pending_text_share(
+    state: &State<'_, AppState>,
+    item: &PendingShareItem,
+) -> anyhow::Result<Option<copywraith_core::models::ClipboardEntry>> {
+    let Some(text) = item.text.as_ref().filter(|text| !text.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let flavors = ClipboardFlavors {
+        text_plain: Some(text.clone()),
+        ..ClipboardFlavors::default()
+    };
+    let content_hash = flavors.payload_hash(ContentType::Text, None);
+    state.storage.insert_entry(
+        ContentType::Text,
+        &flavors,
+        None,
+        &content_hash,
+        Some("Android share sheet"),
+    )
+}
+
+#[cfg(target_os = "android")]
+fn import_pending_file_share(
+    state: &State<'_, AppState>,
+    item: &PendingShareItem,
+) -> anyhow::Result<Option<copywraith_core::models::ClipboardEntry>> {
+    const MAX_SHARED_BLOB_BYTES: u64 = 64 * 1024 * 1024;
+
+    let Some(stored_path) = item.stored_path.as_deref() else {
+        return Ok(None);
+    };
+    let path = std::path::Path::new(stored_path);
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_SHARED_BLOB_BYTES {
+        return Ok(None);
+    }
+
+    let bytes = std::fs::read(path)?;
+    let _ = std::fs::remove_file(path);
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+
+    if item
+        .mime_type
+        .as_deref()
+        .is_some_and(|mime| mime.starts_with("image/"))
+        || copywraith_core::content::detect_image_format(&bytes).is_some()
+    {
+        let content_hash = copywraith_core::content::hash_bytes(&bytes);
+        return state.storage.insert_entry(
+            ContentType::Image,
+            &ClipboardFlavors::default(),
+            Some(&bytes),
+            &content_hash,
+            Some("Android share sheet"),
+        );
+    }
+
+    let display_name = item
+        .file_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("shared-file")
+        });
+    let flavors = ClipboardFlavors {
+        file_list: Some(vec![display_name.to_string()]),
+        ..ClipboardFlavors::default()
+    };
+    let blob_hash = copywraith_core::content::hash_bytes(&bytes);
+    let content_hash = flavors.payload_hash(ContentType::File, Some(&blob_hash));
+    state.storage.insert_entry(
+        ContentType::File,
+        &flavors,
+        Some(&bytes),
+        &content_hash,
+        Some("Android share sheet"),
+    )
 }
 
 #[tauri::command]
