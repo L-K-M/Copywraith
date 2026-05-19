@@ -10,6 +10,7 @@ name = "copywraith_share_target"
 path = "src/lib.rs"
 
 [dependencies]
+serde = { workspace = true }
 tauri = { version = "2", default-features = false }
 
 [build-dependencies]

@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { TitleBar, Notification, ErrorBanner } from '@lkmc/system7-ui';
+	import { TitleBar, Notification, ErrorBanner, ModalDialog, ProgressBar } from '@lkmc/system7-ui';
 	import { WindowManager } from '$lib/windowManager';
 	import { windowFocused } from '$lib/util/windowState';
 	import { notifications } from '$lib/util/notifications';
@@ -36,6 +36,11 @@
 	let errorMessage = $state('');
 	let filterBar: FilterBar | undefined = $state();
 	let previewEntry: ClipboardEntry | null = $state(null);
+	let mobileProgressVisible = $state(false);
+	let mobileProgressValue = $state(0);
+	let mobileProgressTitle = $state('Syncing');
+	let mobileProgressMessage = $state('Preparing mobile refresh...');
+	let mobileProgressDetail = $state('');
 
 	const AUTO_HIDE_DELAY_MS = 500;
 	let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,6 +53,7 @@
 	let unlistenSyncEndpointStatus: UnlistenFn;
 	let unlistenPasteFailed: UnlistenFn;
 	let mobileRefreshInFlight = false;
+	let mobileProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 	onMount(async () => {
 		// Detect platform first so all components can adapt
@@ -139,6 +145,10 @@
 			clearTimeout(autoHideTimer);
 			autoHideTimer = null;
 		}
+		if (mobileProgressHideTimer) {
+			clearTimeout(mobileProgressHideTimer);
+			mobileProgressHideTimer = null;
+		}
 		unlistenFocus?.();
 		unlistenClipboardUpdated?.();
 		unlistenClipboardReordered?.();
@@ -170,6 +180,7 @@
 	async function refreshMobileEntries(reason = 'Manual mobile refresh.') {
 		if (mobileRefreshInFlight) return;
 		mobileRefreshInFlight = true;
+		showMobileProgress('Preparing Sync', reason, 5);
 		const configuredEndpoint = await getConfiguredSyncEndpoint();
 		setSyncEndpointStatus({
 			state: 'checking',
@@ -179,38 +190,59 @@
 		});
 
 		try {
+			updateMobileProgress('Importing Shared Items', 'Checking Android share-sheet payloads.', 15);
 			const shareResult = await withTimeout(
 				TauriService.importPendingShares(),
 				10000,
 				'Android shared-item import did not respond within 10 seconds.'
 			);
 			if (shareResult.imported > 0) {
+				updateMobileProgress(
+					'Updating List',
+					`Imported ${shareResult.imported} shared item${shareResult.imported === 1 ? '' : 's'} locally.`,
+					35
+				);
+				await loadEntries();
 				notify(
 					'success',
 					`Imported ${shareResult.imported} shared item${shareResult.imported === 1 ? '' : 's'}.`
 				);
+			} else {
+				updateMobileProgress('Importing Shared Items', 'No new shared items were waiting.', 30);
 			}
 		} catch (e) {
 			console.error('Failed to import Android shared items:', e);
+			updateMobileProgress('Share Import Failed', 'Could not import shared items.', 30, String(e));
 		}
 
 		try {
+			updateMobileProgress('Capturing Clipboard', 'Checking the current mobile clipboard.', 45);
 			await withTimeout(
 				TauriService.captureClipboard(),
 				5000,
 				'Clipboard capture did not respond within 5 seconds.'
 			);
+			updateMobileProgress('Capturing Clipboard', 'Clipboard capture complete.', 55);
 		} catch (e) {
 			console.error('Failed to capture clipboard:', e);
+			updateMobileProgress('Clipboard Capture Failed', 'Could not read the mobile clipboard.', 55, String(e));
 		}
 
 		try {
+			updateMobileProgress('Syncing Server', 'Uploading local entries and pulling server changes.', 65);
 			const result = await withTimeout(
 				TauriService.syncNow(),
 				45000,
 				'Sync did not finish within 45 seconds. Check the server URL and network.'
 			);
 			setSyncEndpointStatus(result.endpoint_status);
+			updateMobileProgress(
+				'Syncing Server',
+				result.pulled > 0
+					? `Pulled ${result.pulled} server entr${result.pulled === 1 ? 'y' : 'ies'}.`
+					: 'Server sync complete.',
+				85
+			);
 		} catch (e) {
 			console.error('Failed to sync entries:', e);
 			setSyncEndpointStatus({
@@ -219,13 +251,41 @@
 				url: configuredEndpoint.url,
 				message: String(e)
 			});
+			updateMobileProgress('Sync Unreachable', 'Server sync did not complete.', 85, String(e));
 		}
 
 		try {
+			updateMobileProgress('Reloading List', 'Refreshing local clipboard history.', 92);
 			await loadEntries();
+			updateMobileProgress('Refresh Complete', 'Clipboard history is up to date on this device.', 100);
 		} finally {
 			mobileRefreshInFlight = false;
+			scheduleMobileProgressHide();
 		}
+	}
+
+	function showMobileProgress(title: string, message: string, value: number, detail = '') {
+		if (mobileProgressHideTimer) {
+			clearTimeout(mobileProgressHideTimer);
+			mobileProgressHideTimer = null;
+		}
+		mobileProgressVisible = true;
+		updateMobileProgress(title, message, value, detail);
+	}
+
+	function updateMobileProgress(title: string, message: string, value: number, detail = '') {
+		mobileProgressTitle = title;
+		mobileProgressMessage = message;
+		mobileProgressValue = value;
+		mobileProgressDetail = detail;
+	}
+
+	function scheduleMobileProgressHide() {
+		if (mobileProgressHideTimer) clearTimeout(mobileProgressHideTimer);
+		mobileProgressHideTimer = setTimeout(() => {
+			mobileProgressVisible = false;
+			mobileProgressHideTimer = null;
+		}, 900);
 	}
 
 	async function getConfiguredSyncEndpoint() {
@@ -400,6 +460,24 @@
 	<EntryPreview entry={previewEntry} onclose={() => { previewEntry = null; }} />
 {/if}
 
+{#if mobileProgressVisible && $isMobile}
+	<ModalDialog width="340px">
+		<div class="mobile-progress-dialog">
+			<div class="progress-title">{mobileProgressTitle}</div>
+			<ProgressBar
+				value={mobileProgressValue}
+				max={100}
+				height={16}
+				ariaLabel="Mobile sync progress"
+			/>
+			<div class="progress-message">{mobileProgressMessage}</div>
+			{#if mobileProgressDetail}
+				<div class="progress-detail">{mobileProgressDetail}</div>
+			{/if}
+		</div>
+	</ModalDialog>
+{/if}
+
 <style>
 	.window-frame {
 		position: relative;
@@ -442,6 +520,35 @@
 
 	.window-frame.mobile .app-content {
 		padding-bottom: var(--safe-area-bottom);
+	}
+
+	.mobile-progress-dialog {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 8px 4px;
+		font-size: 12px;
+	}
+
+	.progress-title {
+		font-weight: bold;
+		text-align: center;
+	}
+
+	.progress-message {
+		line-height: 1.35;
+		text-align: center;
+	}
+
+	.progress-detail {
+		max-height: 72px;
+		overflow: auto;
+		font-size: 10px;
+		line-height: 1.3;
+		color: #555;
+		word-break: break-word;
+		border-top: 1px solid #bbb;
+		padding-top: 6px;
 	}
 
 	.resize-handle {

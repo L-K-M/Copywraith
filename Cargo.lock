@@ -753,6 +753,7 @@ dependencies = [
 name = "copywraith-share-target"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "tauri",
  "tauri-plugin",
 ]

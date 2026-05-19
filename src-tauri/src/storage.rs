@@ -631,4 +631,10 @@ impl LocalStorage {
         )?;
         Ok(())
     }
+
+    pub fn clear_sync_cursor(&self) -> anyhow::Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute("DELETE FROM settings WHERE key = 'sync_last_seen_server_id'", [])?;
+        Ok(())
+    }
 }

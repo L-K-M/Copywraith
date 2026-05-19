@@ -127,6 +127,7 @@ pub fn run() {
             commands::capture_clipboard,
             commands::import_pending_shares,
             commands::sync_now,
+            commands::reset_sync_cursor,
             commands::get_platform,
             commands::hide_popup,
         ])

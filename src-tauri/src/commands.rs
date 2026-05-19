@@ -296,6 +296,11 @@ pub struct ImportPendingSharesResult {
     pub skipped: usize,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct ResetSyncCursorResult {
+    pub reset: bool,
+}
+
 /// Import Android share-sheet payloads persisted by the native Activity.
 #[tauri::command]
 pub async fn import_pending_shares(
@@ -314,6 +319,12 @@ pub async fn import_pending_shares(
 
     #[cfg(target_os = "android")]
     {
+        use copywraith_share_target::ShareTargetExt;
+
+        if let Err(e) = app.share_target().collect_pending_share() {
+            log::debug!("No pending Android share collected from Activity intent: {}", e);
+        }
+
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let pending_dir = data_dir.join("pending-shares");
         let processed_dir = pending_dir.join("processed");
@@ -609,6 +620,12 @@ pub async fn sync_now(
             Err(e.to_string())
         }
     }
+}
+
+#[tauri::command]
+pub async fn reset_sync_cursor(state: State<'_, AppState>) -> Result<ResetSyncCursorResult, String> {
+    state.sync_client.reset_pull_cursor(&state.storage);
+    Ok(ResetSyncCursorResult { reset: true })
 }
 
 /// Returns the current platform so the frontend can adapt its UI.

@@ -153,6 +153,18 @@ impl SyncClient {
         });
     }
 
+    pub fn reset_pull_cursor(&self, storage: &LocalStorage) {
+        {
+            let mut state = self.pull_state.lock().unwrap();
+            state.initialized = false;
+            state.last_seen_server_id = None;
+        }
+
+        if let Err(e) = storage.clear_sync_cursor() {
+            log::warn!("Failed to clear sync cursor: {}", e);
+        }
+    }
+
     fn recent_responding_status(&self) -> Option<SyncEndpointStatus> {
         const MAX_STATUS_AGE: Duration = Duration::from_secs(30);
 
@@ -246,7 +258,8 @@ impl SyncClient {
 
         let mut before_cursor: Option<(String, String)> = None;
         let mut pulled = 0usize;
-        let mut cursor_after_sync: Option<String> = None;
+        let mut cursor_after_successful_pull: Option<String> = None;
+        let mut had_ingest_error = false;
         let mut active_endpoint: Option<ServerEndpoint> = None;
 
         loop {
@@ -292,8 +305,8 @@ impl SyncClient {
                 break;
             }
 
-            if cursor_after_sync.is_none() {
-                cursor_after_sync = Some(page.entries[0].entry.id.clone());
+            if cursor_after_successful_pull.is_none() {
+                cursor_after_successful_pull = Some(page.entries[0].entry.id.clone());
             }
 
             let mut reached_cursor = false;
@@ -312,6 +325,7 @@ impl SyncClient {
                     Ok(false) => {}
                     Err(e) => {
                         log::warn!("Failed to ingest remote entry {}: {}", remote.entry.id, e);
+                        had_ingest_error = true;
                     }
                 }
             }
@@ -330,7 +344,7 @@ impl SyncClient {
             ));
         }
 
-        if let Some(cursor) = cursor_after_sync {
+        if let Some(cursor) = cursor_after_successful_pull.filter(|_| !had_ingest_error) {
             let mut state = self.pull_state.lock().unwrap();
             state.last_seen_server_id = Some(cursor.clone());
             state.initialized = true;
@@ -518,21 +532,18 @@ impl SyncClient {
         let mut blob_data: Option<Vec<u8>> = None;
         let remote_flavors = resolved_remote_flavors(&remote.entry);
 
-        let content_hash = match remote.entry.content_type {
-            ContentType::Image => {
-                if let Some(hash) = remote.entry.blob_hash.clone() {
-                    remote_flavors.payload_hash(ContentType::Image, Some(&hash))
-                } else {
-                    let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
-                    if data.is_empty() {
-                        return Ok(false);
-                    }
-                    let hash = hash_bytes(&data);
-                    blob_data = Some(data);
-                    remote_flavors.payload_hash(ContentType::Image, Some(&hash))
-                }
+        let content_hash = if let Some(hash) = remote.entry.blob_hash.as_deref() {
+            remote_flavors.payload_hash(remote.entry.content_type, Some(hash))
+        } else if remote.entry.content_type == ContentType::Image {
+            let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
+            if data.is_empty() {
+                return Ok(false);
             }
-            _ => remote_flavors.payload_hash(remote.entry.content_type, None),
+            let hash = hash_bytes(&data);
+            blob_data = Some(data);
+            remote_flavors.payload_hash(ContentType::Image, Some(&hash))
+        } else {
+            remote_flavors.payload_hash(remote.entry.content_type, None)
         };
 
         if storage.has_content_hash(&content_hash)? {
@@ -540,14 +551,22 @@ impl SyncClient {
                 .apply_remote_star_state_by_content_hash(&content_hash, remote.entry.starred);
         }
 
-        if remote.entry.content_type == ContentType::Image && blob_data.is_none() {
+        if remote.entry.blob_hash.is_some() && blob_data.is_none() {
             let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
             if data.is_empty() {
                 return Ok(false);
             }
 
             let actual_hash = hash_bytes(&data);
-            if actual_hash != content_hash {
+            if let Some(expected_hash) = remote.entry.blob_hash.as_deref() {
+                if actual_hash != expected_hash {
+                    log::warn!(
+                        "Skipping remote blob entry {} due to hash mismatch",
+                        remote.entry.id
+                    );
+                    return Ok(false);
+                }
+            } else if remote.entry.content_type == ContentType::Image && actual_hash != content_hash {
                 log::warn!(
                     "Skipping remote image {} due to hash mismatch",
                     remote.entry.id

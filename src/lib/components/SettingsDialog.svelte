@@ -52,6 +52,16 @@
 		}
 	}
 
+	async function handleResetSyncCursor() {
+		try {
+			await TauriService.resetSyncCursor();
+			await TauriService.syncNow();
+			notify('success', 'Sync cursor reset. Re-scanning server entries.');
+		} catch (e) {
+			notify('error', `Failed to reset sync cursor: ${e}`);
+		}
+	}
+
 	function normalizeServerUrl(url: string) {
 		return url.trim().replace(/\/+$/, '');
 	}
@@ -99,6 +109,16 @@
 				Authorization: Bearer header.
 			</div>
 		</div>
+
+		{#if $isMobile}
+			<div class="section-divider"></div>
+			<div class="section-label">Mobile Sync Repair</div>
+			<div class="field-hint">
+				If the Android list differs from the web UI, reset the pull cursor to re-scan server
+				entries without deleting local data.
+			</div>
+			<Button onclick={handleResetSyncCursor}>Reset Sync Cursor</Button>
+		{/if}
 
 		{#if !$isMobile}
 			<div class="section-divider"></div>

@@ -74,6 +74,11 @@ export class TauriService {
 		return await invoke('sync_now');
 	}
 
+	/** Reset pull cursor so the next sync re-scans server entries. */
+	static async resetSyncCursor(): Promise<{ reset: boolean }> {
+		return await invoke('reset_sync_cursor');
+	}
+
 	/** Returns the current platform: "android", "ios", "macos", "windows", "linux". */
 	static async getPlatform(): Promise<string> {
 		return await invoke('get_platform');

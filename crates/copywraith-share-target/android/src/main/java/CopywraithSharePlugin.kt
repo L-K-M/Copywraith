@@ -6,7 +6,10 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import android.webkit.WebView
+import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,18 +27,35 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
     handleShareIntent(intent)
   }
 
-  private fun handleShareIntent(intent: Intent?) {
-    if (intent == null) return
-    val action = intent.action ?: return
-    if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
-
-    when (action) {
-      Intent.ACTION_SEND -> handleSendIntent(intent)
-      Intent.ACTION_SEND_MULTIPLE -> handleSendMultipleIntent(intent)
-    }
+  @Command
+  fun collectPendingShare(invoke: Invoke) {
+    val staged = handleShareIntent(activity.intent)
+    val result = JSObject()
+    result.put("staged", staged)
+    invoke.resolve(result)
   }
 
-  private fun handleSendIntent(intent: Intent) {
+  private fun handleShareIntent(intent: Intent?): Boolean {
+    if (intent == null) return false
+    val action = intent.action ?: return false
+    if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return false
+
+    val staged = when (action) {
+      Intent.ACTION_SEND -> handleSendIntent(intent)
+      Intent.ACTION_SEND_MULTIPLE -> handleSendMultipleIntent(intent)
+      else -> false
+    }
+
+    if (staged) {
+      intent.action = Intent.ACTION_MAIN
+      intent.removeExtra(Intent.EXTRA_TEXT)
+      intent.removeExtra(Intent.EXTRA_STREAM)
+    }
+
+    return staged
+  }
+
+  private fun handleSendIntent(intent: Intent): Boolean {
     val items = JSONArray()
 
     intent.getStringExtra(Intent.EXTRA_TEXT)
@@ -45,17 +65,17 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
     intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
       ?.let { uri -> persistSharedUri(uri, intent.type)?.let(items::put) }
 
-    persistShareBatch(items)
+    return persistShareBatch(items)
   }
 
-  private fun handleSendMultipleIntent(intent: Intent) {
+  private fun handleSendMultipleIntent(intent: Intent): Boolean {
     val items = JSONArray()
-    val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: return
+    val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: return false
     for (uri in uris) {
       persistSharedUri(uri, intent.type)?.let(items::put)
     }
 
-    persistShareBatch(items)
+    return persistShareBatch(items)
   }
 
   private fun textShareItem(text: String): JSONObject {
@@ -95,8 +115,8 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  private fun persistShareBatch(items: JSONArray) {
-    if (items.length() == 0) return
+  private fun persistShareBatch(items: JSONArray): Boolean {
+    if (items.length() == 0) return false
 
     val pendingDir = File(activity.dataDir, "pending-shares").apply { mkdirs() }
     val batch = JSONObject()
@@ -104,6 +124,7 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
       .put("created_at", System.currentTimeMillis())
     val target = File(pendingDir, "${System.currentTimeMillis()}-${UUID.randomUUID()}.json")
     target.writeText(batch.toString())
+    return true
   }
 
   private fun getDisplayName(uri: Uri): String? {
