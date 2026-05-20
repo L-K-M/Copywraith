@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-startShizukuClipboardListener"
+description = "Enables the startShizukuClipboardListener command without any pre-configured scope."
+commands.allow = ["startShizukuClipboardListener"]
+
+[[permission]]
+identifier = "deny-startShizukuClipboardListener"
+description = "Denies the startShizukuClipboardListener command without any pre-configured scope."
+commands.deny = ["startShizukuClipboardListener"]

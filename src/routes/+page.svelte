@@ -58,6 +58,7 @@
 	let unlistenPopupShow: UnlistenFn;
 	let unlistenSyncEndpointStatus: UnlistenFn;
 	let unlistenPasteFailed: UnlistenFn;
+	let unlistenShizukuClipboardStaged: { unregister: () => Promise<void> } | undefined;
 	let mobileRefreshInFlight = false;
 	let shareProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
 	let mobileSyncProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -88,6 +89,16 @@
 
 		if (mobile) {
 			void refreshMobileEntries('App opened on mobile.');
+		}
+
+		if (detectedPlatform === 'android') {
+			try {
+				unlistenShizukuClipboardStaged = await TauriService.onShizukuClipboardStaged(() => {
+					void refreshMobileEntries('Shizuku captured Android clipboard.');
+				});
+			} catch (e) {
+				console.debug('Shizuku clipboard listener events unavailable:', e);
+			}
 		}
 
 		// Track window focus
@@ -166,6 +177,7 @@
 		unlistenPopupShow?.();
 		unlistenSyncEndpointStatus?.();
 		unlistenPasteFailed?.();
+		void unlistenShizukuClipboardStaged?.unregister();
 	});
 
 	function handleWindowClose() {
@@ -257,12 +269,17 @@
 
 		try {
 			updateMobileSyncProgress('Capturing clipboard...', 30, 'Checking the current mobile clipboard.');
-			await withTimeout(
+			const captured = await withTimeout(
 				TauriService.captureClipboard(),
 				5000,
 				'Clipboard capture did not respond within 5 seconds.'
 			);
-			updateMobileSyncProgress('Clipboard capture complete.', 45);
+			if (captured) {
+				updateMobileSyncProgress('Clipboard captured locally.', 45, 'Updating local history before server sync.');
+				await loadEntries();
+			} else {
+				updateMobileSyncProgress('Clipboard capture complete.', 45);
+			}
 		} catch (e) {
 			hadWarning = true;
 			console.error('Failed to capture clipboard:', e);
@@ -286,12 +303,6 @@
 		} catch (e) {
 			hadWarning = true;
 			console.error('Failed to sync entries:', e);
-			setSyncEndpointStatus({
-				state: 'unreachable',
-				role: configuredEndpoint.role,
-				url: configuredEndpoint.url,
-				message: String(e)
-			});
 			updateMobileSyncProgress('Server sync failed.', 85, String(e), 'error');
 		}
 
@@ -472,8 +483,6 @@
 			<StatusBar
 				progressVisible={mobileSyncProgressVisible}
 				progressValue={mobileSyncProgressValue}
-				progressLabel={mobileSyncProgressLabel}
-				progressDetail={mobileSyncProgressDetail}
 				progressTone={mobileSyncProgressTone}
 			/>
 		</main>

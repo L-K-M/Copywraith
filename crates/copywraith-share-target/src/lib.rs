@@ -40,11 +40,115 @@ impl<R: Runtime> ShareTarget<R> {
             Ok(PendingShareStatus { staged: false })
         }
     }
+
+    pub fn shizuku_status(&self) -> tauri::Result<ShizukuClipboardStatus> {
+        #[cfg(target_os = "android")]
+        {
+            self.handle
+                .run_mobile_plugin("shizukuStatus", ())
+                .map_err(Into::into)
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            Ok(ShizukuClipboardStatus::unavailable(
+                "Shizuku is only available on Android.",
+            ))
+        }
+    }
+
+    pub fn start_shizuku_clipboard_listener(
+        &self,
+        config: ShizukuClipboardConfig,
+    ) -> tauri::Result<ShizukuClipboardStatus> {
+        #[cfg(target_os = "android")]
+        {
+            self.handle
+                .run_mobile_plugin("startShizukuClipboardListener", config)
+                .map_err(Into::into)
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = config;
+            Ok(ShizukuClipboardStatus::unavailable(
+                "Shizuku is only available on Android.",
+            ))
+        }
+    }
+
+    pub fn stop_shizuku_clipboard_listener(&self) -> tauri::Result<ShizukuClipboardStatus> {
+        #[cfg(target_os = "android")]
+        {
+            self.handle
+                .run_mobile_plugin("stopShizukuClipboardListener", ())
+                .map_err(Into::into)
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            Ok(ShizukuClipboardStatus {
+                state: "disabled".to_string(),
+                message: "Shizuku is only available on Android.".to_string(),
+                available: false,
+                enabled: false,
+                listening: false,
+                started: None,
+                backend_uid: None,
+                last_clipboard_text_at: None,
+                text: None,
+            })
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
 pub struct PendingShareStatus {
     pub staged: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ShizukuClipboardConfig {
+    pub server_url_primary: String,
+    pub server_url_fallback: String,
+    pub api_key: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ShizukuClipboardStatus {
+    pub state: String,
+    pub message: String,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub listening: bool,
+    #[serde(default)]
+    pub started: Option<bool>,
+    #[serde(default)]
+    pub backend_uid: Option<i32>,
+    #[serde(default)]
+    pub last_clipboard_text_at: Option<i64>,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+#[cfg(not(target_os = "android"))]
+impl ShizukuClipboardStatus {
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            state: "unavailable".to_string(),
+            message: message.into(),
+            available: false,
+            enabled: false,
+            listening: false,
+            started: None,
+            backend_uid: None,
+            last_clipboard_text_at: None,
+            text: None,
+        }
+    }
 }
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {

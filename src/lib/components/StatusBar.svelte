@@ -9,14 +9,10 @@
 	let {
 		progressVisible = false,
 		progressValue = 0,
-		progressLabel = '',
-		progressDetail = '',
 		progressTone = 'normal'
 	}: {
 		progressVisible?: boolean;
 		progressValue?: number;
-		progressLabel?: string;
-		progressDetail?: string;
 		progressTone?: 'normal' | 'success' | 'error';
 	} = $props();
 
@@ -149,6 +145,19 @@
 	<span class="status-text">
 		{entryCount} item{entryCount !== 1 ? 's' : ''}{starredLabel}
 	</span>
+	{#if $isMobile && progressVisible}
+		<div class="mobile-sync-progress" class:success={progressTone === 'success'} class:error={progressTone === 'error'}>
+			<ProgressBar value={progressValue} max={100} height={8} ariaLabel="Mobile sync progress" />
+		</div>
+	{:else}
+		<span class="status-hint">
+			{#if $isMobile}
+				Tap to copy
+			{:else}
+				Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
+			{/if}
+		</span>
+	{/if}
 	<div class="sync-status-wrap">
 		<button
 			type="button"
@@ -165,26 +174,6 @@
 		</button>
 
 	</div>
-	{#if $isMobile && progressVisible}
-		<div class="mobile-sync-progress" class:success={progressTone === 'success'} class:error={progressTone === 'error'}>
-			<div class="mobile-sync-progress-main">
-				<span>{progressLabel}</span>
-				<strong>{Math.round(progressValue)}%</strong>
-			</div>
-			<ProgressBar value={progressValue} max={100} height={8} ariaLabel="Mobile sync progress" />
-			{#if progressDetail}
-				<div class="mobile-sync-progress-detail">{progressDetail}</div>
-			{/if}
-		</div>
-	{:else}
-		<span class="status-hint">
-			{#if $isMobile}
-				Tap to copy
-			{:else}
-				Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
-			{/if}
-		</span>
-	{/if}
 </div>
 
 {#if showSyncDetails}
@@ -226,7 +215,7 @@
 	.status-bar {
 		position: relative;
 		display: grid;
-		grid-template-columns: auto auto 1fr;
+		grid-template-columns: auto minmax(48px, 1fr) auto;
 		align-items: center;
 		gap: 8px;
 		padding: 4px 8px;
@@ -239,14 +228,17 @@
 
 	.status-text {
 		font-weight: bold;
+		white-space: nowrap;
 	}
 
 	.sync-status-wrap {
 		position: relative;
-		justify-self: start;
+		justify-self: end;
+		min-width: 0;
 	}
 
 	.status-endpoint {
+		max-width: min(280px, 42vw);
 		padding: 2px 6px;
 		border: 1px solid #777;
 		background: #f5f5f5;
@@ -254,6 +246,8 @@
 		font: inherit;
 		font-size: 13px;
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		cursor: pointer;
 	}
 
@@ -312,57 +306,19 @@
 	}
 
 	.mobile-sync-progress {
-		grid-column: 1 / -1;
 		justify-self: stretch;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		min-width: 150px;
-		padding: 1px 0;
-		font-size: 11px;
+		min-width: 64px;
 	}
 
-	.mobile-sync-progress-main {
-		display: flex;
-		justify-content: space-between;
-		gap: 8px;
-		line-height: 1.2;
+	.mobile-sync-progress.success {
+		filter: hue-rotate(80deg) saturate(1.2);
 	}
 
-	.mobile-sync-progress-main span {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.mobile-sync-progress-main strong {
-		font-weight: normal;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.mobile-sync-progress.success .mobile-sync-progress-main {
-		color: #205c25;
-	}
-
-	.mobile-sync-progress.error .mobile-sync-progress-main,
-	.mobile-sync-progress.error .mobile-sync-progress-detail {
-		color: #8a3f00;
-	}
-
-	.mobile-sync-progress-detail {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		color: #555;
-		line-height: 1.2;
+	.mobile-sync-progress.error {
+		filter: hue-rotate(170deg) saturate(1.2);
 	}
 
 	@media (max-width: 920px) {
-		.status-bar {
-			grid-template-columns: auto 1fr;
-		}
-
 		.status-hint {
 			display: none;
 		}

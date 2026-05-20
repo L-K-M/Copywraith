@@ -288,6 +288,8 @@ struct PendingShareItem {
     file_name: Option<String>,
     #[serde(default)]
     stored_path: Option<String>,
+    #[serde(default)]
+    source_app: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -305,6 +307,33 @@ pub struct PendingSharesStatus {
 #[derive(Debug, serde::Serialize)]
 pub struct ResetSyncCursorResult {
     pub reset: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ShizukuClipboardStatus {
+    pub state: String,
+    pub message: String,
+    pub available: bool,
+    pub enabled: bool,
+    pub listening: bool,
+    pub started: Option<bool>,
+    pub backend_uid: Option<i32>,
+    pub last_clipboard_text_at: Option<i64>,
+}
+
+impl From<copywraith_share_target::ShizukuClipboardStatus> for ShizukuClipboardStatus {
+    fn from(status: copywraith_share_target::ShizukuClipboardStatus) -> Self {
+        Self {
+            state: status.state,
+            message: status.message,
+            available: status.available,
+            enabled: status.enabled,
+            listening: status.listening,
+            started: status.started,
+            backend_uid: status.backend_uid,
+            last_clipboard_text_at: status.last_clipboard_text_at,
+        }
+    }
 }
 
 /// Import Android share-sheet payloads persisted by the native Activity.
@@ -502,7 +531,7 @@ fn import_pending_text_share(
         &flavors,
         None,
         &content_hash,
-        Some("Android share sheet"),
+        Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
     )
 }
 
@@ -540,7 +569,7 @@ fn import_pending_file_share(
             &ClipboardFlavors::default(),
             Some(&bytes),
             &content_hash,
-            Some("Android share sheet"),
+            Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
         );
     }
 
@@ -564,7 +593,7 @@ fn import_pending_file_share(
         &flavors,
         Some(&bytes),
         &content_hash,
-        Some("Android share sheet"),
+        Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
     )
 }
 
@@ -680,6 +709,84 @@ pub async fn sync_now(
 pub async fn reset_sync_cursor(state: State<'_, AppState>) -> Result<ResetSyncCursorResult, String> {
     state.sync_client.reset_pull_cursor(&state.storage);
     Ok(ResetSyncCursorResult { reset: true })
+}
+
+#[tauri::command]
+pub async fn shizuku_clipboard_status(
+    app: tauri::AppHandle,
+) -> Result<ShizukuClipboardStatus, String> {
+    #[cfg(target_os = "android")]
+    {
+        use copywraith_share_target::ShareTargetExt;
+
+        app.share_target()
+            .shizuku_status()
+            .map(Into::into)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(ShizukuClipboardStatus {
+            state: "unavailable".to_string(),
+            message: "Shizuku is only available on Android.".to_string(),
+            available: false,
+            enabled: false,
+            listening: false,
+            started: None,
+            backend_uid: None,
+            last_clipboard_text_at: None,
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn set_shizuku_clipboard_enabled(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<ShizukuClipboardStatus, String> {
+    let mut settings = state.storage.get_settings();
+    settings.shizuku_clipboard_enabled = enabled;
+    state
+        .storage
+        .save_settings(&settings)
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "android")]
+    {
+        use copywraith_share_target::ShareTargetExt;
+        let settings = state.storage.get_settings();
+        let config = copywraith_share_target::ShizukuClipboardConfig {
+            server_url_primary: settings.server_url_primary,
+            server_url_fallback: settings.server_url_fallback,
+            api_key: settings.api_key,
+        };
+
+        let status = if enabled {
+            app.share_target().start_shizuku_clipboard_listener(config)
+        } else {
+            app.share_target().stop_shizuku_clipboard_listener()
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(status.into())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(ShizukuClipboardStatus {
+            state: "unavailable".to_string(),
+            message: "Shizuku is only available on Android.".to_string(),
+            available: false,
+            enabled: false,
+            listening: false,
+            started: None,
+            backend_uid: None,
+            last_clipboard_text_at: None,
+        })
+    }
 }
 
 /// Returns the current platform so the frontend can adapt its UI.

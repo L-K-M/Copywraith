@@ -13,6 +13,10 @@
 	let shortcutTogglePopup = $state('CmdOrCtrl+Shift+V');
 	let shortcutStarredPopup = $state('CmdOrCtrl+Shift+B');
 	let shortcutPastePlaintext = $state('CmdOrCtrl+Shift+Alt+V');
+	let shizukuClipboardEnabled = $state(false);
+	let shizukuState = $state('unknown');
+	let shizukuMessage = $state('Shizuku status has not been checked yet.');
+	let shizukuBusy = $state(false);
 
 	onMount(async () => {
 		try {
@@ -23,6 +27,10 @@
 			shortcutTogglePopup = settings.shortcut_toggle_popup;
 			shortcutStarredPopup = settings.shortcut_starred_popup;
 			shortcutPastePlaintext = settings.shortcut_paste_plaintext;
+			shizukuClipboardEnabled = settings.shizuku_clipboard_enabled;
+			if ($isMobile) {
+				void refreshShizukuStatus();
+			}
 		} catch (e) {
 			console.error('Failed to load settings:', e);
 			notify('error', 'Failed to load settings');
@@ -37,7 +45,8 @@
 				api_key: apiKey,
 				shortcut_toggle_popup: shortcutTogglePopup,
 				shortcut_starred_popup: shortcutStarredPopup,
-				shortcut_paste_plaintext: shortcutPastePlaintext
+				shortcut_paste_plaintext: shortcutPastePlaintext,
+				shizuku_clipboard_enabled: shizukuClipboardEnabled
 			});
 			if (!$isMobile) {
 				await TauriService.reregisterShortcuts();
@@ -50,6 +59,53 @@
 		} catch (e) {
 			notify('error', `Failed to save settings: ${e}`);
 		}
+	}
+
+	async function refreshShizukuStatus() {
+		try {
+			const status = await TauriService.shizukuClipboardStatus();
+			shizukuState = status.state;
+			shizukuMessage = formatShizukuStatus(status);
+			shizukuClipboardEnabled = status.enabled || shizukuClipboardEnabled;
+		} catch (e) {
+			shizukuState = 'unavailable';
+			shizukuMessage = `Shizuku status unavailable: ${e}`;
+		}
+	}
+
+	async function handleToggleShizukuClipboard() {
+		if (shizukuBusy) return;
+		shizukuBusy = true;
+		const nextEnabled = !shizukuClipboardEnabled;
+		try {
+			const status = await TauriService.setShizukuClipboardEnabled(nextEnabled);
+			shizukuClipboardEnabled = status.enabled;
+			shizukuState = status.state;
+			shizukuMessage = formatShizukuStatus(status);
+			if (status.listening) {
+				notify('success', 'Shizuku clipboard listener enabled');
+			} else if (!nextEnabled) {
+				notify('success', 'Shizuku clipboard listener disabled');
+			} else {
+				notify('info', status.message);
+			}
+		} catch (e) {
+			notify('error', `Failed to update Shizuku listener: ${e}`);
+		} finally {
+			shizukuBusy = false;
+		}
+	}
+
+	function formatShizukuStatus(status: Awaited<ReturnType<typeof TauriService.shizukuClipboardStatus>>) {
+		const backend =
+			status.backend_uid === 0
+				? 'root'
+				: status.backend_uid === 2000
+					? 'ADB shell'
+					: status.backend_uid != null
+						? `UID ${status.backend_uid}`
+						: null;
+		return backend ? `${status.message} Backend: ${backend}.` : status.message;
 	}
 
 	async function handleResetSyncCursor() {
@@ -111,6 +167,23 @@
 		</div>
 
 		{#if $isMobile}
+			<div class="section-divider"></div>
+			<div class="section-label">Advanced Android Clipboard</div>
+			<div class="field-hint">
+				Optional Shizuku/Sui integration can listen for Android clipboard changes through a
+				privileged helper. If Shizuku is missing, stopped, or permission is denied, Copywraith
+				falls back to normal foreground capture and share-sheet import.
+			</div>
+			<div class="shizuku-status" class:listening={shizukuState === 'listening'}>
+				{shizukuMessage}
+			</div>
+			<div class="settings-actions inline-actions">
+				<Button onclick={handleToggleShizukuClipboard} disabled={shizukuBusy}>
+					{shizukuClipboardEnabled ? 'Disable Shizuku Listener' : 'Enable Shizuku Listener'}
+				</Button>
+				<Button onclick={refreshShizukuStatus}>Check Status</Button>
+			</div>
+
 			<div class="section-divider"></div>
 			<div class="section-label">Mobile Sync Repair</div>
 			<div class="field-hint">
@@ -227,5 +300,24 @@
 		justify-content: flex-end;
 		gap: 10px;
 		padding-top: 4px;
+	}
+
+	:global(.s7-dialog .inline-actions) {
+		justify-content: flex-start;
+		flex-wrap: wrap;
+	}
+
+	.shizuku-status {
+		padding: 6px;
+		border: 1px solid #999;
+		background: #f5f5f5;
+		font-size: 10px;
+		line-height: 1.35;
+		color: #444;
+	}
+
+	.shizuku-status.listening {
+		border-color: #2f6d35;
+		background: #e7f4e7;
 	}
 </style>

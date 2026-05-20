@@ -25,6 +25,8 @@ pub struct Settings {
     pub shortcut_toggle_popup: String,
     pub shortcut_starred_popup: String,
     pub shortcut_paste_plaintext: String,
+    #[serde(default)]
+    pub shizuku_clipboard_enabled: bool,
 }
 
 impl Default for Settings {
@@ -36,6 +38,7 @@ impl Default for Settings {
             shortcut_toggle_popup: "CmdOrCtrl+Shift+V".to_string(),
             shortcut_starred_popup: "CmdOrCtrl+Shift+B".to_string(),
             shortcut_paste_plaintext: "CmdOrCtrl+Shift+Alt+V".to_string(),
+            shizuku_clipboard_enabled: false,
         }
     }
 }

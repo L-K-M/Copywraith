@@ -112,6 +112,21 @@ pub fn run() {
             // Start periodic two-way sync loop (push unsynced + pull remote)
             start_sync_loop(app_handle.clone(), storage.clone(), sync_client.clone());
 
+            #[cfg(target_os = "android")]
+            if storage.get_settings().shizuku_clipboard_enabled {
+                use copywraith_share_target::ShareTargetExt;
+                let settings = storage.get_settings();
+                let config = copywraith_share_target::ShizukuClipboardConfig {
+                    server_url_primary: settings.server_url_primary,
+                    server_url_fallback: settings.server_url_fallback,
+                    api_key: settings.api_key,
+                };
+
+                if let Err(e) = app_handle.share_target().start_shizuku_clipboard_listener(config) {
+                    log::debug!("Shizuku clipboard listener not started: {}", e);
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -129,6 +144,8 @@ pub fn run() {
             commands::import_pending_shares,
             commands::sync_now,
             commands::reset_sync_cursor,
+            commands::shizuku_clipboard_status,
+            commands::set_shizuku_clipboard_enabled,
             commands::get_platform,
             commands::hide_popup,
         ])

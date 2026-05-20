@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { addPluginListener, invoke, type PluginListener } from '@tauri-apps/api/core';
 import type { ClipboardEntry, Settings } from './types';
 import type { SyncEndpointStatusInput } from './util/syncStatusStore';
 
@@ -15,6 +15,21 @@ export interface ImportPendingSharesResult {
 export interface PendingSharesStatus {
 	pending: boolean;
 	staged: boolean;
+}
+
+export interface ShizukuClipboardStatus {
+	state: string;
+	message: string;
+	available: boolean;
+	enabled: boolean;
+	listening: boolean;
+	started?: boolean | null;
+	backend_uid?: number | null;
+	last_clipboard_text_at?: number | null;
+}
+
+export interface ShizukuClipboardStagedEvent {
+	captured_at: number;
 }
 
 export class TauriService {
@@ -87,6 +102,27 @@ export class TauriService {
 	/** Reset pull cursor so the next sync re-scans server entries. */
 	static async resetSyncCursor(): Promise<{ reset: boolean }> {
 		return await invoke('reset_sync_cursor');
+	}
+
+	/** Get Android Shizuku clipboard listener status. */
+	static async shizukuClipboardStatus(): Promise<ShizukuClipboardStatus> {
+		return await invoke('shizuku_clipboard_status');
+	}
+
+	/** Enable or disable Android Shizuku clipboard listener. */
+	static async setShizukuClipboardEnabled(enabled: boolean): Promise<ShizukuClipboardStatus> {
+		return await invoke('set_shizuku_clipboard_enabled', { enabled });
+	}
+
+	/** Listen for Android Shizuku-staged clipboard entries. */
+	static async onShizukuClipboardStaged(
+		callback: (event: ShizukuClipboardStagedEvent) => void
+	): Promise<PluginListener> {
+		return await addPluginListener(
+			'copywraith-share-target',
+			'shizuku-clipboard-staged',
+			callback
+		);
 	}
 
 	/** Returns the current platform: "android", "ios", "macos", "windows", "linux". */

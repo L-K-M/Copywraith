@@ -21,4 +21,5 @@ export interface Settings {
 	shortcut_toggle_popup: string;
 	shortcut_starred_popup: string;
 	shortcut_paste_plaintext: string;
+	shizuku_clipboard_enabled: boolean;
 }

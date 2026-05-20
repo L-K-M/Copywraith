@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-shizukuStatus"
+description = "Enables the shizukuStatus command without any pre-configured scope."
+commands.allow = ["shizukuStatus"]
+
+[[permission]]
+identifier = "deny-shizukuStatus"
+description = "Denies the shizukuStatus command without any pre-configured scope."
+commands.deny = ["shizukuStatus"]

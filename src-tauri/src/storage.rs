@@ -556,6 +556,14 @@ impl LocalStorage {
                 |row| row.get::<_, String>(0),
             )
             .unwrap_or(defaults.shortcut_paste_plaintext);
+        let shizuku_clipboard_enabled = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'shizuku_clipboard_enabled'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(defaults.shizuku_clipboard_enabled);
         Settings {
             server_url_primary,
             server_url_fallback,
@@ -563,6 +571,7 @@ impl LocalStorage {
             shortcut_toggle_popup,
             shortcut_starred_popup,
             shortcut_paste_plaintext,
+            shizuku_clipboard_enabled,
         }
     }
 
@@ -597,6 +606,10 @@ impl LocalStorage {
             db.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('shortcut_paste_plaintext', ?1)",
                 params![settings.shortcut_paste_plaintext],
+            )?;
+            db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('shizuku_clipboard_enabled', ?1)",
+                params![if settings.shizuku_clipboard_enabled { "1" } else { "0" }],
             )?;
             Ok(())
         })();

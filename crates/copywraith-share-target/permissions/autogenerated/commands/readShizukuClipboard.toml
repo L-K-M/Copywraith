@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-readShizukuClipboard"
+description = "Enables the readShizukuClipboard command without any pre-configured scope."
+commands.allow = ["readShizukuClipboard"]
+
+[[permission]]
+identifier = "deny-readShizukuClipboard"
+description = "Denies the readShizukuClipboard command without any pre-configured scope."
+commands.deny = ["readShizukuClipboard"]

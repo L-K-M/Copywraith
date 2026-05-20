@@ -55,9 +55,14 @@ export const syncEndpointStatus = writable<SyncEndpointStatus>({
 });
 
 let checkingWatchdog: ReturnType<typeof setTimeout> | null = null;
+let lastStableStatus: SyncEndpointStatus | null = null;
 
 export function setSyncEndpointStatus(payload: SyncEndpointStatusInput) {
 	const status = normalizeSyncEndpointStatus(payload);
+	if (status.state === 'online' || status.state === 'disabled') {
+		lastStableStatus = status;
+	}
+
 	syncEndpointStatus.set(status);
 
 	if (checkingWatchdog) {
@@ -66,9 +71,20 @@ export function setSyncEndpointStatus(payload: SyncEndpointStatusInput) {
 	}
 
 	if (status.state === 'checking') {
+		const checkingStartedAt = status.checked_at;
 		checkingWatchdog = setTimeout(() => {
 			syncEndpointStatus.update((current) => {
 				if (current.state !== 'checking') return current;
+				if (current.checked_at !== checkingStartedAt) return current;
+
+				if (lastStableStatus) {
+					return {
+						...lastStableStatus,
+						message:
+							'Last sync check did not report completion. Showing the last stable endpoint status.',
+						checked_at: new Date().toISOString()
+					};
+				}
 
 				return {
 					...current,

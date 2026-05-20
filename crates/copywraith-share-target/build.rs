@@ -1,5 +1,11 @@
 fn main() {
-    const COMMANDS: &[&str] = &[];
+    const COMMANDS: &[&str] = &[
+        "collectPendingShare",
+        "shizukuStatus",
+        "startShizukuClipboardListener",
+        "stopShizukuClipboardListener",
+        "readShizukuClipboard",
+    ];
 
     tauri_plugin::Builder::new(COMMANDS)
         .android_path("android")
