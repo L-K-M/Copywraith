@@ -88,12 +88,15 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {
+			e.preventDefault();
+			e.stopPropagation();
 			onselect?.(entry.id);
 			pasteEntry(entry.id);
 		}
 		// Space shows preview
 		if (e.key === ' ') {
 			e.preventDefault();
+			e.stopPropagation();
 			onselect?.(entry.id);
 			onpreview?.(entry);
 		}

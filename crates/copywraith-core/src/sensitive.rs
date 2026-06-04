@@ -14,7 +14,7 @@ use regex::Regex;
 
 /// Returns `true` if `text` appears to contain sensitive information such as
 /// passwords, credit card numbers, social security numbers, API keys, private
-/// keys, or JWT tokens.
+/// keys, JWT tokens, or standalone generated password-like tokens.
 pub fn contains_sensitive_data(text: &str) -> bool {
     // Short-circuit: very short strings or obviously empty content cannot
     // contain structured secrets.
@@ -30,6 +30,7 @@ pub fn contains_sensitive_data(text: &str) -> bool {
         || check_jwt(text)
         || check_aws_key(text)
         || check_generic_secret_assignment(text)
+        || check_standalone_generated_secret(text)
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +185,213 @@ fn check_generic_secret_assignment(text: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Standalone generated passwords
+// ---------------------------------------------------------------------------
+
+static RE_UUID: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        .unwrap()
+});
+
+fn check_standalone_generated_secret(text: &str) -> bool {
+    let candidate = unquote(text.trim());
+    let len = candidate.len();
+
+    if !(12..=128).contains(&len) {
+        return false;
+    }
+    if candidate.bytes().any(|b| !b.is_ascii_graphic()) {
+        return false;
+    }
+    if looks_like_url(candidate) || looks_like_email(candidate) || RE_UUID.is_match(candidate) {
+        return false;
+    }
+
+    let stats = TokenStats::new(candidate);
+
+    if stats.classes() < 2 || stats.upper + stats.lower == len || stats.digit == len {
+        return false;
+    }
+    if stats.unique * 2 < len || stats.entropy_bits < 45.0 {
+        return false;
+    }
+
+    if stats.symbol > 0 {
+        return stats.classes() >= 3
+            && !stats.only_lower_digit_separator_symbols()
+            && stats.entropy_bits >= 45.0;
+    }
+
+    if stats.lower == 0 && stats.upper > 0 && stats.digit > 0 {
+        return len >= 16
+            && stats.unique >= 10
+            && stats.entropy_bits >= 58.0
+            && !has_single_edge_digit_run_with_long_alpha(candidate);
+    }
+
+    stats.upper > 0
+        && stats.lower > 0
+        && stats.digit > 0
+        && len >= 16
+        && stats.unique >= 12
+        && stats.entropy_bits >= 60.0
+        && !has_lowercase_run(candidate, 4)
+        && !has_single_edge_digit_run_with_long_alpha(candidate)
+}
+
+fn unquote(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if matches!(first, b'\'' | b'"' | b'`') && first == last {
+            return &text[1..text.len() - 1];
+        }
+    }
+    text
+}
+
+fn looks_like_url(candidate: &str) -> bool {
+    let lower = candidate.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("www.")
+        || lower.contains("://")
+}
+
+fn looks_like_email(candidate: &str) -> bool {
+    let Some(at) = candidate.find('@') else {
+        return false;
+    };
+    at > 0 && candidate[at + 1..].contains('.') && !candidate.contains('/')
+}
+
+struct TokenStats {
+    upper: usize,
+    lower: usize,
+    digit: usize,
+    symbol: usize,
+    unique: usize,
+    entropy_bits: f64,
+    separator_symbols: usize,
+}
+
+impl TokenStats {
+    fn new(candidate: &str) -> Self {
+        let mut counts = [0usize; 128];
+        let mut upper = 0;
+        let mut lower = 0;
+        let mut digit = 0;
+        let mut symbol = 0;
+        let mut unique = 0;
+        let mut separator_symbols = 0;
+
+        for b in candidate.bytes() {
+            let idx = b as usize;
+            if counts[idx] == 0 {
+                unique += 1;
+            }
+            counts[idx] += 1;
+
+            if b.is_ascii_uppercase() {
+                upper += 1;
+            } else if b.is_ascii_lowercase() {
+                lower += 1;
+            } else if b.is_ascii_digit() {
+                digit += 1;
+            } else {
+                symbol += 1;
+                if matches!(b, b'-' | b'_' | b'.') {
+                    separator_symbols += 1;
+                }
+            }
+        }
+
+        let len = candidate.len() as f64;
+        let entropy_bits = counts
+            .iter()
+            .filter(|count| **count > 0)
+            .map(|count| {
+                let probability = *count as f64 / len;
+                -probability * probability.log2()
+            })
+            .sum::<f64>()
+            * len;
+
+        Self {
+            upper,
+            lower,
+            digit,
+            symbol,
+            unique,
+            entropy_bits,
+            separator_symbols,
+        }
+    }
+
+    fn classes(&self) -> usize {
+        [self.upper, self.lower, self.digit, self.symbol]
+            .iter()
+            .filter(|count| **count > 0)
+            .count()
+    }
+
+    fn only_lower_digit_separator_symbols(&self) -> bool {
+        self.lower > 0
+            && self.upper == 0
+            && self.digit > 0
+            && self.symbol > 0
+            && self.symbol == self.separator_symbols
+    }
+}
+
+fn has_single_edge_digit_run_with_long_alpha(candidate: &str) -> bool {
+    let bytes = candidate.as_bytes();
+    let mut digit_runs = 0;
+    let mut run_start = 0;
+    let mut run_end = 0;
+    let mut in_digit_run = false;
+
+    for (idx, b) in bytes.iter().enumerate() {
+        if b.is_ascii_digit() {
+            if !in_digit_run {
+                digit_runs += 1;
+                run_start = idx;
+                in_digit_run = true;
+            }
+            run_end = idx + 1;
+        } else {
+            in_digit_run = false;
+        }
+    }
+
+    if digit_runs != 1 || run_end - run_start < 4 {
+        return false;
+    }
+
+    let prefix_alpha = bytes[..run_start].iter().all(u8::is_ascii_alphabetic);
+    let suffix_alpha = bytes[run_end..].iter().all(u8::is_ascii_alphabetic);
+
+    (run_start == 0 && suffix_alpha && bytes.len() - run_end >= 5)
+        || (run_end == bytes.len() && prefix_alpha && run_start >= 5)
+}
+
+fn has_lowercase_run(candidate: &str, min_len: usize) -> bool {
+    let mut run = 0;
+    for b in candidate.bytes() {
+        if b.is_ascii_lowercase() {
+            run += 1;
+            if run >= min_len {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -285,6 +493,17 @@ mod tests {
     }
 
     #[test]
+    fn detects_standalone_generated_password() {
+        assert!(contains_sensitive_data("AGAD8XLUXJCYMT7EKY"));
+        assert!(contains_sensitive_data("\"AGAD8XLUXJCYMT7EKY\""));
+    }
+
+    #[test]
+    fn detects_standalone_symbol_password() {
+        assert!(contains_sensitive_data("N9v$kL2p!Q8zR"));
+    }
+
+    #[test]
     fn ignores_normal_text() {
         assert!(!contains_sensitive_data("Hello, world!"));
         assert!(!contains_sensitive_data(
@@ -303,5 +522,16 @@ mod tests {
     fn ignores_normal_numbers() {
         assert!(!contains_sensitive_data("Order #12345"));
         assert!(!contains_sensitive_data("Phone: 555-0123"));
+    }
+
+    #[test]
+    fn ignores_common_standalone_non_secrets() {
+        assert!(!contains_sensitive_data("TheQuickBrownFox"));
+        assert!(!contains_sensitive_data("COPYWRAITH20260528"));
+        assert!(!contains_sensitive_data("some-random-string123"));
+        assert!(!contains_sensitive_data(
+            "550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(!contains_sensitive_data("alice123@example.com"));
     }
 }

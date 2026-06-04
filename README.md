@@ -8,6 +8,9 @@ It has three main pieces:
 - [Mac app](README.mac.md): Tauri v2 + Svelte popup app with clipboard capture, search, hotkeys, and paste helpers.
 - [Android app](README.android.md): Tauri mobile app with foreground clipboard capture, share-sheet import, and optional Shizuku listener.
 
+> [!IMPORTANT]
+> LLM Disclosure: Much of this code base was written with the help of large language models — AI coding agents working from the [`AGENTS.md`](memory/AGENTS.md) brief in this repo.
+
 ## Important Security Note
 
 Do not expose the Copywraith server directly to the Internet. It is intended for a trusted local network or secure VPN such as Tailscale or Netbird. The server is single-user and password-protected, but it does not implement rate limiting or brute-force protection.
