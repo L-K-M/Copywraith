@@ -81,7 +81,10 @@ impl SyncEndpointStatus {
     }
 }
 
-fn checking_status_for_endpoint(endpoint: Option<&ServerEndpoint>, message: impl Into<String>) -> SyncEndpointStatus {
+fn checking_status_for_endpoint(
+    endpoint: Option<&ServerEndpoint>,
+    message: impl Into<String>,
+) -> SyncEndpointStatus {
     SyncEndpointStatus {
         state: "checking".to_string(),
         role: endpoint.map(|endpoint| endpoint.role.as_str().to_string()),
@@ -566,7 +569,8 @@ impl SyncClient {
                     );
                     return Ok(false);
                 }
-            } else if remote.entry.content_type == ContentType::Image && actual_hash != content_hash {
+            } else if remote.entry.content_type == ContentType::Image && actual_hash != content_hash
+            {
                 log::warn!(
                     "Skipping remote image {} due to hash mismatch",
                     remote.entry.id

@@ -156,10 +156,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .setup(|_app, _api| {
             #[cfg(target_os = "android")]
             {
-                let handle = _api.register_android_plugin(
-                    PLUGIN_IDENTIFIER,
-                    "CopywraithSharePlugin",
-                )?;
+                let handle =
+                    _api.register_android_plugin(PLUGIN_IDENTIFIER, "CopywraithSharePlugin")?;
                 _app.manage(ShareTarget { handle });
             }
 
