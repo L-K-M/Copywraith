@@ -357,7 +357,10 @@ pub async fn import_pending_shares(
         use copywraith_share_target::ShareTargetExt;
 
         if let Err(e) = app.share_target().collect_pending_share() {
-            log::debug!("No pending Android share collected from Activity intent: {}", e);
+            log::debug!(
+                "No pending Android share collected from Activity intent: {}",
+                e
+            );
         }
 
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -441,7 +444,10 @@ pub async fn has_pending_shares(
             .collect_pending_share()
             .map(|status| status.staged)
             .unwrap_or_else(|e| {
-                log::debug!("No pending Android share collected from Activity intent: {}", e);
+                log::debug!(
+                    "No pending Android share collected from Activity intent: {}",
+                    e
+                );
                 false
             });
 
@@ -669,7 +675,9 @@ pub async fn sync_now(
                         "Timed out while pulling remote entries.",
                     )
                 })
-                .unwrap_or_else(|| sync::checking_status(&storage, "No configured server endpoint."));
+                .unwrap_or_else(|| {
+                    sync::checking_status(&storage, "No configured server endpoint.")
+                });
             let _ = app.emit("sync-endpoint-status", &status);
             Ok(sync::PullSyncResult {
                 pulled: 0,
@@ -696,17 +704,16 @@ pub async fn sync_now(
                     message: Some(e.to_string()),
                     checked_at: Some(chrono::Utc::now().to_rfc3339()),
                 });
-            let _ = app.emit(
-                "sync-endpoint-status",
-                &fallback_status,
-            );
+            let _ = app.emit("sync-endpoint-status", &fallback_status);
             Err(e.to_string())
         }
     }
 }
 
 #[tauri::command]
-pub async fn reset_sync_cursor(state: State<'_, AppState>) -> Result<ResetSyncCursorResult, String> {
+pub async fn reset_sync_cursor(
+    state: State<'_, AppState>,
+) -> Result<ResetSyncCursorResult, String> {
     state.sync_client.reset_pull_cursor(&state.storage);
     Ok(ResetSyncCursorResult { reset: true })
 }

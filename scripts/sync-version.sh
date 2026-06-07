@@ -34,10 +34,12 @@ echo ""
 
 # Portable in-place sed (macOS and GNU)
 _sed_i() {
+  # -E (extended regex) so patterns like [0-9]+ work; the SEM pattern relies
+  # on it. Without -E, sed treats + as a literal and silently matches nothing.
   if sed --version >/dev/null 2>&1; then
-    sed -i "$@"
+    sed -E -i "$@"
   else
-    sed -i '' "$@"
+    sed -E -i '' "$@"
   fi
 }
 
@@ -53,19 +55,23 @@ update_file() {
     return
   fi
 
-  if grep -qE "$pattern" "$file"; then
-    if [[ "$WRITE" == "1" ]]; then
-      _sed_i "s|$pattern|$replacement|g" "$file"
-      echo "  updated  $rel"
-    else
-      echo "  stale    $rel"
-      grep -nE "$pattern" "$file" | head -3 | while IFS= read -r line; do
-        echo "           $line"
-      done
-    fi
-    changed=1
-  else
+  # Compare what the substitution would produce against the current file so we
+  # only report (and count) a change when one is actually needed. This keeps
+  # repeat runs idempotent instead of always claiming "updated".
+  if sed -E "s|$pattern|$replacement|g" "$file" | cmp -s - "$file"; then
     echo "  ok       $rel"
+    return
+  fi
+
+  changed=1
+  if [[ "$WRITE" == "1" ]]; then
+    _sed_i "s|$pattern|$replacement|g" "$file"
+    echo "  updated  $rel"
+  else
+    echo "  stale    $rel"
+    grep -nE "$pattern" "$file" | head -3 | while IFS= read -r line; do
+      echo "           $line"
+    done
   fi
 }
 

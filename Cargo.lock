@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "copywraith-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "copywraith-server"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "copywraith-share-target"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "tauri",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "copywraith-tauri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

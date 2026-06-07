@@ -139,7 +139,7 @@ docker compose build --no-cache --pull copywraith-server
 
 Containers must bind `COPYWRAITH_HOST=0.0.0.0`; both compose files already set this. If `/api/health` from the host fails with connection reset or refused, verify that environment variable first.
 
-The compose files support explicit image tags with `COPYWRAITH_SERVER_IMAGE_REPO` and `COPYWRAITH_SERVER_IMAGE_TAG`. The default tag is kept aligned with the server crate version, currently `0.1.5`.
+The compose files support explicit image tags with `COPYWRAITH_SERVER_IMAGE_REPO` and `COPYWRAITH_SERVER_IMAGE_TAG`. The default tag is kept aligned with the server crate version, currently `0.2.0`.
 
 After bumping the server crate version, run:
 

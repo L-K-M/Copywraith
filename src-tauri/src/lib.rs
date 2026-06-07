@@ -122,7 +122,10 @@ pub fn run() {
                     api_key: settings.api_key,
                 };
 
-                if let Err(e) = app_handle.share_target().start_shizuku_clipboard_listener(config) {
+                if let Err(e) = app_handle
+                    .share_target()
+                    .start_shizuku_clipboard_listener(config)
+                {
                     log::debug!("Shizuku clipboard listener not started: {}", e);
                 }
             }
