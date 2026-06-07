@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   HEALTH_RETRIES=20
 #   HEALTH_DELAY_SECS=1
 #   COPYWRAITH_SERVER_IMAGE_REPO=copywraith-server
-#   COPYWRAITH_SERVER_IMAGE_TAG=0.1.5
+#   COPYWRAITH_SERVER_IMAGE_TAG=0.2.0
 #
 # Notes:
 # - If COPYWRAITH_SERVER_IMAGE_TAG is not set, this script uses
