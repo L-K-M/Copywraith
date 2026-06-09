@@ -532,6 +532,15 @@ impl SyncClient {
         remote: &EntryResponse,
         storage: &LocalStorage,
     ) -> anyhow::Result<bool> {
+        // The server masks the text of sensitive entries in API responses
+        // (first 3 chars + bullets). Ingesting that masked copy would create
+        // a corrupted duplicate locally — its content hash can never match
+        // the original entry — so skip sensitive entries entirely. The device
+        // that captured the entry keeps the real content in its local store.
+        if remote.entry.sensitive {
+            return Ok(false);
+        }
+
         let mut blob_data: Option<Vec<u8>> = None;
         let remote_flavors = resolved_remote_flavors(&remote.entry);
 

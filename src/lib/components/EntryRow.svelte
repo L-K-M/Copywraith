@@ -179,7 +179,7 @@
 			onclick={handleDeleteClick}
 			title="Delete"
 		>
-			\u2715
+			{'\u2715'}
 		</button>
 	</td>
 </tr>

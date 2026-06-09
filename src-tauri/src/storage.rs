@@ -53,6 +53,14 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
     })
 }
 
+/// Escape SQL LIKE wildcards so user input matches literally.
+fn escape_like_pattern(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 fn has_entries_column(conn: &Connection, column: &str) -> bool {
     conn.prepare(&format!("SELECT {} FROM entries LIMIT 0", column))
         .is_ok()
@@ -325,8 +333,11 @@ impl LocalStorage {
 
         if let Some(q) = search {
             if !q.is_empty() {
-                conditions.push(format!("search_text LIKE ?{}", param_values.len() + 1));
-                param_values.push(Box::new(format!("%{}%", q)));
+                conditions.push(format!(
+                    "search_text LIKE ?{} ESCAPE '\\'",
+                    param_values.len() + 1
+                ));
+                param_values.push(Box::new(format!("%{}%", escape_like_pattern(q))));
             }
         }
 
