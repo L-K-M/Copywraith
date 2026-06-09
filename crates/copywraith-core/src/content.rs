@@ -45,34 +45,25 @@ pub fn strip_html(html: &str) -> String {
     let mut in_tag = false;
     let mut in_style = false;
     let mut in_script = false;
-    let lower = html.to_lowercase();
     let chars: Vec<char> = html.chars().collect();
-    let lower_chars: Vec<char> = lower.chars().collect();
     let len = chars.len();
     let mut i = 0;
 
     while i < len {
         if chars[i] == '<' {
-            // Check for <style or <script opening tags
-            if i + 6 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<style") == &true
-            {
+            // Check for <style/<script opening and closing tags.
+            // Tag names are ASCII per spec, so a case-insensitive prefix
+            // compare on the original chars is sufficient (and avoids the
+            // index drift a separate lowercased copy can introduce for
+            // non-ASCII text).
+            let rest = &chars[i..];
+            if starts_with_ignore_ascii_case(rest, "<style") {
                 in_style = true;
-            }
-            if i + 7 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<script") == &true
-            {
+            } else if starts_with_ignore_ascii_case(rest, "<script") {
                 in_script = true;
-            }
-            // Check for closing tags
-            if i + 7 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</style") == &true
-            {
+            } else if starts_with_ignore_ascii_case(rest, "</style") {
                 in_style = false;
-            }
-            if i + 8 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</script") == &true
-            {
+            } else if starts_with_ignore_ascii_case(rest, "</script") {
                 in_script = false;
             }
             in_tag = true;
@@ -106,9 +97,11 @@ pub fn strip_html(html: &str) -> String {
     collapsed
 }
 
-// Helper to find byte index from char index in a lowercase string
-fn lower_byte_index(chars: &[char], char_idx: usize) -> usize {
-    chars[..char_idx].iter().map(|c| c.len_utf8()).sum()
+fn starts_with_ignore_ascii_case(chars: &[char], prefix: &str) -> bool {
+    let mut iter = chars.iter();
+    prefix
+        .chars()
+        .all(|p| iter.next().is_some_and(|c| c.eq_ignore_ascii_case(&p)))
 }
 
 fn decode_html_entity(chars: &[char]) -> Option<(char, usize)> {
@@ -164,9 +157,13 @@ pub fn strip_rtf(rtf: &str) -> String {
     let chars: Vec<char> = rtf.chars().collect();
     let len = chars.len();
     let mut i = 0;
-    let mut depth = 0;
+    let mut depth: usize = 0;
     // Track whether we're in a group that should be skipped (like \fonttbl, \colortbl, etc.)
     let mut skip_depth: Option<usize> = None;
+    // Number of fallback characters following each \uN escape (set by \ucN).
+    let mut uc_skip: usize = 1;
+    // High half of a UTF-16 surrogate pair from a previous \uN escape.
+    let mut pending_high_surrogate: Option<u32> = None;
 
     while i < len {
         match chars[i] {
@@ -191,7 +188,9 @@ pub fn strip_rtf(rtf: &str) -> String {
                 if skip_depth == Some(depth) {
                     skip_depth = None;
                 }
-                depth -= 1;
+                // Saturate so malformed input with unbalanced braces cannot
+                // underflow (which would panic in debug builds).
+                depth = depth.saturating_sub(1);
                 i += 1;
             }
             '\\' if skip_depth.is_none() => {
@@ -237,11 +236,11 @@ pub fn strip_rtf(rtf: &str) -> String {
                         }
                         let word: String = chars[start..i].iter().collect();
 
-                        // Skip optional numeric parameter
-                        let mut _param = String::new();
+                        // Read optional numeric parameter
+                        let mut param = String::new();
                         if i < len && (chars[i] == '-' || chars[i].is_ascii_digit()) {
                             while i < len && (chars[i] == '-' || chars[i].is_ascii_digit()) {
-                                _param.push(chars[i]);
+                                param.push(chars[i]);
                                 i += 1;
                             }
                         }
@@ -262,6 +261,25 @@ pub fn strip_rtf(rtf: &str) -> String {
                             "ldblquote" => result.push('\u{201C}'),
                             "rdblquote" => result.push('\u{201D}'),
                             "bullet" => result.push('\u{2022}'),
+                            "uc" => {
+                                uc_skip = param.parse::<usize>().unwrap_or(1).min(8);
+                            }
+                            "u" => {
+                                // \uN unicode escape: N is a signed 16-bit
+                                // decimal code unit; negative values wrap.
+                                if let Ok(signed) = param.parse::<i32>() {
+                                    let unit =
+                                        (if signed < 0 { signed + 65536 } else { signed }) as u32;
+                                    push_rtf_unicode_unit(
+                                        &mut result,
+                                        unit,
+                                        &mut pending_high_surrogate,
+                                    );
+                                }
+                                // Skip the fallback character(s) that follow
+                                // the escape for non-unicode readers.
+                                i = skip_rtf_fallback_chars(&chars, i, uc_skip);
+                            }
                             _ => {} // Skip unknown control words
                         }
                     }
@@ -288,6 +306,58 @@ pub fn strip_rtf(rtf: &str) -> String {
     } else {
         trimmed
     }
+}
+
+/// Append one UTF-16 code unit from an RTF `\uN` escape, combining
+/// surrogate pairs across consecutive escapes.
+fn push_rtf_unicode_unit(result: &mut String, unit: u32, pending_high: &mut Option<u32>) {
+    match unit {
+        0xD800..=0xDBFF => {
+            // High surrogate: wait for the low half in the next \uN escape.
+            *pending_high = Some(unit);
+        }
+        0xDC00..=0xDFFF => {
+            if let Some(high) = pending_high.take() {
+                let combined = 0x10000 + ((high - 0xD800) << 10) + (unit - 0xDC00);
+                if let Some(ch) = char::from_u32(combined) {
+                    result.push(ch);
+                }
+            }
+            // A lone low surrogate is malformed; drop it.
+        }
+        _ => {
+            *pending_high = None;
+            if let Some(ch) = char::from_u32(unit) {
+                result.push(ch);
+            }
+        }
+    }
+}
+
+/// Skip the `count` fallback characters that follow a `\uN` escape.
+/// A fallback unit is either a plain character or a `\'xx` hex escape.
+/// Stops early at group delimiters or other control words.
+fn skip_rtf_fallback_chars(chars: &[char], mut i: usize, count: usize) -> usize {
+    let len = chars.len();
+    for _ in 0..count {
+        if i >= len {
+            break;
+        }
+        match chars[i] {
+            '{' | '}' => break,
+            '\\' => {
+                if i + 1 < len && chars[i + 1] == '\'' {
+                    // \'xx counts as a single fallback character
+                    i = (i + 4).min(len);
+                } else {
+                    // Another control word: fallback run is over.
+                    break;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    i
 }
 
 /// Mask sensitive text: show first 3 characters, replace the rest with bullets.
@@ -389,6 +459,20 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_html_style_uppercase() {
+        let html = "<STYLE>body { color: red }</STYLE><p>visible</p>";
+        assert_eq!(strip_html(html), "visible");
+    }
+
+    #[test]
+    fn test_strip_html_style_after_non_ascii_text() {
+        // Unicode lowercasing can change char counts (e.g. İ -> i̇); style
+        // detection must stay aligned with the original text.
+        let html = "<p>İİİİİİ</p><style>p { color: red }</style><p> son</p>";
+        assert_eq!(strip_html(html), "İİİİİİ son");
+    }
+
+    #[test]
     fn test_strip_rtf_basic() {
         let rtf = r"{\rtf1\ansi Hello world}";
         assert_eq!(strip_rtf(rtf), "Hello world");
@@ -398,6 +482,41 @@ mod tests {
     fn test_strip_rtf_non_rtf_passthrough() {
         let plain = "just some text";
         assert_eq!(strip_rtf(plain), plain);
+    }
+
+    #[test]
+    fn test_strip_rtf_unbalanced_braces_no_panic() {
+        // Extra closing braces must not underflow the depth counter.
+        let rtf = r"{\rtf1}}} stray";
+        let _ = strip_rtf(rtf);
+    }
+
+    #[test]
+    fn test_strip_rtf_unicode_escape() {
+        // 舗 is a right single quotation mark; '?' is the fallback char.
+        let rtf = r"{\rtf1\ansi It\u8217?s here}";
+        assert_eq!(strip_rtf(rtf), "It\u{2019}s here");
+    }
+
+    #[test]
+    fn test_strip_rtf_unicode_negative_escape() {
+        // Negative values wrap mod 65536: -10179 -> 55357 (a high surrogate),
+        // -8704 -> 56832 (low surrogate) — together U+1F600 GRINNING FACE.
+        let rtf = r"{\rtf1\ansi \u-10179?\u-8704?!}";
+        assert_eq!(strip_rtf(rtf), "\u{1F600}!");
+    }
+
+    #[test]
+    fn test_strip_rtf_uc0_no_fallback_skip() {
+        let rtf = r"{\rtf1\ansi\uc0 caf\u233 done}";
+        assert_eq!(strip_rtf(rtf), "caf\u{e9}done");
+    }
+
+    #[test]
+    fn test_strip_rtf_unicode_hex_fallback() {
+        // \uc1 (default): the \'e9 hex escape is the fallback and is skipped.
+        let rtf = r"{\rtf1\ansi caf\u233\'e9 au lait}";
+        assert_eq!(strip_rtf(rtf), "caf\u{e9} au lait");
     }
 
     #[test]
