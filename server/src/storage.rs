@@ -379,7 +379,7 @@ impl Storage {
                 params![content_hash],
                 |row| row_to_entry(row),
             )
-            .ok();
+            .optional()?;
 
         if let Some(mut entry) = existing {
             // Update timestamp to bring to top
@@ -512,7 +512,7 @@ impl Storage {
                 params![id],
                 |row| row_to_entry(row),
             )
-            .ok();
+            .optional()?;
 
         match (entry, dek) {
             (Some(mut e), Some(dek)) => {
@@ -707,7 +707,7 @@ impl Storage {
                 params![id],
                 |row| row.get(0),
             )
-            .ok()
+            .optional()?
             .flatten();
 
         let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;

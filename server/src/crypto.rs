@@ -147,14 +147,16 @@ impl CryptoState {
             None => anyhow::bail!("No password configured"),
         };
 
-        // Fast path: if already unlocked, compare against cached password hash
+        // Fast path: if already unlocked, compare against cached password hash.
+        // On a mismatch we deliberately fall through to the slow path below so
+        // that wrong-password attempts always pay the Argon2id cost — returning
+        // early would let attackers brute-force at SHA-256 speed whenever the
+        // server is unlocked (i.e. almost always).
         if let Some(cached_hash) = &self.password_hash_cache {
             let incoming_hash = sha256_hash(password.as_bytes());
             if constant_time_eq(&incoming_hash, cached_hash) {
                 return Ok(true);
             }
-            // Wrong password on fast path
-            return Ok(false);
         }
 
         // Slow path: full Argon2id verification
@@ -520,6 +522,21 @@ mod tests {
         state.lock();
         assert!(!state.verify_and_unlock("wrong-password").unwrap());
         assert!(!state.is_unlocked());
+    }
+
+    #[test]
+    fn test_wrong_password_rejected_while_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = CryptoState::load(dir.path()).unwrap();
+
+        state.setup_password("test-password-123").unwrap();
+        assert!(state.is_unlocked());
+
+        // A wrong password must be rejected on the cached fast path too,
+        // and must not lock the server.
+        assert!(!state.verify_and_unlock("wrong-password").unwrap());
+        assert!(state.is_unlocked());
+        assert!(state.verify_and_unlock("test-password-123").unwrap());
     }
 
     #[test]
