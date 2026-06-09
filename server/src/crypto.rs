@@ -432,8 +432,16 @@ fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
 /// renaming it into place. This prevents corruption if the process crashes during
 /// the write.
 fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, data)?;
+    {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        file.write_all(data)?;
+        // Flush to disk before the rename; otherwise a power loss can leave
+        // the rename durable but the data truncated.
+        file.sync_all()?;
+    }
     std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
