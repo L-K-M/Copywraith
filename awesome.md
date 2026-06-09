@@ -26,11 +26,11 @@ server only ever serves a masked (useless) copy of them. The original device
 keeps the real content locally. Long-term, see idea 4.6 for real sensitive-entry
 sync.
 
-### 1.2 Delete button renders the literal text `✕` — **[implemented]**
+### 1.2 Delete button renders the literal text `\u2715` — **[implemented]**
 
-`src/lib/components/EntryRow.svelte` line 182 puts `✕` directly in the
+`src/lib/components/EntryRow.svelte` line 182 puts `\u2715` directly in the
 markup. Svelte templates are HTML — JS string escapes are not interpreted there
-— so every row's delete button literally displays `✕` instead of ✕.
+— so every row's delete button literally displays `\u2715` instead of ✕.
 (Line 148 gets it right because the escape lives inside a JS expression.)
 
 ### 1.3 `strip_rtf` can panic on malformed RTF — **[implemented]**
@@ -43,14 +43,14 @@ slightly malformed RTF from third-party apps, so this is reachable from
 
 ### 1.4 `strip_rtf` drops all non-ASCII text (no `\uN` support) — **[implemented]**
 
-RTF encodes non-ASCII characters as `\uN` unicode escapes (e.g. `舗?` for
+RTF encodes non-ASCII characters as `\uN` unicode escapes (e.g. `\u8217?` for
 ’), and macOS/Word emit these constantly. `strip_rtf` treated `u` as an unknown
 control word and skipped it, so RTF-only entries lost every accented character,
 em-dash, curly quote, emoji, and all CJK text in previews and plain-text paste.
 Fixed: `\uN` is now decoded (including the standard "skip the fallback
 character after the escape" rule and surrogate-pair handling).
 
-### 1.5 `strip_html` misaligns on non-ASCII uppercase text
+### 1.5 `strip_html` misaligns on non-ASCII uppercase text — **[implemented]**
 
 `strip_html` lowercases the whole input and walks the original and lowercase
 strings with a *shared char index*. Unicode lowercasing can change the char
@@ -59,7 +59,7 @@ the wrong offsets. Harmless for ASCII HTML, but the detection silently breaks
 for some international content. The `&lower[..].starts_with(..) == &true`
 construction is also a readability red flag. A cleaner approach: compare tag
 names with `eq_ignore_ascii_case` on a char-slice window (HTML tag names are
-ASCII by spec), no parallel lowercase copy needed. **[implemented]**
+ASCII by spec), no parallel lowercase copy needed.
 
 ### 1.6 `\'xx` hex escapes in RTF decode as Latin-1, not the document codepage
 
@@ -153,7 +153,7 @@ blob is kept forever. A clipboard manager that captures *everything* grows
 fast — screenshots especially. See idea 4.1; at minimum the README should warn
 about disk growth.
 
-### 2.6 `atomic_write` doesn't fsync
+### 2.6 `atomic_write` doesn't fsync — **[implemented]**
 
 `server/src/crypto.rs::atomic_write` writes the temp file and renames it
 without `File::sync_all` (or fsyncing the directory). On power loss the rename
@@ -329,11 +329,12 @@ make the "is my Tailscale route up?" check humane instead of `curl | jq`.
 
 ## Companion PRs
 
-| Item | Fix |
-|------|-----|
-| 1.1 Sensitive sync corruption | skip masked sensitive entries on pull |
-| 1.2 `✕` delete button | render ✕ via JS expression |
-| 1.3 / 1.4 / 1.5 RTF panic, RTF unicode, HTML misalignment | rewritten strippers + tests |
-| 1.7 LIKE wildcard escaping | escaped local search |
-| 1.8 cheap brute-force fast path | fall through to Argon2 on mismatch |
-| 1.9 swallowed DB errors | `.optional()?` in server storage |
+| Item | Fix | PR |
+|------|-----|----|
+| 1.3 / 1.4 / 1.5 RTF panic, RTF unicode, HTML misalignment | rewritten strippers + tests | #27 |
+| 1.1 Sensitive sync corruption | skip masked sensitive entries on pull | #28 |
+| 1.2 `\u2715` delete button | render ✕ via JS expression | #28 |
+| 1.7 LIKE wildcard escaping | escaped local search | #28 |
+| 1.8 cheap brute-force fast path | fall through to Argon2 on mismatch | #29 |
+| 1.9 swallowed DB errors | `.optional()?` in server storage | #29 |
+| 2.6 non-durable `atomic_write` | fsync before rename | #29 |
