@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@lkmc/system7-ui": "^0.1.9",
-    "svelte": "^5.0.0"
+    "svelte": "^5.56.3"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
