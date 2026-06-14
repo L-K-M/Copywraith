@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@lkmc/system7-ui": "^0.1.9",
+    "@lkmc/system7-ui": "^0.2.2",
     "svelte": "^5.0.0"
   },
   "devDependencies": {
