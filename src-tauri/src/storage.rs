@@ -625,30 +625,50 @@ impl LocalStorage {
         }
     }
 
-    pub fn get_sync_cursor(&self) -> Option<String> {
+    /// Returns the persisted pull watermark as `(updated_at, id)`.
+    ///
+    /// The watermark is the newest `(updated_at, id)` we have fully pulled from
+    /// the server. Storing both halves (rather than just an id) lets the pull
+    /// loop stop at a stable position even when an entry's `updated_at` changes
+    /// (e.g. it was re-copied or re-starred and moved back to the top).
+    pub fn get_sync_watermark(&self) -> Option<(String, String)> {
         let db = self.db.lock().unwrap();
-        db.query_row(
-            "SELECT value FROM settings WHERE key = 'sync_last_seen_server_id'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
-        .filter(|s| !s.is_empty())
+        let updated_at = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'sync_watermark_updated_at'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        let id = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'sync_watermark_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        Some((updated_at, id))
     }
 
-    pub fn save_sync_cursor(&self, cursor: &str) -> anyhow::Result<()> {
+    pub fn save_sync_watermark(&self, updated_at: &str, id: &str) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
         db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_last_seen_server_id', ?1)",
-            params![cursor],
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_watermark_updated_at', ?1)",
+            params![updated_at],
+        )?;
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_watermark_id', ?1)",
+            params![id],
         )?;
         Ok(())
     }
 
-    pub fn clear_sync_cursor(&self) -> anyhow::Result<()> {
+    pub fn clear_sync_watermark(&self) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
         db.execute(
-            "DELETE FROM settings WHERE key = 'sync_last_seen_server_id'",
+            "DELETE FROM settings WHERE key IN ('sync_watermark_updated_at', 'sync_watermark_id', 'sync_last_seen_server_id')",
             [],
         )?;
         Ok(())
