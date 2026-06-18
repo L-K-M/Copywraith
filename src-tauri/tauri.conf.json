@@ -37,8 +37,24 @@
 			"icons/icon.icns",
 			"icons/icon.ico"
 		],
+		"category": "Utility",
+		"shortDescription": "Local-first clipboard manager",
+		"longDescription": "Copywraith is a local-first clipboard manager with optional encrypted sync across devices. On KDE/Linux it lives in the system tray, captures clipboard history, and pastes entries back (via ydotool on Wayland, with a copy-and-notify fallback).",
 		"android": {
 			"minSdkVersion": 24
+		},
+		"linux": {
+			"deb": {
+				"depends": [
+					"libwebkit2gtk-4.1-0",
+					"libgtk-3-0",
+					"libayatana-appindicator3-1"
+				],
+				"recommends": [
+					"ydotool",
+					"libnotify-bin"
+				]
+			}
 		}
 	}
 }

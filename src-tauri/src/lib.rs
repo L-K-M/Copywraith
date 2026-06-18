@@ -1,6 +1,8 @@
 #[cfg(desktop)]
 mod clipboard;
 mod commands;
+#[cfg(target_os = "linux")]
+mod linux;
 mod models;
 #[cfg(desktop)]
 mod paste;
@@ -34,6 +36,17 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux/KDE: if Copywraith is already running, forward this invocation's
+    // arguments (e.g. a KDE global shortcut bound to `copywraith --toggle`) to
+    // the running instance over a Unix socket and exit. Done before building the
+    // app so the second process stays cheap and short-lived.
+    #[cfg(target_os = "linux")]
+    {
+        if linux::forward_to_running_instance() {
+            return;
+        }
+    }
+
     let mut builder = tauri::Builder::default();
 
     // Desktop-only plugins
@@ -111,6 +124,28 @@ pub fn run() {
 
             // Start periodic two-way sync loop (push unsynced + pull remote)
             start_sync_loop(app_handle.clone(), storage.clone(), sync_client.clone());
+
+            // Linux/KDE: system tray, single-instance listener, and a command
+            // passed on first launch (e.g. `copywraith --toggle` bound to a KDE
+            // global shortcut).
+            #[cfg(target_os = "linux")]
+            {
+                if let Err(e) = build_tray(&app_handle) {
+                    log::warn!("Failed to build system tray: {}", e);
+                }
+
+                // Listen for forwarded commands from later invocations.
+                let listener_app = app_handle.clone();
+                linux::start_single_instance_listener(move |argv| {
+                    let dispatch_app = listener_app.clone();
+                    let _ = listener_app.run_on_main_thread(move || {
+                        dispatch_cli_command(&dispatch_app, &argv);
+                    });
+                });
+
+                let argv: Vec<String> = std::env::args().collect();
+                dispatch_cli_command(&app_handle, &argv);
+            }
 
             #[cfg(target_os = "android")]
             if storage.get_settings().shizuku_clipboard_enabled {
@@ -668,6 +703,93 @@ fn configure_popup_panel_for_fullscreen_spaces_now(app: &tauri::AppHandle) -> Re
         "NSPanel: popup window fully configured for macOS fullscreen Spaces (level={})",
         target_level
     );
+    Ok(())
+}
+
+/// Dispatch a command-line action to the running instance.
+///
+/// Used both at first launch and (via the single-instance plugin) when a second
+/// process is started — typically by a KDE global shortcut bound to
+/// `copywraith --toggle` / `--starred` / `--paste-plaintext`.
+#[cfg(target_os = "linux")]
+fn dispatch_cli_command(app: &tauri::AppHandle, argv: &[String]) {
+    for arg in argv.iter().skip(1) {
+        match arg.as_str() {
+            "--toggle" | "toggle" => {
+                let _ = toggle_popup(app, false);
+            }
+            "--starred" | "starred" => {
+                let _ = toggle_popup(app, true);
+            }
+            "--paste-plaintext" | "paste-plaintext" => {
+                paste::paste_most_recent_plaintext(app);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Build the KDE/Plasma system-tray icon and menu.
+#[cfg(target_os = "linux")]
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let show = MenuItemBuilder::with_id("tray_show", "Show Copywraith").build(app)?;
+    let starred = MenuItemBuilder::with_id("tray_starred", "Show Starred").build(app)?;
+    let paste_plain =
+        MenuItemBuilder::with_id("tray_paste_plain", "Paste last entry as plain text")
+            .build(app)?;
+    let autostart = CheckMenuItemBuilder::with_id("tray_autostart", "Start at login")
+        .checked(linux::autostart_is_enabled())
+        .build(app)?;
+    let quit = MenuItemBuilder::with_id("tray_quit", "Quit Copywraith").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&show)
+        .item(&starred)
+        .item(&paste_plain)
+        .separator()
+        .item(&autostart)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let autostart_item = autostart.clone();
+    let mut tray = TrayIconBuilder::with_id("copywraith-tray")
+        .tooltip("Copywraith")
+        .menu(&menu)
+        .on_menu_event(move |app, event| match event.id.as_ref() {
+            "tray_show" => {
+                let _ = toggle_popup(app, false);
+            }
+            "tray_starred" => {
+                let _ = toggle_popup(app, true);
+            }
+            "tray_paste_plain" => {
+                paste::paste_most_recent_plaintext(app);
+            }
+            "tray_autostart" => {
+                let enable = !linux::autostart_is_enabled();
+                match linux::autostart_set_enabled(enable) {
+                    Ok(()) => {
+                        let _ = autostart_item.set_checked(enable);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to update autostart: {}", e);
+                        let _ = autostart_item.set_checked(linux::autostart_is_enabled());
+                    }
+                }
+            }
+            "tray_quit" => app.exit(0),
+            _ => {}
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+
+    tray.build(app)?;
     Ok(())
 }
 
