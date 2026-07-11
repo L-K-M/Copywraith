@@ -17,8 +17,17 @@
 	let shizukuState = $state('unknown');
 	let shizukuMessage = $state('Shizuku status has not been checked yet.');
 	let shizukuBusy = $state(false);
+	let isLoadingSettings = $state(true);
+	let isSaving = $state(false);
+	let loadError = $state('');
 
-	onMount(async () => {
+	onMount(() => {
+		void loadSettings();
+	});
+
+	async function loadSettings() {
+		isLoadingSettings = true;
+		loadError = '';
 		try {
 			const settings = await TauriService.getSettings();
 			primaryServerUrl = settings.server_url_primary;
@@ -33,11 +42,15 @@
 			}
 		} catch (e) {
 			console.error('Failed to load settings:', e);
-			notify('error', 'Failed to load settings');
+			loadError = 'Settings could not be loaded. Existing values have not been changed.';
+		} finally {
+			isLoadingSettings = false;
 		}
-	});
+	}
 
 	async function handleSave() {
+		if (isLoadingSettings || isSaving || loadError) return;
+		isSaving = true;
 		try {
 			await TauriService.updateSettings({
 				server_url_primary: normalizeServerUrl(primaryServerUrl),
@@ -58,6 +71,8 @@
 			onclose();
 		} catch (e) {
 			notify('error', `Failed to save settings: ${e}`);
+		} finally {
+			isSaving = false;
 		}
 	}
 
@@ -237,13 +252,27 @@
 
 		<div class="settings-actions s7-actions">
 			<Button onclick={onclose}>Cancel</Button>
-			<Button variant="primary" onclick={handleSave}>Save</Button>
+			<Button variant="primary" onclick={handleSave} disabled={isSaving}>
+				{isSaving ? 'Saving...' : 'Save'}
+			</Button>
 		</div>
 	</div>
 {/snippet}
 
 <MovableDialog title="Settings" {onclose} width="380px">
-	{@render settingsForm()}
+	{#if isLoadingSettings}
+		<div class="settings-state" role="status">Loading settings...</div>
+	{:else if loadError}
+		<div class="settings-state" role="alert">
+			<div>{loadError}</div>
+			<div class="settings-actions s7-actions">
+				<Button onclick={onclose}>Cancel</Button>
+				<Button variant="primary" onclick={loadSettings}>Retry</Button>
+			</div>
+		</div>
+	{:else}
+		{@render settingsForm()}
+	{/if}
 </MovableDialog>
 
 <style>
@@ -252,6 +281,15 @@
 		flex-direction: column;
 		gap: 12px;
 		padding: 8px 0;
+	}
+
+	.settings-state {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 16px 8px 8px;
+		font-size: 12px;
+		line-height: 1.4;
 	}
 
 	label {
