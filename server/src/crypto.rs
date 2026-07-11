@@ -95,7 +95,7 @@ impl CryptoState {
 
         // Generate random salt
         let mut salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
 
         // Derive master key via Argon2id
         let master_key = derive_master_key(password, &salt)?;
@@ -106,11 +106,11 @@ impl CryptoState {
 
         // Generate random DEK
         let mut dek = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek);
+        rand::rng().fill_bytes(&mut dek);
 
         // Encrypt DEK with KEK
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&kek)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -218,7 +218,7 @@ impl CryptoState {
 
         // Generate new salt
         let mut salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
 
         // Derive new keys from new password
         let master_key = derive_master_key(new_password, &salt)?;
@@ -227,7 +227,7 @@ impl CryptoState {
 
         // Re-encrypt same DEK with new KEK
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&kek)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -270,7 +270,7 @@ impl CryptoState {
 /// Encrypt text content. Returns `ENC:1:<base64(nonce||ciphertext||tag)>`.
 pub fn encrypt_text(dek: &[u8; DEK_LEN], plaintext: &str) -> anyhow::Result<String> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -313,7 +313,7 @@ pub fn decrypt_text(dek: &[u8; DEK_LEN], stored: &str) -> anyhow::Result<String>
 /// Encrypt blob data. Returns `ENCB || nonce[12] || ciphertext || tag[16]`.
 pub fn encrypt_blob(dek: &[u8; DEK_LEN], data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn test_text_encrypt_decrypt_roundtrip() {
         let mut dek = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek);
+        rand::rng().fill_bytes(&mut dek);
 
         let plaintext = "Hello, clipboard!";
         let encrypted = encrypt_text(&dek, plaintext).unwrap();
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn test_blob_encrypt_decrypt_roundtrip() {
         let mut dek = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek);
+        rand::rng().fill_bytes(&mut dek);
 
         let data = b"binary blob data here";
         let encrypted = encrypt_blob(&dek, data).unwrap();
@@ -497,8 +497,8 @@ mod tests {
     fn test_wrong_key_fails_decrypt() {
         let mut dek1 = [0u8; DEK_LEN];
         let mut dek2 = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek1);
-        rand::thread_rng().fill_bytes(&mut dek2);
+        rand::rng().fill_bytes(&mut dek1);
+        rand::rng().fill_bytes(&mut dek2);
 
         let encrypted = encrypt_text(&dek1, "secret").unwrap();
         let result = decrypt_text(&dek2, &encrypted);
