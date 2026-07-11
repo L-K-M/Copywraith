@@ -226,7 +226,7 @@ pub async fn capture_clipboard(
     {
         let _ = &app;
         let _ = &state;
-        return Ok(false);
+        Ok(false)
     }
 
     #[cfg(mobile)]
@@ -346,10 +346,10 @@ pub async fn import_pending_shares(
     {
         let _ = &app;
         let _ = &state;
-        return Ok(ImportPendingSharesResult {
+        Ok(ImportPendingSharesResult {
             imported: 0,
             skipped: 0,
-        });
+        })
     }
 
     #[cfg(target_os = "android")]
@@ -429,10 +429,10 @@ pub async fn has_pending_shares(
     {
         let _ = &app;
         let _ = &state;
-        return Ok(PendingSharesStatus {
+        Ok(PendingSharesStatus {
             pending: false,
             staged: false,
-        });
+        })
     }
 
     #[cfg(target_os = "android")]

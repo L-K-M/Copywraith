@@ -355,7 +355,7 @@ impl LocalStorage {
             param_values.iter().map(|p| p.as_ref()).collect();
 
         let entries = stmt
-            .query_map(param_refs.as_slice(), |row| row_to_entry(row))?
+            .query_map(param_refs.as_slice(), row_to_entry)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(entries)
@@ -367,7 +367,7 @@ impl LocalStorage {
             .query_row(
                 &format!("SELECT {} FROM entries WHERE id = ?1", ENTRY_SELECT_COLUMNS),
                 params![id],
-                |row| row_to_entry(row),
+                row_to_entry,
             )
             .optional()?;
         Ok(entry)
@@ -477,7 +477,7 @@ impl LocalStorage {
                     ENTRY_SELECT_COLUMNS
                 ),
                 [],
-                |row| row_to_entry(row),
+                row_to_entry,
             )
             .optional()?;
         Ok(entry)
@@ -491,7 +491,7 @@ impl LocalStorage {
         ))?;
 
         let entries = stmt
-            .query_map([], |row| row_to_entry(row))?
+            .query_map([], row_to_entry)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(entries)
