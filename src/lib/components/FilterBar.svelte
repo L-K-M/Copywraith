@@ -63,7 +63,11 @@
 		}
 
 		if (e.key === 'Escape') {
-			clearFilter();
+			if ($filterText) {
+				e.preventDefault();
+				e.stopPropagation();
+				clearFilter();
+			}
 		}
 	}
 </script>
@@ -75,6 +79,7 @@
 			type="text"
 			class="s7-input filter-input"
 			placeholder={$isMobile ? 'Filter...' : 'Filter clipboard...'}
+			aria-label="Filter clipboard history"
 			value={$filterText}
 			oninput={handleInput}
 			onkeydown={handleKeydown}

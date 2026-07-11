@@ -172,8 +172,15 @@ export async function loadMoreEntries() {
 
 export function debouncedLoad() {
 	if (debounceTimer) clearTimeout(debounceTimer);
+	// Invalidate the visible selection and any in-flight response as soon as
+	// the query changes. Otherwise Enter can act on the previous result set
+	// during the debounce window.
+	loadRequestId += 1;
+	selectedEntryId.set(null);
+	isLoading.set(true);
+	isLoadingMore.set(false);
+	hasMoreEntries.set(false);
 	debounceTimer = setTimeout(() => {
-		selectedEntryId.set(null);
 		loadEntries();
 	}, 150);
 }
@@ -183,6 +190,8 @@ export function selectEntry(id: string) {
 }
 
 export function moveSelection(delta: number) {
+	if (get(isLoading)) return;
+
 	const list = get(entries);
 	if (list.length === 0) return;
 
@@ -195,6 +204,8 @@ export function moveSelection(delta: number) {
 }
 
 export async function pasteSelectedEntry() {
+	if (get(isLoading)) return;
+
 	const selectedId = get(selectedEntryId);
 	if (!selectedId) return;
 	await pasteEntry(selectedId);
@@ -203,9 +214,17 @@ export async function pasteSelectedEntry() {
 export async function toggleStar(id: string) {
 	try {
 		const newStarred = await TauriService.toggleStar(id);
-		entries.update((list) =>
-			list.map((e) => (e.id === id ? { ...e, starred: newStarred } : e))
-		);
+		entries.update((list) => {
+			const updated =
+				get(starredOnly) && !newStarred
+					? list.filter((entry) => entry.id !== id)
+					: list.map((entry) =>
+							entry.id === id ? { ...entry, starred: newStarred } : entry
+						);
+			nextOffset = Math.min(nextOffset, updated.length);
+			syncSelection(updated);
+			return updated;
+		});
 	} catch (e) {
 		console.error('Failed to toggle star:', e);
 		notify('error', 'Failed to update starred state');
