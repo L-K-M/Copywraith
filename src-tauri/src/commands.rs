@@ -368,10 +368,22 @@ pub async fn import_pending_shares(
 
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let pending_dir = data_dir.join("pending-shares");
-        let processed_dir = pending_dir.join("processed");
         let failed_dir = pending_dir.join("failed");
-        std::fs::create_dir_all(&processed_dir).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&failed_dir).map_err(|e| e.to_string())?;
+
+        // Older versions archived every imported batch here, duplicating
+        // clipboard text indefinitely. Successful imports are already durable
+        // in local storage, so the legacy archive is safe to remove.
+        let legacy_processed_dir = pending_dir.join("processed");
+        if let Err(e) = std::fs::remove_dir_all(&legacy_processed_dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "Failed to remove legacy Android share archive {:?}: {}",
+                    legacy_processed_dir,
+                    e
+                );
+            }
+        }
 
         let mut imported = 0usize;
         let mut skipped = 0usize;
@@ -391,26 +403,23 @@ pub async fn import_pending_shares(
                 continue;
             }
 
-            let import_result = import_pending_share_file(&app, &state, &path);
-            let target_dir = if import_result.is_ok() {
-                &processed_dir
-            } else {
-                &failed_dir
-            };
-            let target = target_dir.join(
-                path.file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("share.json")),
-            );
-            let _ = std::fs::rename(&path, target);
-
-            match import_result {
-                Ok((new_imports, new_skips)) => {
+            match import_pending_share_file(&app, &state, &path) {
+                Ok((new_imports, new_skips, had_item_error)) => {
                     imported += new_imports;
                     skipped += new_skips;
+
+                    if had_item_error {
+                        move_failed_share_batch(&path, &failed_dir);
+                    } else if let Err(e) = std::fs::remove_file(&path) {
+                        // Leave it pending so cleanup is retried. Re-import is
+                        // safe because local storage deduplicates by content hash.
+                        log::warn!("Failed to remove imported share batch {:?}: {}", path, e);
+                    }
                 }
                 Err(e) => {
                     skipped += 1;
                     log::warn!("Failed to import pending Android share {:?}: {}", path, e);
+                    move_failed_share_batch(&path, &failed_dir);
                 }
             }
         }
@@ -479,11 +488,12 @@ fn import_pending_share_file(
     app: &tauri::AppHandle,
     state: &State<'_, AppState>,
     path: &std::path::Path,
-) -> anyhow::Result<(usize, usize)> {
+) -> anyhow::Result<(usize, usize, bool)> {
     let data = std::fs::read_to_string(path)?;
     let batch: PendingShareBatch = serde_json::from_str(&data)?;
     let mut imported = 0usize;
     let mut skipped = 0usize;
+    let mut had_item_error = false;
 
     for item in batch.items {
         match import_pending_share_item(state, &item) {
@@ -499,12 +509,29 @@ fn import_pending_share_file(
             Ok(None) => skipped += 1,
             Err(e) => {
                 skipped += 1;
+                had_item_error = true;
                 log::warn!("Failed to import Android share item from {:?}: {}", path, e);
             }
         }
     }
 
-    Ok((imported, skipped))
+    Ok((imported, skipped, had_item_error))
+}
+
+#[cfg(target_os = "android")]
+fn move_failed_share_batch(path: &std::path::Path, failed_dir: &std::path::Path) {
+    let target = failed_dir.join(
+        path.file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("share.json")),
+    );
+    if let Err(e) = std::fs::rename(path, &target) {
+        log::warn!(
+            "Failed to retain Android share batch {:?} at {:?}: {}",
+            path,
+            target,
+            e
+        );
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -557,53 +584,59 @@ fn import_pending_file_share(
     let path = std::path::Path::new(stored_path);
     let metadata = std::fs::metadata(path)?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_SHARED_BLOB_BYTES {
+        let _ = std::fs::remove_file(path);
         return Ok(None);
     }
 
     let bytes = std::fs::read(path)?;
-    let _ = std::fs::remove_file(path);
     if bytes.is_empty() {
+        let _ = std::fs::remove_file(path);
         return Ok(None);
     }
 
-    if item
+    let result = if item
         .mime_type
         .as_deref()
         .is_some_and(|mime| mime.starts_with("image/"))
         || copywraith_core::content::detect_image_format(&bytes).is_some()
     {
         let content_hash = copywraith_core::content::hash_bytes(&bytes);
-        return state.storage.insert_entry(
+        state.storage.insert_entry(
             ContentType::Image,
             &ClipboardFlavors::default(),
             Some(&bytes),
             &content_hash,
             Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
-        );
-    }
-
-    let display_name = item
-        .file_name
-        .as_deref()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("shared-file")
-        });
-    let flavors = ClipboardFlavors {
-        file_list: Some(vec![display_name.to_string()]),
-        ..ClipboardFlavors::default()
+        )
+    } else {
+        let display_name = item
+            .file_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("shared-file")
+            });
+        let flavors = ClipboardFlavors {
+            file_list: Some(vec![display_name.to_string()]),
+            ..ClipboardFlavors::default()
+        };
+        let blob_hash = copywraith_core::content::hash_bytes(&bytes);
+        let content_hash = flavors.payload_hash(ContentType::File, Some(&blob_hash));
+        state.storage.insert_entry(
+            ContentType::File,
+            &flavors,
+            Some(&bytes),
+            &content_hash,
+            Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
+        )
     };
-    let blob_hash = copywraith_core::content::hash_bytes(&bytes);
-    let content_hash = flavors.payload_hash(ContentType::File, Some(&blob_hash));
-    state.storage.insert_entry(
-        ContentType::File,
-        &flavors,
-        Some(&bytes),
-        &content_hash,
-        Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
-    )
+
+    if result.is_ok() {
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 #[tauri::command]

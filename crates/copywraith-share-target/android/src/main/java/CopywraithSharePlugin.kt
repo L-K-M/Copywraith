@@ -374,9 +374,22 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
     val batch = JSONObject()
       .put("items", items)
       .put("created_at", System.currentTimeMillis())
-    val target = File(pendingDir, "${System.currentTimeMillis()}-${UUID.randomUUID()}.json")
-    target.writeText(batch.toString())
-    return true
+    val name = "${System.currentTimeMillis()}-${UUID.randomUUID()}.json"
+    val target = File(pendingDir, name)
+    val temporary = File(pendingDir, ".$name.tmp")
+
+    return try {
+      temporary.writeText(batch.toString())
+      if (temporary.renameTo(target)) {
+        true
+      } else {
+        temporary.delete()
+        false
+      }
+    } catch (_: Exception) {
+      temporary.delete()
+      false
+    }
   }
 
   private fun getDisplayName(uri: Uri): String? {
