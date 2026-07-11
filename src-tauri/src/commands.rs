@@ -188,8 +188,11 @@ fn write_to_clipboard_mobile(
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
     if entry.content_type == ContentType::Image {
-        // Android clipboard-manager only supports text; image copy not available
-        return Ok(());
+        return Err("Copying images is not supported on Android yet".to_string());
+    }
+
+    if entry.content_type == ContentType::File && !force_plaintext {
+        return Err("Copying files is not supported on Android yet; copy as plaintext to copy the file name".to_string());
     }
 
     let text = if force_plaintext {
@@ -205,7 +208,7 @@ fn write_to_clipboard_mobile(
     .unwrap_or_default();
 
     if text.trim().is_empty() {
-        return Ok(());
+        return Err("This entry has no text that Android can copy".to_string());
     };
 
     app.clipboard()
