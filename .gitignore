@@ -37,5 +37,9 @@ server/ui/dist/
 *.db
 *.db-wal
 *.db-shm
+auth.json
 data/
 blobs/
+copywraith-data/*
+!copywraith-data/README.md
+server/copywraith-data/

@@ -1,0 +1,32 @@
+# Send only files required by server/Dockerfile. This prevents local clipboard
+# data, auth material, environment files, VCS metadata, and app build output
+# from reaching local or remote Docker builders.
+*
+
+!Cargo.toml
+!Cargo.lock
+
+!crates/
+!crates/**
+
+!server/
+!server/Cargo.toml
+!server/Dockerfile
+!server/src/
+!server/src/**
+!server/ui/
+!server/ui/.npmrc
+!server/ui/index.html
+!server/ui/package.json
+!server/ui/package-lock.json
+!server/ui/vite.config.js
+!server/ui/public/
+!server/ui/public/**
+!server/ui/src/
+!server/ui/src/**
+
+# Cargo resolves every workspace member even when only the server is built.
+!src-tauri/
+!src-tauri/Cargo.toml
+!src-tauri/src/
+!src-tauri/src/lib.rs
