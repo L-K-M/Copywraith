@@ -11,12 +11,12 @@
 		setSyncEndpointStatus,
 		type SyncEndpointStatusInput
 	} from '$lib/util/syncStatusStore';
-	import type { ClipboardEntry } from '$lib/types';
 	import {
 		loadEntries,
 		moveSelection,
 		pasteSelectedEntry,
 		selectFirstEntry,
+		entries,
 		starredOnly
 	} from '$lib/util/clipboardStore';
 	import { notify } from '$lib/util/notifications';
@@ -36,7 +36,10 @@
 	let showSettings = $state(false);
 	let errorMessage = $state('');
 	let filterBar: FilterBar | undefined = $state();
-	let previewEntry: ClipboardEntry | null = $state(null);
+	let previewEntryId: string | null = $state(null);
+	let previewEntry = $derived(
+		previewEntryId ? $entries.find((entry) => entry.id === previewEntryId) ?? null : null
+	);
 	let shareProgressVisible = $state(false);
 	let shareProgressValue = $state(0);
 	let shareProgressTitle = $state('Importing Shared Items');
@@ -411,6 +414,15 @@
 
 		// Escape hides the popup
 		if (e.key === 'Escape') {
+			e.preventDefault();
+			if (previewEntryId) {
+				previewEntryId = null;
+				return;
+			}
+			if (showSettings) {
+				showSettings = false;
+				return;
+			}
 			windowManager.close();
 			return;
 		}
@@ -479,7 +491,7 @@
 
 		<main class="app-content">
 			<FilterBar bind:this={filterBar} onsettings={handleSettingsOpen} />
-			<EntryList onpreview={(entry) => { previewEntry = entry; }} />
+			<EntryList onpreview={(entry) => { previewEntryId = entry.id; }} />
 			<StatusBar
 				progressVisible={mobileSyncProgressVisible}
 				progressValue={mobileSyncProgressValue}
@@ -545,7 +557,7 @@
 {/if}
 
 {#if previewEntry}
-	<EntryPreview entry={previewEntry} onclose={() => { previewEntry = null; }} />
+	<EntryPreview entry={previewEntry} onclose={() => { previewEntryId = null; }} />
 {/if}
 
 {#if shareProgressVisible && $isMobile}
