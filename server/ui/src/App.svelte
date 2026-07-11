@@ -47,6 +47,7 @@
 	let pendingDeleteId: string | null = $state(null);
 
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	let loadRequestId = 0;
 
 	const typeOptions = [
 		{ value: '', label: 'All types' },
@@ -136,6 +137,7 @@
 	}
 
 	async function handleLock() {
+		loadRequestId += 1;
 		try {
 			await api.lockServer();
 		} catch (_) {}
@@ -145,28 +147,46 @@
 	}
 
 	async function loadEntries() {
+		const requestId = ++loadRequestId;
+		const request = {
+			offset: currentOffset,
+			search: searchQuery || undefined,
+			contentType: typeFilter || undefined,
+			starredOnly: starredOnly || undefined
+		};
 		isLoading = true;
 		errorMessage = '';
 		try {
 			const data = await api.fetchEntries({
 				limit: PAGE_SIZE,
-				offset: currentOffset,
-				search: searchQuery || undefined,
-				content_type: typeFilter || undefined,
-				starred_only: starredOnly || undefined
+				offset: request.offset,
+				search: request.search,
+				content_type: request.contentType,
+				starred_only: request.starredOnly
 			});
+			if (requestId !== loadRequestId) return;
+
+			if (data.entries.length === 0 && data.total > 0 && request.offset >= data.total) {
+				currentOffset = Math.floor((data.total - 1) / PAGE_SIZE) * PAGE_SIZE;
+				void loadEntries();
+				return;
+			}
+
 			entries = data.entries;
 			totalEntries = data.total;
 			hasMore = data.has_more;
 			updateStats();
 		} catch (e: any) {
+			if (requestId !== loadRequestId) return;
 			if (e.message === 'Unauthorized') {
 				screen = 'unlock';
 				return;
 			}
 			errorMessage = `Failed to load entries: ${e.message}`;
 		} finally {
-			isLoading = false;
+			if (requestId === loadRequestId) {
+				isLoading = false;
+			}
 		}
 	}
 
@@ -179,6 +199,8 @@
 
 	function debouncedSearch() {
 		if (debounceTimer) clearTimeout(debounceTimer);
+		loadRequestId += 1;
+		isLoading = true;
 		debounceTimer = setTimeout(() => {
 			currentOffset = 0;
 			loadEntries();
@@ -186,8 +208,9 @@
 	}
 
 	function handleFilterChange() {
+		if (debounceTimer) clearTimeout(debounceTimer);
 		currentOffset = 0;
-		loadEntries();
+		void loadEntries();
 	}
 
 	async function handleToggleStar(id: string, currentStarred: boolean) {
@@ -293,7 +316,10 @@
 		try {
 			await api.deleteEntry(pendingDeleteId);
 			pendingDeleteId = null;
-			loadEntries();
+			if (entries.length === 1 && currentOffset > 0) {
+				currentOffset = Math.max(0, currentOffset - PAGE_SIZE);
+			}
+			void loadEntries();
 		} catch (e: any) {
 			pendingDeleteId = null;
 			errorMessage = `Failed to delete entry: ${e.message}`;
@@ -301,14 +327,15 @@
 	}
 
 	function prevPage() {
+		if (isLoading) return;
 		currentOffset = Math.max(0, currentOffset - PAGE_SIZE);
-		loadEntries();
+		void loadEntries();
 	}
 
 	function nextPage() {
-		if (hasMore) {
+		if (!isLoading && hasMore) {
 			currentOffset += PAGE_SIZE;
-			loadEntries();
+			void loadEntries();
 		}
 	}
 
@@ -457,7 +484,7 @@
 
 			<div class="footer-bar">
 				<div class="pagination">
-					<Button onclick={prevPage} disabled={currentOffset === 0 || totalEntries === 0}
+					<Button onclick={prevPage} disabled={isLoading || currentOffset === 0 || totalEntries === 0}
 						>&lt; Prev</Button
 					>
 					<span class="page-info">
@@ -467,7 +494,7 @@
 							{currentOffset + 1}-{Math.min(currentOffset + PAGE_SIZE, totalEntries)} of {totalEntries}
 						{/if}
 					</span>
-					<Button onclick={nextPage} disabled={!hasMore || totalEntries === 0}>Next &gt;</Button>
+					<Button onclick={nextPage} disabled={isLoading || !hasMore || totalEntries === 0}>Next &gt;</Button>
 				</div>
 				<span class="footer-version">{statsVersion}</span>
 			</div>
