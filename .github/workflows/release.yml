@@ -13,11 +13,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ci:
+    name: Validate release source
+    uses: ./.github/workflows/ci.yml
+
+  validate-version:
+    name: Validate release version
+    needs: ci
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Match tag to manifests
+        run: node scripts/check-release-version.mjs "${GITHUB_REF_NAME#v}"
+
   # ---------------------------------------------------------------------------
   # Create a draft release that every build job uploads its artifacts into.
   # ---------------------------------------------------------------------------
   create-release:
     name: Create draft release
+    needs: validate-version
     runs-on: ubuntu-22.04
     outputs:
       release_id: ${{ steps.create.outputs.result }}
