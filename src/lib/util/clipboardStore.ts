@@ -236,7 +236,7 @@ export async function pasteEntry(id: string) {
 		}
 	} catch (e) {
 		console.error('Failed to paste entry:', e);
-		notify('error', 'Failed to paste entry');
+		notify('error', e instanceof Error ? e.message : String(e));
 	}
 }
 
@@ -248,6 +248,6 @@ export async function pasteEntryPlaintext(id: string) {
 		}
 	} catch (e) {
 		console.error('Failed to paste entry as plaintext:', e);
-		notify('error', 'Failed to paste entry as plaintext');
+		notify('error', e instanceof Error ? e.message : String(e));
 	}
 }
