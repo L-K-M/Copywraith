@@ -59,7 +59,7 @@ const MAX_LIMIT: u32 = 200;
 
 /// Clamp a requested limit to the allowed maximum.
 pub fn clamp_limit(limit: u32) -> u32 {
-    limit.min(MAX_LIMIT).max(1)
+    limit.clamp(1, MAX_LIMIT)
 }
 
 // --- Response types ---

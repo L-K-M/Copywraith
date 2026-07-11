@@ -54,25 +54,17 @@ pub fn strip_html(html: &str) -> String {
     while i < len {
         if chars[i] == '<' {
             // Check for <style or <script opening tags
-            if i + 6 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<style") == &true
-            {
+            if i + 6 < len && lower[lower_byte_index(&lower_chars, i)..].starts_with("<style") {
                 in_style = true;
             }
-            if i + 7 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("<script") == &true
-            {
+            if i + 7 < len && lower[lower_byte_index(&lower_chars, i)..].starts_with("<script") {
                 in_script = true;
             }
             // Check for closing tags
-            if i + 7 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</style") == &true
-            {
+            if i + 7 < len && lower[lower_byte_index(&lower_chars, i)..].starts_with("</style") {
                 in_style = false;
             }
-            if i + 8 < len
-                && &lower[lower_byte_index(&lower_chars, i)..].starts_with("</script") == &true
-            {
+            if i + 8 < len && lower[lower_byte_index(&lower_chars, i)..].starts_with("</script") {
                 in_script = false;
             }
             in_tag = true;
