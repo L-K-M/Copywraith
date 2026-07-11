@@ -6,6 +6,7 @@ It has three main pieces:
 
 - [Server](server/README.md): Rust/Axum API, SQLite storage, encrypted blobs, and Svelte admin UI.
 - [Mac app](README.mac.md): Tauri v2 + Svelte popup app with clipboard capture, search, hotkeys, and paste helpers.
+- [KDE/Linux app](README.kde.md): the same desktop app on KDE Plasma (Wayland-first) with a system tray, ydotool paste, KDE global shortcuts, and autostart.
 - [Android app](README.android.md): Tauri mobile app with foreground clipboard capture, share-sheet import, and optional Shizuku listener.
 
 > [!IMPORTANT]

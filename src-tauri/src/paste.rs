@@ -342,7 +342,12 @@ fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
         }
     });
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::simulate_paste(app, target_app);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = target_app;
         let _ = app;
