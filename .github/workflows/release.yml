@@ -22,7 +22,7 @@ jobs:
     needs: ci
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Match tag to manifests
         run: node scripts/check-release-version.mjs "${GITHUB_REF_NAME#v}"
