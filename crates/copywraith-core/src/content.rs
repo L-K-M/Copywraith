@@ -145,6 +145,47 @@ fn decode_numeric_html_entity(entity: &str) -> Option<char> {
     }
 }
 
+/// Map a single Windows-1252 (CP1252) byte to its Unicode character.
+///
+/// For `0x00-0x7F` and `0xA0-0xFF` CP1252 matches Latin-1 (and thus a direct
+/// cast), but `0x80-0x9F` carry printable characters (smart quotes, dashes, the
+/// euro sign, …) that a naive `byte as char` would turn into C1 control codes.
+fn cp1252_byte_to_char(byte: u8) -> char {
+    match byte {
+        0x80 => '\u{20AC}', // €
+        0x82 => '\u{201A}', // ‚
+        0x83 => '\u{0192}', // ƒ
+        0x84 => '\u{201E}', // „
+        0x85 => '\u{2026}', // …
+        0x86 => '\u{2020}', // †
+        0x87 => '\u{2021}', // ‡
+        0x88 => '\u{02C6}', // ˆ
+        0x89 => '\u{2030}', // ‰
+        0x8A => '\u{0160}', // Š
+        0x8B => '\u{2039}', // ‹
+        0x8C => '\u{0152}', // Œ
+        0x8E => '\u{017D}', // Ž
+        0x91 => '\u{2018}', // ‘
+        0x92 => '\u{2019}', // ’
+        0x93 => '\u{201C}', // “
+        0x94 => '\u{201D}', // ”
+        0x95 => '\u{2022}', // •
+        0x96 => '\u{2013}', // –
+        0x97 => '\u{2014}', // —
+        0x98 => '\u{02DC}', // ˜
+        0x99 => '\u{2122}', // ™
+        0x9A => '\u{0161}', // š
+        0x9B => '\u{203A}', // ›
+        0x9C => '\u{0153}', // œ
+        0x9E => '\u{017E}', // ž
+        0x9F => '\u{0178}', // Ÿ
+        // Unassigned in CP1252.
+        0x81 | 0x8D | 0x8F | 0x90 | 0x9D => '\u{FFFD}',
+        // 0x00-0x7F and 0xA0-0xFF coincide with Latin-1 / Unicode.
+        other => other as char,
+    }
+}
+
 /// Strip RTF control words and groups to extract plain text.
 pub fn strip_rtf(rtf: &str) -> String {
     // Quick check: if it doesn't start with {\rtf, return as-is
@@ -183,7 +224,10 @@ pub fn strip_rtf(rtf: &str) -> String {
                 if skip_depth == Some(depth) {
                     skip_depth = None;
                 }
-                depth -= 1;
+                // Guard against unbalanced braces in malformed RTF: an extra `}`
+                // must not underflow `depth` (which would panic in debug builds
+                // and wrap to a huge value in release builds).
+                depth = depth.saturating_sub(1);
                 i += 1;
             }
             '\\' if skip_depth.is_none() => {
@@ -210,11 +254,14 @@ pub fn strip_rtf(rtf: &str) -> String {
                         i += 1;
                     }
                     '\'' => {
-                        // Hex-encoded character \'xx
+                        // Hex-encoded character \'xx. RTF encodes these in the
+                        // document codepage; default to Windows-1252, which is by
+                        // far the most common. A raw `byte as char` cast would
+                        // mangle the 0x80-0x9F range (smart quotes, em dash, …).
                         if i + 2 < len {
                             let hex: String = chars[i + 1..i + 3].iter().collect();
                             if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                                result.push(byte as char);
+                                result.push(cp1252_byte_to_char(byte));
                             }
                             i += 3;
                         } else {
@@ -390,6 +437,30 @@ mod tests {
     fn test_strip_rtf_non_rtf_passthrough() {
         let plain = "just some text";
         assert_eq!(strip_rtf(plain), plain);
+    }
+
+    #[test]
+    fn test_strip_rtf_unbalanced_braces_does_not_panic() {
+        // Extra closing braces must not underflow the depth counter.
+        let rtf = r"{\rtf1\ansi Hello}}}} world}";
+        let out = strip_rtf(rtf);
+        assert!(out.contains("Hello"));
+    }
+
+    #[test]
+    fn test_strip_rtf_cp1252_hex_escapes() {
+        // \'92 is a right single quote and \'85 an ellipsis in CP1252; a naive
+        // `byte as char` cast would produce C1 control characters instead.
+        let rtf = r"{\rtf1\ansi It\'92s here\'85}";
+        let out = strip_rtf(rtf);
+        assert_eq!(out, "It\u{2019}s here\u{2026}");
+    }
+
+    #[test]
+    fn test_strip_rtf_latin1_hex_escape() {
+        // High-range bytes (0xA0-0xFF) coincide with Latin-1 / Unicode.
+        let rtf = r"{\rtf1\ansi caf\'e9}";
+        assert_eq!(strip_rtf(rtf), "caf\u{00e9}");
     }
 
     #[test]
