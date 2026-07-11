@@ -84,7 +84,7 @@ Sources: `src-tauri/src/lib.rs`, `src-tauri/src/sync.rs`
 - Background loop runs every ~5s
 - Pushes local unsynced entries to server (`sync_unsynced_entries`)
 - Pulls new server entries into local storage (`pull_new_entries`)
-- Uses server entry cursor (`last_seen_server_id`) to only ingest newer remote entries
+- Uses a persisted `(updated_at, id)` watermark to only ingest entries newer than the last pull; comparing the full key (not just an id) keeps the cursor stable when an entry's `updated_at` changes (re-copy/re-star), so newer entries are never skipped
 - Emits `clipboard-updated` event when pull imports new entries so UI refreshes
 - Sync settings live in local SQLite (`server_url_primary`, `server_url_fallback`, `api_key`) and are edited in `src/lib/components/SettingsDialog.svelte`; sync tries the primary URL first, then falls back to the secondary URL
 
