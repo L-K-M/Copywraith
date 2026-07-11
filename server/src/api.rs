@@ -432,7 +432,7 @@ async fn list_entries(
                 .map(|_| format!("/api/entries/{}/blob", e.id));
             EntryResponse {
                 blob_url,
-                entry: mask_sensitive_entry(e),
+                entry: project_list_entry(e, params.include_sensitive),
             }
         })
         .collect();
@@ -749,10 +749,46 @@ fn mask_sensitive_entry(
     entry
 }
 
+fn project_list_entry(
+    entry: copywraith_core::models::ClipboardEntry,
+    include_sensitive: bool,
+) -> copywraith_core::models::ClipboardEntry {
+    if include_sensitive {
+        entry
+    } else {
+        mask_sensitive_entry(entry)
+    }
+}
+
 /// Encrypt all existing unencrypted entries and blobs in place.
 fn migrate_existing_data(state: &AppState, dek: &[u8; 32]) -> anyhow::Result<()> {
     state.storage.encrypt_all_entries(dek)?;
     state.storage.encrypt_all_blobs(dek)?;
     tracing::info!("Migrated existing data to encrypted storage");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_list_entry;
+    use copywraith_core::models::ClipboardEntry;
+
+    #[test]
+    fn list_projection_masks_sensitive_entries_unless_explicitly_requested() {
+        let secret = "sk-example-sensitive-value".to_string();
+        let mut entry = ClipboardEntry::new_text(secret.clone());
+        entry.sensitive = true;
+
+        let masked = project_list_entry(entry.clone(), false);
+        assert_ne!(masked.text_content.as_deref(), Some(secret.as_str()));
+        assert!(!masked
+            .text_content
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty());
+
+        let full = project_list_entry(entry, true);
+        assert_eq!(full.text_content.as_deref(), Some(secret.as_str()));
+        assert_eq!(full.flavors.text_plain.as_deref(), Some(secret.as_str()));
+    }
 }

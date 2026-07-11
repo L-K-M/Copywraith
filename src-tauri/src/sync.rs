@@ -459,6 +459,9 @@ impl SyncClient {
                 let mut query = url.query_pairs_mut();
                 query.append_pair("limit", &page_size.to_string());
                 query.append_pair("offset", "0");
+                // Native sync needs the original payload. The server masks
+                // sensitive entries by default for presentation clients.
+                query.append_pair("include_sensitive", "true");
                 if let Some((before_updated_at, before_id)) = before_cursor {
                     query.append_pair("before_updated_at", before_updated_at);
                     query.append_pair("before_id", before_id);

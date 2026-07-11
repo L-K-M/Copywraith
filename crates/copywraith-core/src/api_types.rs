@@ -49,6 +49,10 @@ pub struct ListEntriesParams {
     pub starred_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
+    /// Return original sensitive payloads instead of presentation-safe masks.
+    /// This is intended for authenticated native synchronization clients.
+    #[serde(default)]
+    pub include_sensitive: bool,
 }
 
 fn default_limit() -> u32 {
@@ -96,4 +100,22 @@ pub struct HealthResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ListEntriesParams;
+
+    #[test]
+    fn list_entries_masks_sensitive_content_by_default() {
+        let params: ListEntriesParams = serde_json::from_str("{}").unwrap();
+        assert!(!params.include_sensitive);
+    }
+
+    #[test]
+    fn list_entries_can_explicitly_include_sensitive_content() {
+        let params: ListEntriesParams =
+            serde_json::from_str(r#"{"include_sensitive":true}"#).unwrap();
+        assert!(params.include_sensitive);
+    }
 }
