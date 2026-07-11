@@ -9,6 +9,8 @@
 
 	let primaryServerUrl = $state('');
 	let fallbackServerUrl = $state('');
+	let primaryUrlError = $state('');
+	let fallbackUrlError = $state('');
 	let apiKey = $state('');
 	let shortcutTogglePopup = $state('CmdOrCtrl+Shift+V');
 	let shortcutStarredPopup = $state('CmdOrCtrl+Shift+B');
@@ -50,6 +52,14 @@
 
 	async function handleSave() {
 		if (isLoadingSettings || isSaving || loadError) return;
+		// Validate URLs before saving so misconfiguration surfaces here instead of
+		// silently failing later at sync time.
+		primaryUrlError = validateServerUrl(primaryServerUrl) ?? '';
+		fallbackUrlError = validateServerUrl(fallbackServerUrl) ?? '';
+		if (primaryUrlError || fallbackUrlError) {
+			notify('error', 'Please fix the server URL fields before saving.');
+			return;
+		}
 		isSaving = true;
 		try {
 			await TauriService.updateSettings({
@@ -136,6 +146,30 @@
 	function normalizeServerUrl(url: string) {
 		return url.trim().replace(/\/+$/, '');
 	}
+
+	/// Returns an error message if the URL is malformed, or null if it's valid.
+	/// An empty string is valid and means "not configured".
+	function validateServerUrl(raw: string): string | null {
+		const trimmed = raw.trim();
+		if (trimmed === '') {
+			return null;
+		}
+
+		let parsed: URL;
+		try {
+			parsed = new URL(trimmed);
+		} catch {
+			return 'Enter a full URL, e.g. http://192.168.1.5:3742';
+		}
+
+		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+			return 'URL must start with http:// or https://';
+		}
+		if (!parsed.hostname) {
+			return 'URL is missing a host name.';
+		}
+		return null;
+	}
 </script>
 
 {#snippet settingsForm()}
@@ -148,7 +182,12 @@
 				class="s7-input"
 				placeholder="http://192.168.1.5:3742"
 				bind:value={primaryServerUrl}
+				aria-invalid={primaryUrlError ? 'true' : undefined}
+				oninput={() => (primaryUrlError = '')}
 			/>
+			{#if primaryUrlError}
+				<div class="field-error" role="alert">{primaryUrlError}</div>
+			{/if}
 			<div class="field-hint">Used first. This can be your local Wi-Fi address.</div>
 		</div>
 
@@ -160,7 +199,12 @@
 				class="s7-input"
 				placeholder="http://100.64.0.10:3742"
 				bind:value={fallbackServerUrl}
+				aria-invalid={fallbackUrlError ? 'true' : undefined}
+				oninput={() => (fallbackUrlError = '')}
 			/>
+			{#if fallbackUrlError}
+				<div class="field-error" role="alert">{fallbackUrlError}</div>
+			{/if}
 			<div class="field-hint">
 				Used when the local server cannot be reached. This can be your Tailscale/VPN address.
 			</div>
@@ -320,6 +364,14 @@
 		color: #666;
 		line-height: 1.35;
 		margin-top: 2px;
+	}
+
+	.field-error {
+		font-size: 10px;
+		color: #a01717;
+		line-height: 1.35;
+		margin-top: 2px;
+		font-weight: bold;
 	}
 
 	:global(.s7-dialog .s7-form-group) {
