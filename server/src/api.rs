@@ -332,6 +332,17 @@ async fn create_entry(
 ) -> Result<(StatusCode, Json<CreateEntryResponse>), AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
 
+    // Cap individual text fields. The global body limit
+    // (COPYWRAITH_MAX_BODY_BYTES) bounds the whole request, but without a
+    // per-field cap a single entry could still be tens of MiB of text that then
+    // gets encrypted and full-text indexed.
+    check_text_field_len("text_content", req.text_content.as_deref())?;
+    if let Some(flavors) = req.flavors.as_ref() {
+        check_text_field_len("text_plain", flavors.text_plain.as_deref())?;
+        check_text_field_len("text_html", flavors.text_html.as_deref())?;
+        check_text_field_len("text_rtf", flavors.text_rtf.as_deref())?;
+    }
+
     let dek = get_dek(&state);
     let flavors = req
         .flavors
@@ -468,6 +479,7 @@ async fn get_entry(
     Path(id): Path<String>,
 ) -> Result<Json<EntryResponse>, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
+    validate_entry_id(&id)?;
 
     let dek = get_dek(&state);
     let entry = state
@@ -512,6 +524,7 @@ async fn update_entry(
     Json(req): Json<UpdateEntryRequest>,
 ) -> Result<Json<EntryResponse>, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
+    validate_entry_id(&id)?;
 
     if let Some(starred) = req.starred {
         state.storage.update_entry_starred(&id, starred)?;
@@ -558,6 +571,7 @@ async fn delete_entry(
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
+    validate_entry_id(&id)?;
 
     let deleted = state.storage.delete_entry(&id)?;
     if deleted {
@@ -591,6 +605,7 @@ async fn get_blob(
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     ensure_authorized(state.as_ref(), &headers)?;
+    validate_entry_id(&id)?;
 
     let dek = get_dek(&state);
     let entry = state
@@ -670,6 +685,33 @@ impl IntoResponse for AppError {
 
         (status, Json(ErrorResponse { error: message })).into_response()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+/// Maximum size of a single text flavor on a created entry (10 MiB).
+const MAX_TEXT_FIELD_BYTES: usize = 10 * 1024 * 1024;
+
+/// Reject an oversized text field before it is encrypted and indexed.
+fn check_text_field_len(field: &str, value: Option<&str>) -> Result<(), AppError> {
+    if let Some(value) = value {
+        if value.len() > MAX_TEXT_FIELD_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "{} exceeds the maximum size of {} bytes",
+                field, MAX_TEXT_FIELD_BYTES
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Reject path ids that are not well-formed ULIDs.
+fn validate_entry_id(id: &str) -> Result<(), AppError> {
+    ulid::Ulid::from_string(id)
+        .map(|_| ())
+        .map_err(|_| AppError::BadRequest("Invalid entry id".to_string()))
 }
 
 // ---------------------------------------------------------------------------
