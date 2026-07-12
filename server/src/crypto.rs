@@ -95,7 +95,7 @@ impl CryptoState {
 
         // Generate random salt
         let mut salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
 
         // Derive master key via Argon2id
         let master_key = derive_master_key(password, &salt)?;
@@ -106,11 +106,11 @@ impl CryptoState {
 
         // Generate random DEK
         let mut dek = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek);
+        rand::rng().fill_bytes(&mut dek);
 
         // Encrypt DEK with KEK
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&kek)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -147,14 +147,16 @@ impl CryptoState {
             None => anyhow::bail!("No password configured"),
         };
 
-        // Fast path: if already unlocked, compare against cached password hash
+        // Fast path: if already unlocked, compare against cached password hash.
+        // On a mismatch we deliberately fall through to the slow path below so
+        // that wrong-password attempts always pay the Argon2id cost — returning
+        // early would let attackers brute-force at SHA-256 speed whenever the
+        // server is unlocked (i.e. almost always).
         if let Some(cached_hash) = &self.password_hash_cache {
             let incoming_hash = sha256_hash(password.as_bytes());
             if constant_time_eq(&incoming_hash, cached_hash) {
                 return Ok(true);
             }
-            // Wrong password on fast path
-            return Ok(false);
         }
 
         // Slow path: full Argon2id verification
@@ -216,7 +218,7 @@ impl CryptoState {
 
         // Generate new salt
         let mut salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
 
         // Derive new keys from new password
         let master_key = derive_master_key(new_password, &salt)?;
@@ -225,7 +227,7 @@ impl CryptoState {
 
         // Re-encrypt same DEK with new KEK
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&kek)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -268,7 +270,7 @@ impl CryptoState {
 /// Encrypt text content. Returns `ENC:1:<base64(nonce||ciphertext||tag)>`.
 pub fn encrypt_text(dek: &[u8; DEK_LEN], plaintext: &str) -> anyhow::Result<String> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -311,7 +313,7 @@ pub fn decrypt_text(dek: &[u8; DEK_LEN], stored: &str) -> anyhow::Result<String>
 /// Encrypt blob data. Returns `ENCB || nonce[12] || ciphertext || tag[16]`.
 pub fn encrypt_blob(dek: &[u8; DEK_LEN], data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
@@ -430,8 +432,16 @@ fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
 /// renaming it into place. This prevents corruption if the process crashes during
 /// the write.
 fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, data)?;
+    {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        file.write_all(data)?;
+        // Flush to disk before the rename; otherwise a power loss can leave
+        // the rename durable but the data truncated.
+        file.sync_all()?;
+    }
     std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
@@ -443,7 +453,7 @@ mod tests {
     #[test]
     fn test_text_encrypt_decrypt_roundtrip() {
         let mut dek = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek);
+        rand::rng().fill_bytes(&mut dek);
 
         let plaintext = "Hello, clipboard!";
         let encrypted = encrypt_text(&dek, plaintext).unwrap();
@@ -465,7 +475,7 @@ mod tests {
     #[test]
     fn test_blob_encrypt_decrypt_roundtrip() {
         let mut dek = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek);
+        rand::rng().fill_bytes(&mut dek);
 
         let data = b"binary blob data here";
         let encrypted = encrypt_blob(&dek, data).unwrap();
@@ -487,8 +497,8 @@ mod tests {
     fn test_wrong_key_fails_decrypt() {
         let mut dek1 = [0u8; DEK_LEN];
         let mut dek2 = [0u8; DEK_LEN];
-        rand::thread_rng().fill_bytes(&mut dek1);
-        rand::thread_rng().fill_bytes(&mut dek2);
+        rand::rng().fill_bytes(&mut dek1);
+        rand::rng().fill_bytes(&mut dek2);
 
         let encrypted = encrypt_text(&dek1, "secret").unwrap();
         let result = decrypt_text(&dek2, &encrypted);
@@ -520,6 +530,21 @@ mod tests {
         state.lock();
         assert!(!state.verify_and_unlock("wrong-password").unwrap());
         assert!(!state.is_unlocked());
+    }
+
+    #[test]
+    fn test_wrong_password_rejected_while_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = CryptoState::load(dir.path()).unwrap();
+
+        state.setup_password("test-password-123").unwrap();
+        assert!(state.is_unlocked());
+
+        // A wrong password must be rejected on the cached fast path too,
+        // and must not lock the server.
+        assert!(!state.verify_and_unlock("wrong-password").unwrap());
+        assert!(state.is_unlocked());
+        assert!(state.verify_and_unlock("test-password-123").unwrap());
     }
 
     #[test]

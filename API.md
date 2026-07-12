@@ -60,7 +60,9 @@ If no password is configured yet, protected endpoints return `403` until passwor
 ## Behavior notes
 
 - Entries are deduplicated by `content_hash`.
-- Sensitive text is masked in API responses.
+- Sensitive text is masked in API responses by default. Authenticated native
+  sync clients can request original payloads from `GET /api/entries` with
+  `include_sensitive=true`; callers must protect both transport and output.
 - Blob payloads are fetched separately with `/api/entries/{id}/blob`.
-- `GET /api/entries` supports pagination and filtering via query params (`limit`, `offset`, `content_type`, `starred_only`, `search`).
+- `GET /api/entries` supports pagination and filtering via query params (`limit`, `offset`, `content_type`, `starred_only`, `search`, `include_sensitive`).
 - For stable sync pagination on mutable datasets, it also supports cursor params `before_updated_at` + `before_id` (descending by `(updated_at, id)`).

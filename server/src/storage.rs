@@ -18,6 +18,15 @@ pub struct Storage {
 const ENTRY_SELECT_COLUMNS: &str =
     "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
 
+type StoredTextFields = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 const ENTRIES_FTS_SCHEMA_VERSION_KEY: &str = "entries_fts_schema_version";
 const ENTRIES_FTS_SCHEMA_VERSION: i64 = 2;
 const ENCRYPTED_TEXT_PREFIX_LIKE: &str = "ENC:1:%";
@@ -357,6 +366,7 @@ impl Storage {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_entry(
         &self,
         content_type: ContentType,
@@ -377,9 +387,9 @@ impl Storage {
                     ENTRY_SELECT_COLUMNS
                 ),
                 params![content_hash],
-                |row| row_to_entry(row),
+                row_to_entry,
             )
-            .ok();
+            .optional()?;
 
         if let Some(mut entry) = existing {
             // Update timestamp to bring to top
@@ -510,9 +520,9 @@ impl Storage {
             .query_row(
                 &format!("SELECT {} FROM entries WHERE id = ?1", ENTRY_SELECT_COLUMNS),
                 params![id],
-                |row| row_to_entry(row),
+                row_to_entry,
             )
-            .ok();
+            .optional()?;
 
         match (entry, dek) {
             (Some(mut e), Some(dek)) => {
@@ -523,6 +533,7 @@ impl Storage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn list_entries(
         &self,
         limit: u32,
@@ -610,7 +621,7 @@ impl Storage {
                 params_vec.iter().map(|p| p.as_ref()).collect();
 
             let all_entries = stmt
-                .query_map(param_refs.as_slice(), |row| row_to_entry(row))?
+                .query_map(param_refs.as_slice(), row_to_entry)?
                 .collect::<Result<Vec<_>, _>>()?;
 
             let dek = dek.unwrap(); // safe: memory_search implies dek.is_some()
@@ -673,7 +684,7 @@ impl Storage {
                 params_vec.iter().map(|p| p.as_ref()).collect();
 
             let mut entries = stmt
-                .query_map(param_refs.as_slice(), |row| row_to_entry(row))?
+                .query_map(param_refs.as_slice(), row_to_entry)?
                 .collect::<Result<Vec<_>, _>>()?;
 
             // Decrypt text_content if DEK is available
@@ -707,7 +718,7 @@ impl Storage {
                 params![id],
                 |row| row.get(0),
             )
-            .ok()
+            .optional()?
             .flatten();
 
         let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
@@ -758,14 +769,7 @@ impl Storage {
             "SELECT id, text_content, text_plain, text_html, text_rtf, search_text FROM entries",
         )?;
 
-        let rows: Vec<(
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = stmt
+        let rows: Vec<StoredTextFields> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get(0)?,

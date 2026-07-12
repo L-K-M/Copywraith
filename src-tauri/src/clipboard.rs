@@ -214,6 +214,7 @@ fn read_cached_source_app(_app: &tauri::AppHandle) -> Option<String> {
 }
 
 /// Store a clipboard entry in local storage and trigger server sync.
+#[allow(clippy::too_many_arguments)]
 fn store_entry(
     app: &tauri::AppHandle,
     storage: &Arc<LocalStorage>,

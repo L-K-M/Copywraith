@@ -53,6 +53,14 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
     })
 }
 
+/// Escape SQL LIKE wildcards so user input matches literally.
+fn escape_like_pattern(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 fn has_entries_column(conn: &Connection, column: &str) -> bool {
     conn.prepare(&format!("SELECT {} FROM entries LIMIT 0", column))
         .is_ok()
@@ -325,8 +333,11 @@ impl LocalStorage {
 
         if let Some(q) = search {
             if !q.is_empty() {
-                conditions.push(format!("search_text LIKE ?{}", param_values.len() + 1));
-                param_values.push(Box::new(format!("%{}%", q)));
+                conditions.push(format!(
+                    "search_text LIKE ?{} ESCAPE '\\'",
+                    param_values.len() + 1
+                ));
+                param_values.push(Box::new(format!("%{}%", escape_like_pattern(q))));
             }
         }
 
@@ -355,7 +366,7 @@ impl LocalStorage {
             param_values.iter().map(|p| p.as_ref()).collect();
 
         let entries = stmt
-            .query_map(param_refs.as_slice(), |row| row_to_entry(row))?
+            .query_map(param_refs.as_slice(), row_to_entry)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(entries)
@@ -367,7 +378,7 @@ impl LocalStorage {
             .query_row(
                 &format!("SELECT {} FROM entries WHERE id = ?1", ENTRY_SELECT_COLUMNS),
                 params![id],
-                |row| row_to_entry(row),
+                row_to_entry,
             )
             .optional()?;
         Ok(entry)
@@ -477,7 +488,7 @@ impl LocalStorage {
                     ENTRY_SELECT_COLUMNS
                 ),
                 [],
-                |row| row_to_entry(row),
+                row_to_entry,
             )
             .optional()?;
         Ok(entry)
@@ -491,7 +502,7 @@ impl LocalStorage {
         ))?;
 
         let entries = stmt
-            .query_map([], |row| row_to_entry(row))?
+            .query_map([], row_to_entry)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(entries)
@@ -625,30 +636,50 @@ impl LocalStorage {
         }
     }
 
-    pub fn get_sync_cursor(&self) -> Option<String> {
+    /// Returns the persisted pull watermark as `(updated_at, id)`.
+    ///
+    /// The watermark is the newest `(updated_at, id)` we have fully pulled from
+    /// the server. Storing both halves (rather than just an id) lets the pull
+    /// loop stop at a stable position even when an entry's `updated_at` changes
+    /// (e.g. it was re-copied or re-starred and moved back to the top).
+    pub fn get_sync_watermark(&self) -> Option<(String, String)> {
         let db = self.db.lock().unwrap();
-        db.query_row(
-            "SELECT value FROM settings WHERE key = 'sync_last_seen_server_id'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
-        .filter(|s| !s.is_empty())
+        let updated_at = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'sync_watermark_updated_at'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        let id = db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'sync_watermark_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        Some((updated_at, id))
     }
 
-    pub fn save_sync_cursor(&self, cursor: &str) -> anyhow::Result<()> {
+    pub fn save_sync_watermark(&self, updated_at: &str, id: &str) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
         db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_last_seen_server_id', ?1)",
-            params![cursor],
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_watermark_updated_at', ?1)",
+            params![updated_at],
+        )?;
+        db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_watermark_id', ?1)",
+            params![id],
         )?;
         Ok(())
     }
 
-    pub fn clear_sync_cursor(&self) -> anyhow::Result<()> {
+    pub fn clear_sync_watermark(&self) -> anyhow::Result<()> {
         let db = self.db.lock().unwrap();
         db.execute(
-            "DELETE FROM settings WHERE key = 'sync_last_seen_server_id'",
+            "DELETE FROM settings WHERE key IN ('sync_watermark_updated_at', 'sync_watermark_id', 'sync_last_seen_server_id')",
             [],
         )?;
         Ok(())

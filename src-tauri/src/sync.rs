@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Utc};
 use copywraith_core::api_types::{CreateEntryRequest, EntryResponse, ListEntriesResponse};
 use copywraith_core::content::{bytes_to_base64, hash_bytes};
 use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
@@ -114,7 +115,10 @@ pub fn checking_status_for_configured_endpoint(
 
 struct PullState {
     initialized: bool,
-    last_seen_server_id: Option<String>,
+    /// Newest `(updated_at, id)` we have fully pulled. Entries at or below this
+    /// key are considered already synced. Comparing the full key (rather than a
+    /// single id) keeps the cursor stable when an entry's `updated_at` changes.
+    watermark: Option<(DateTime<Utc>, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,8 +135,14 @@ pub struct SyncClient {
 
 impl SyncClient {
     pub fn new(storage: &LocalStorage) -> Self {
-        // Restore persisted sync cursor so we don't re-scan the entire server on restart
-        let persisted_cursor = storage.get_sync_cursor();
+        // Restore persisted watermark so we don't re-scan the entire server on
+        // restart. A missing/legacy/unparseable watermark falls back to a full
+        // (re)sync, which is safe because ingestion is idempotent.
+        let watermark = storage.get_sync_watermark().and_then(|(updated_at, id)| {
+            DateTime::parse_from_rfc3339(&updated_at)
+                .ok()
+                .map(|dt| (dt.with_timezone(&Utc), id))
+        });
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
@@ -141,8 +151,8 @@ impl SyncClient {
         Self {
             http,
             pull_state: Mutex::new(PullState {
-                initialized: persisted_cursor.is_some(),
-                last_seen_server_id: persisted_cursor,
+                initialized: watermark.is_some(),
+                watermark,
             }),
             last_responding_endpoint: Mutex::new(None),
         }
@@ -160,11 +170,11 @@ impl SyncClient {
         {
             let mut state = self.pull_state.lock().unwrap();
             state.initialized = false;
-            state.last_seen_server_id = None;
+            state.watermark = None;
         }
 
-        if let Err(e) = storage.clear_sync_cursor() {
-            log::warn!("Failed to clear sync cursor: {}", e);
+        if let Err(e) = storage.clear_sync_watermark() {
+            log::warn!("Failed to clear sync watermark: {}", e);
         }
     }
 
@@ -254,14 +264,16 @@ impl SyncClient {
 
         let api_key = settings.api_key;
 
-        let (initialized, last_seen_server_id) = {
+        let (initialized, watermark) = {
             let state = self.pull_state.lock().unwrap();
-            (state.initialized, state.last_seen_server_id.clone())
+            (state.initialized, state.watermark.clone())
         };
 
         let mut before_cursor: Option<(String, String)> = None;
         let mut pulled = 0usize;
-        let mut cursor_after_successful_pull: Option<String> = None;
+        // Newest (updated_at, id) observed this pass. Promoted to the watermark
+        // once the pass finishes without a blocking ingest error.
+        let mut newest_seen: Option<(DateTime<Utc>, String)> = None;
         let mut had_ingest_error = false;
         let mut active_endpoint: Option<ServerEndpoint> = None;
 
@@ -308,16 +320,26 @@ impl SyncClient {
                 break;
             }
 
-            if cursor_after_successful_pull.is_none() {
-                cursor_after_successful_pull = Some(page.entries[0].entry.id.clone());
+            // The first entry of the first page is the newest the server has.
+            if newest_seen.is_none() {
+                let first = &page.entries[0].entry;
+                newest_seen = Some((first.updated_at, first.id.clone()));
             }
 
-            let mut reached_cursor = false;
+            let mut reached_watermark = false;
 
             for remote in &page.entries {
-                if initialized && last_seen_server_id.as_deref() == Some(remote.entry.id.as_str()) {
-                    reached_cursor = true;
-                    break;
+                if initialized {
+                    if let Some((wm_updated_at, wm_id)) = watermark.as_ref() {
+                        let entry_key = (remote.entry.updated_at, remote.entry.id.as_str());
+                        if entry_key <= (*wm_updated_at, wm_id.as_str()) {
+                            // We've reached entries we already pulled. Because the
+                            // page is sorted by (updated_at DESC, id DESC), every
+                            // remaining entry is also at or below the watermark.
+                            reached_watermark = true;
+                            break;
+                        }
+                    }
                 }
 
                 match self
@@ -333,7 +355,7 @@ impl SyncClient {
                 }
             }
 
-            if reached_cursor || !page.has_more {
+            if reached_watermark || !page.has_more {
                 break;
             }
 
@@ -347,13 +369,31 @@ impl SyncClient {
             ));
         }
 
-        if let Some(cursor) = cursor_after_successful_pull.filter(|_| !had_ingest_error) {
-            let mut state = self.pull_state.lock().unwrap();
-            state.last_seen_server_id = Some(cursor.clone());
-            state.initialized = true;
-            // Persist cursor so it survives app restarts
-            if let Err(e) = storage.save_sync_cursor(&cursor) {
-                log::warn!("Failed to persist sync cursor: {}", e);
+        // Advance the watermark to the newest entry we saw, but only when the
+        // pass had no blocking ingest error (so a transient failure is retried
+        // next time) and only forward (never move the watermark backwards, e.g.
+        // if the previous newest entry was deleted on the server).
+        if let Some((updated_at, id)) = newest_seen.filter(|_| !had_ingest_error) {
+            let advanced = {
+                let mut state = self.pull_state.lock().unwrap();
+                let should_advance = match state.watermark.as_ref() {
+                    Some((wm_updated_at, wm_id)) => {
+                        (updated_at, id.as_str()) > (*wm_updated_at, wm_id.as_str())
+                    }
+                    None => true,
+                };
+                if should_advance {
+                    state.watermark = Some((updated_at, id.clone()));
+                }
+                state.initialized = true;
+                should_advance
+            };
+
+            // Persist outside the in-memory lock so it survives app restarts.
+            if advanced {
+                if let Err(e) = storage.save_sync_watermark(&updated_at.to_rfc3339(), &id) {
+                    log::warn!("Failed to persist sync watermark: {}", e);
+                }
             }
         }
 
@@ -459,6 +499,9 @@ impl SyncClient {
                 let mut query = url.query_pairs_mut();
                 query.append_pair("limit", &page_size.to_string());
                 query.append_pair("offset", "0");
+                // Native sync needs the original payload. The server masks
+                // sensitive entries by default for presentation clients.
+                query.append_pair("include_sensitive", "true");
                 if let Some((before_updated_at, before_id)) = before_cursor {
                     query.append_pair("before_updated_at", before_updated_at);
                     query.append_pair("before_id", before_id);
@@ -538,7 +581,9 @@ impl SyncClient {
         let content_hash = if let Some(hash) = remote.entry.blob_hash.as_deref() {
             remote_flavors.payload_hash(remote.entry.content_type, Some(hash))
         } else if remote.entry.content_type == ContentType::Image {
-            let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
+            let Some(data) = self.fetch_blob_data(server_urls, api_key, remote).await? else {
+                return Ok(false);
+            };
             if data.is_empty() {
                 return Ok(false);
             }
@@ -555,7 +600,9 @@ impl SyncClient {
         }
 
         if remote.entry.blob_hash.is_some() && blob_data.is_none() {
-            let data = self.fetch_blob_data(server_urls, api_key, remote).await?;
+            let Some(data) = self.fetch_blob_data(server_urls, api_key, remote).await? else {
+                return Ok(false);
+            };
             if data.is_empty() {
                 return Ok(false);
             }
@@ -614,13 +661,21 @@ impl SyncClient {
         Ok(true)
     }
 
+    /// Download a remote entry's blob.
+    ///
+    /// Returns `Ok(Some(bytes))` on success, `Ok(None)` when the blob is
+    /// definitively unavailable (a reachable server answered with a non-success
+    /// status, e.g. the blob was deleted) so the caller can skip the entry
+    /// without blocking the sync watermark, and `Err` only for transient
+    /// failures (no server reachable / read error) that are worth retrying.
     async fn fetch_blob_data(
         &self,
         server_urls: &[ServerEndpoint],
         api_key: &str,
         remote: &EntryResponse,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<Option<Vec<u8>>> {
         let mut last_error: Option<anyhow::Error> = None;
+        let mut saw_definitive_unavailable = false;
 
         for (index, endpoint) in server_urls.iter().enumerate() {
             let blob_url = remote
@@ -659,6 +714,9 @@ impl SyncClient {
             };
 
             if !response.status().is_success() {
+                // A reachable server answered but the blob is not available.
+                // Treat this as a definitive (non-retryable) miss.
+                saw_definitive_unavailable = true;
                 last_error = Some(anyhow::anyhow!(
                     "Server {} returned {} when downloading blob for {}",
                     endpoint.url,
@@ -678,7 +736,7 @@ impl SyncClient {
             }
 
             match response.bytes().await {
-                Ok(bytes) => return Ok(bytes.to_vec()),
+                Ok(bytes) => return Ok(Some(bytes.to_vec())),
                 Err(e) => {
                     let error_message = e.to_string();
                     last_error = Some(e.into());
@@ -692,6 +750,16 @@ impl SyncClient {
                     }
                 }
             }
+        }
+
+        // Every reachable server returned a non-success status: the blob is gone.
+        // Skip the entry instead of pinning the watermark forever.
+        if saw_definitive_unavailable {
+            log::warn!(
+                "Blob for {} is unavailable on all reachable servers; skipping entry",
+                remote.entry.id
+            );
+            return Ok(None);
         }
 
         Err(last_error
