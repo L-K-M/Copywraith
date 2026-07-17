@@ -24,7 +24,7 @@ tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 argon2 = "0.5"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 hkdf = "0.13"
 rand = { workspace = true }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
