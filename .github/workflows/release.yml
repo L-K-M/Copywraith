@@ -104,7 +104,7 @@ jobs:
           cache: npm
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: ${{ matrix.rust-targets }}
 
@@ -167,7 +167,7 @@ jobs:
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
