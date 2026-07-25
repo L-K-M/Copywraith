@@ -74,6 +74,21 @@ async fn main() -> anyhow::Result<()> {
 
     let storage = Storage::new(&data_dir)?;
 
+    // Tombstones only need to outlive the slowest client's sync interval.
+    // Purging at startup keeps the table from growing without bound; the window
+    // is deliberately generous, because a device offline since before a delete
+    // will resurrect the entry once its tombstone is gone.
+    const TOMBSTONE_RETAIN_DAYS: i64 = 90;
+    match storage.purge_expired_tombstones(TOMBSTONE_RETAIN_DAYS) {
+        Ok(0) => {}
+        Ok(purged) => tracing::info!(
+            "Purged {} tombstones older than {} days",
+            purged,
+            TOMBSTONE_RETAIN_DAYS
+        ),
+        Err(e) => tracing::warn!("Failed to purge expired tombstones: {}", e),
+    }
+
     let crypto_state = CryptoState::load(&data_dir)?;
     if crypto_state.is_initialized() {
         tracing::info!("Password protection enabled (auth.json found)");

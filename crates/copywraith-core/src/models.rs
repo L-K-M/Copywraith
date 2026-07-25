@@ -249,6 +249,18 @@ pub struct ClipboardEntry {
     pub sensitive: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set when this entry is a tombstone: the payload is gone and every device
+    /// should remove its local copy. Absent on live entries, so the wire format
+    /// stays compatible with clients that predate tombstones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+impl ClipboardEntry {
+    /// True when this row records a deletion rather than content.
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
+    }
 }
 
 impl ClipboardEntry {
@@ -281,6 +293,7 @@ impl ClipboardEntry {
             sensitive,
             created_at: now,
             updated_at: now,
+            deleted_at: None,
         }
     }
 
@@ -303,6 +316,7 @@ impl ClipboardEntry {
             sensitive,
             created_at: now,
             updated_at: now,
+            deleted_at: None,
         }
     }
 
@@ -320,6 +334,7 @@ impl ClipboardEntry {
             sensitive: false,
             created_at: now,
             updated_at: now,
+            deleted_at: None,
         }
     }
 

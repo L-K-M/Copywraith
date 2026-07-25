@@ -53,6 +53,11 @@ pub struct ListEntriesParams {
     /// This is intended for authenticated native synchronization clients.
     #[serde(default)]
     pub include_sensitive: bool,
+    /// Include tombstones (entries deleted on another device) in the results.
+    /// Sync clients need these to apply the deletion locally; presentation
+    /// clients do not, so this defaults off.
+    #[serde(default)]
+    pub include_deleted: bool,
 }
 
 fn default_limit() -> u32 {

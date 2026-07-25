@@ -16,7 +16,7 @@ pub struct Storage {
 }
 
 const ENTRY_SELECT_COLUMNS: &str =
-    "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
+    "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at, deleted_at";
 
 type StoredTextFields = (
     String,
@@ -310,7 +310,8 @@ impl Storage {
                 starred INTEGER DEFAULT 0,
                 sensitive INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS metadata (
@@ -323,6 +324,7 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_entries_starred ON entries(starred) WHERE starred = 1;
             CREATE INDEX IF NOT EXISTS idx_entries_content_type ON entries(content_type);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_content_hash ON entries(content_hash);
+            CREATE INDEX IF NOT EXISTS idx_entries_deleted_at ON entries(deleted_at) WHERE deleted_at IS NOT NULL;
 
             CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                 search_text,
@@ -362,6 +364,7 @@ impl Storage {
         ensure_entries_column(&conn, "text_html", "TEXT")?;
         ensure_entries_column(&conn, "text_rtf", "TEXT")?;
         ensure_entries_column(&conn, "search_text", "TEXT")?;
+        ensure_entries_column(&conn, "deleted_at", "TEXT")?;
 
         backfill_flavor_columns(&conn)?;
         ensure_entries_fts_schema(&conn)?;
@@ -398,20 +401,31 @@ impl Storage {
             .optional()?;
 
         if let Some(mut entry) = existing {
-            // Update timestamp to bring to top
             let now = Utc::now();
             let next_starred = starred.unwrap_or(entry.starred);
-            entry.starred = next_starred;
-            entry.updated_at = now;
-            db.execute(
-                "UPDATE entries SET updated_at = ?1, starred = ?2 WHERE id = ?3",
-                params![now.to_rfc3339(), next_starred as i32, entry.id],
-            )?;
-            // Decrypt text flavors for the response
-            if let Some(dek) = dek {
-                decrypt_entry_text_fields(&mut entry, dek)?;
+
+            if entry.is_deleted() {
+                // The content was deleted, then copied again. Drop the
+                // tombstone (which also frees its content_hash) and fall
+                // through so the insert below creates a genuinely new entry:
+                // it has a new created_at, and other devices have already
+                // applied the deletion, so reusing the old id would mean asking
+                // them to un-delete something.
+                db.execute("DELETE FROM entries WHERE id = ?1", params![entry.id])?;
+            } else {
+                // Update timestamp to bring to top
+                entry.starred = next_starred;
+                entry.updated_at = now;
+                db.execute(
+                    "UPDATE entries SET updated_at = ?1, starred = ?2 WHERE id = ?3",
+                    params![now.to_rfc3339(), next_starred as i32, entry.id],
+                )?;
+                // Decrypt text flavors for the response
+                if let Some(dek) = dek {
+                    decrypt_entry_text_fields(&mut entry, dek)?;
+                }
+                return Ok((entry, false));
             }
-            return Ok((entry, false));
         }
 
         let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
@@ -511,6 +525,7 @@ impl Storage {
             sensitive,
             created_at: now,
             updated_at: now,
+            deleted_at: None,
         };
 
         Ok((entry, true))
@@ -524,7 +539,10 @@ impl Storage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                &format!("SELECT {} FROM entries WHERE id = ?1", ENTRY_SELECT_COLUMNS),
+                &format!(
+                    "SELECT {} FROM entries WHERE id = ?1 AND deleted_at IS NULL",
+                    ENTRY_SELECT_COLUMNS
+                ),
                 params![id],
                 row_to_entry,
             )
@@ -549,6 +567,7 @@ impl Storage {
         content_type: Option<ContentType>,
         starred_only: bool,
         search: Option<&str>,
+        include_deleted: bool,
         dek: Option<&[u8; 32]>,
     ) -> anyhow::Result<(Vec<ClipboardEntry>, u64)> {
         let db = self.db.lock().unwrap();
@@ -567,6 +586,12 @@ impl Storage {
 
         let mut conditions = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        // Tombstones are metadata for sync clients, not content. Presentation
+        // clients must never see them.
+        if !include_deleted {
+            conditions.push("e.deleted_at IS NULL".to_string());
+        }
 
         if let Some(ct) = content_type {
             conditions.push(format!("e.content_type = ?{}", params_vec.len() + 1));
@@ -714,35 +739,81 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// Delete an entry, leaving a tombstone so other devices learn about it.
+    ///
+    /// A hard delete is invisible to clients: they only ever ask for entries
+    /// *newer* than their watermark, so a removed row simply stops appearing and
+    /// every other device keeps its copy forever. Worse, `Reset Sync Cursor`
+    /// then re-pulls the full history and resurrects everything the user had
+    /// deleted elsewhere.
+    ///
+    /// The row is therefore retained as metadata only — payload columns are
+    /// cleared, the blob is removed, and `deleted_at` is stamped. `updated_at`
+    /// is bumped so the tombstone sorts into the sync window like any other
+    /// change and reaches clients through the existing keyset pagination.
     pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {
         let db = self.db.lock().unwrap();
 
-        // Get blob_hash before deleting to clean up blob file
         let blob_hash: Option<String> = db
             .query_row(
-                "SELECT blob_hash FROM entries WHERE id = ?1",
+                "SELECT blob_hash FROM entries WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
                 |row| row.get(0),
             )
             .optional()?
             .flatten();
 
-        let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+        let now = Utc::now().to_rfc3339();
+        let rows = db.execute(
+            "UPDATE entries
+             SET deleted_at = ?1,
+                 updated_at = ?1,
+                 text_content = NULL,
+                 text_plain = NULL,
+                 text_html = NULL,
+                 text_rtf = NULL,
+                 search_text = NULL,
+                 blob_hash = NULL,
+                 blob_size = NULL,
+                 source_app = NULL,
+                 starred = 0,
+                 sensitive = 0
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![now, id],
+        )?;
 
-        // Clean up blob file if no other entries reference it
-        if let Some(hash) = blob_hash {
-            let count: i64 = db.query_row(
-                "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
-                params![hash],
-                |row| row.get(0),
-            )?;
-            if count == 0 {
-                let blob_path = self.blob_dir.join(&hash);
-                let _ = std::fs::remove_file(blob_path);
+        // Remove the blob once no live entry references it.
+        if rows > 0 {
+            if let Some(hash) = blob_hash {
+                let count: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
+                    params![hash],
+                    |row| row.get(0),
+                )?;
+                if count == 0 {
+                    let blob_path = self.blob_dir.join(&hash);
+                    let _ = std::fs::remove_file(blob_path);
+                }
             }
         }
 
         Ok(rows > 0)
+    }
+
+    /// Permanently remove tombstones older than `retain_days`.
+    ///
+    /// Tombstones only need to outlive the slowest client's sync interval. Once
+    /// purged, a device that has been offline since before the delete will
+    /// resurrect the entry — which is why the window is generous rather than
+    /// tight.
+    pub fn purge_expired_tombstones(&self, retain_days: i64) -> anyhow::Result<usize> {
+        let db = self.db.lock().unwrap();
+        let cutoff = (Utc::now() - chrono::Duration::days(retain_days)).to_rfc3339();
+        let removed = db.execute(
+            "DELETE FROM entries WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+            params![cutoff],
+        )?;
+        Ok(removed)
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -759,7 +830,11 @@ impl Storage {
 
     pub fn count_entries(&self) -> anyhow::Result<u64> {
         let db = self.db.lock().unwrap();
-        let count: i64 = db.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))?;
+        let count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
         Ok(count as u64)
     }
 
@@ -908,5 +983,139 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
             .get::<_, String>(12)?
             .parse()
             .unwrap_or_else(|_| Utc::now()),
+        deleted_at: row
+            .get::<_, Option<String>>(13)?
+            .and_then(|raw| raw.parse().ok()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_storage() -> (tempfile::TempDir, Storage) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path()).unwrap();
+        (dir, storage)
+    }
+
+    fn create_text(storage: &Storage, text: &str) -> ClipboardEntry {
+        let flavors = ClipboardFlavors {
+            text_plain: Some(text.to_string()),
+            ..ClipboardFlavors::default()
+        };
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let (entry, _) = storage
+            .create_entry(ContentType::Text, &flavors, None, None, None, &hash, None)
+            .unwrap();
+        entry
+    }
+
+    fn list(storage: &Storage, include_deleted: bool) -> Vec<ClipboardEntry> {
+        storage
+            .list_entries(50, 0, None, None, None, false, None, include_deleted, None)
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn delete_leaves_a_tombstone_that_sync_clients_can_see() {
+        let (_dir, storage) = temp_storage();
+        let entry = create_text(&storage, "delete me");
+
+        assert!(storage.delete_entry(&entry.id).unwrap());
+
+        // Presentation clients must not see it at all.
+        assert!(list(&storage, false).is_empty());
+        assert!(storage.get_entry(&entry.id, None).unwrap().is_none());
+        assert_eq!(storage.count_entries().unwrap(), 0);
+
+        // Sync clients must, or the deletion never reaches other devices.
+        let tombstones = list(&storage, true);
+        assert_eq!(tombstones.len(), 1);
+        assert_eq!(tombstones[0].id, entry.id);
+        assert!(tombstones[0].is_deleted());
+    }
+
+    #[test]
+    fn a_tombstone_keeps_no_payload() {
+        let (_dir, storage) = temp_storage();
+        let entry = create_text(&storage, "sensitive-ish content");
+        storage.delete_entry(&entry.id).unwrap();
+
+        let tombstone = list(&storage, true).remove(0);
+        assert!(tombstone.text_content.is_none());
+        assert!(tombstone.flavors.text_plain.is_none());
+        assert!(tombstone.blob_hash.is_none());
+    }
+
+    #[test]
+    fn a_tombstone_sorts_into_the_sync_window() {
+        let (_dir, storage) = temp_storage();
+        let first = create_text(&storage, "first");
+        let _second = create_text(&storage, "second");
+
+        storage.delete_entry(&first.id).unwrap();
+
+        // Deleting bumps updated_at, so the tombstone is newest and reaches
+        // clients through the existing keyset pagination rather than being
+        // stranded behind their watermark.
+        let all = list(&storage, true);
+        assert_eq!(all[0].id, first.id);
+        assert!(all[0].is_deleted());
+    }
+
+    #[test]
+    fn deleting_twice_is_not_an_error_but_reports_no_change() {
+        let (_dir, storage) = temp_storage();
+        let entry = create_text(&storage, "delete me twice");
+
+        assert!(storage.delete_entry(&entry.id).unwrap());
+        assert!(!storage.delete_entry(&entry.id).unwrap());
+    }
+
+    #[test]
+    fn re_copying_deleted_content_creates_a_new_live_entry() {
+        let (_dir, storage) = temp_storage();
+        let original = create_text(&storage, "copied again later");
+        storage.delete_entry(&original.id).unwrap();
+
+        let revived = create_text(&storage, "copied again later");
+
+        // A new id: other devices already applied the deletion, so reusing the
+        // old id would mean asking them to un-delete it.
+        assert_ne!(revived.id, original.id);
+        assert!(!revived.is_deleted());
+        let live = list(&storage, false);
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, revived.id);
+    }
+
+    #[test]
+    fn purge_removes_only_expired_tombstones() {
+        let (_dir, storage) = temp_storage();
+        let recent = create_text(&storage, "recently deleted");
+        let stale = create_text(&storage, "long deleted");
+        let live = create_text(&storage, "still here");
+        storage.delete_entry(&recent.id).unwrap();
+        storage.delete_entry(&stale.id).unwrap();
+
+        // Backdate one tombstone past the retention window.
+        {
+            let db = storage.db.lock().unwrap();
+            let old = (Utc::now() - chrono::Duration::days(120)).to_rfc3339();
+            db.execute(
+                "UPDATE entries SET deleted_at = ?1 WHERE id = ?2",
+                params![old, stale.id],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(storage.purge_expired_tombstones(90).unwrap(), 1);
+
+        let remaining: Vec<String> = list(&storage, true).into_iter().map(|e| e.id).collect();
+        assert!(remaining.contains(&recent.id));
+        assert!(remaining.contains(&live.id));
+        assert!(!remaining.contains(&stale.id));
+    }
 }

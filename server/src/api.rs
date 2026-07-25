@@ -430,6 +430,7 @@ async fn list_entries(
         params.content_type,
         params.starred_only,
         params.search.as_deref(),
+        params.include_deleted,
         dek.as_ref(),
     )?;
 

@@ -218,6 +218,83 @@ impl SyncClient {
         }
     }
 
+    /// Push locally deleted entries so the deletion reaches other devices.
+    pub async fn push_pending_deletions(&self, storage: &LocalStorage) {
+        let ids = match storage.get_pending_deletions() {
+            Ok(ids) => ids,
+            Err(e) => {
+                log::error!("Failed to read pending deletions: {}", e);
+                return;
+            }
+        };
+
+        if ids.is_empty() {
+            return;
+        }
+
+        let settings = storage.get_settings();
+        let server_urls = configured_server_urls(&settings);
+        if server_urls.is_empty() {
+            return;
+        }
+
+        for id in ids {
+            if self
+                .delete_entry_with_fallback(&server_urls, &settings.api_key, &id)
+                .await
+            {
+                if let Err(e) = storage.mark_synced(&id) {
+                    log::error!("Failed to mark deletion {} as synced: {}", id, e);
+                }
+            }
+        }
+    }
+
+    /// Issue `DELETE /api/entries/{id}`, trying each configured endpoint.
+    ///
+    /// A 404 counts as success: the entry is already gone from the server, so
+    /// retrying forever would only keep the tombstone unsynced.
+    async fn delete_entry_with_fallback(
+        &self,
+        server_urls: &[ServerEndpoint],
+        api_key: &str,
+        entry_id: &str,
+    ) -> bool {
+        for endpoint in server_urls {
+            let url = format!("{}/api/entries/{}", endpoint.url, entry_id);
+            let mut request = self.http.delete(&url);
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    self.note_responding_endpoint(endpoint);
+                    let status = response.status();
+                    if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+                        return true;
+                    }
+                    log::warn!(
+                        "Server {} returned {} when deleting entry {}",
+                        endpoint.url,
+                        status,
+                        entry_id
+                    );
+                }
+                Err(e) => {
+                    log::debug!(
+                        "Failed deleting entry {} via {} (will retry): {}",
+                        entry_id,
+                        endpoint.url,
+                        e
+                    );
+                }
+            }
+        }
+
+        false
+    }
+
     pub async fn sync_entry(&self, entry: &ClipboardEntry, storage: &LocalStorage) {
         let settings = storage.get_settings();
         let server_urls = configured_server_urls(&settings);
@@ -527,6 +604,9 @@ impl SyncClient {
                 // Native sync needs the original payload. The server masks
                 // sensitive entries by default for presentation clients.
                 query.append_pair("include_sensitive", "true");
+                // Tombstones tell us what other devices deleted; without them a
+                // delete never propagates and a cursor reset resurrects it.
+                query.append_pair("include_deleted", "true");
                 if let Some((before_updated_at, before_id)) = before_cursor {
                     query.append_pair("before_updated_at", before_updated_at);
                     query.append_pair("before_id", before_id);
@@ -600,6 +680,11 @@ impl SyncClient {
         remote: &EntryResponse,
         storage: &LocalStorage,
     ) -> anyhow::Result<bool> {
+        // A tombstone carries no payload — apply the deletion and stop.
+        if let Some(deleted_at) = remote.entry.deleted_at {
+            return storage.apply_remote_deletion(&remote.entry.id, &deleted_at.to_rfc3339());
+        }
+
         let mut blob_data: Option<Vec<u8>> = None;
         let remote_flavors = resolved_remote_flavors(&remote.entry);
 

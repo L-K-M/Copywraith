@@ -68,6 +68,9 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
             .get::<_, String>(12)?
             .parse()
             .unwrap_or_else(|_| Utc::now()),
+        // The live-entry reads all filter tombstones out, so anything reaching
+        // this projection is by definition not deleted.
+        deleted_at: None,
     })
 }
 
@@ -189,7 +192,8 @@ impl LocalStorage {
                 sensitive INTEGER DEFAULT 0,
                 synced INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries(updated_at DESC);
@@ -216,6 +220,7 @@ impl LocalStorage {
         ensure_entries_column(&conn, "text_html", "TEXT")?;
         ensure_entries_column(&conn, "text_rtf", "TEXT")?;
         ensure_entries_column(&conn, "search_text", "TEXT")?;
+        ensure_entries_column(&conn, "deleted_at", "TEXT")?;
 
         backfill_flavor_columns(&conn)?;
 
@@ -303,6 +308,7 @@ impl LocalStorage {
             sensitive,
             created_at: now,
             updated_at: now,
+            deleted_at: None,
         }))
     }
 
@@ -440,7 +446,8 @@ impl LocalStorage {
     ) -> anyhow::Result<Vec<ClipboardEntry>> {
         let db = self.db.lock().unwrap();
 
-        let mut conditions = Vec::new();
+        // Tombstones are sync bookkeeping, never shown to the user.
+        let mut conditions = vec!["deleted_at IS NULL".to_string()];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if starred_only {
@@ -457,11 +464,7 @@ impl LocalStorage {
             }
         }
 
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
         let sql = format!(
             "SELECT {}
@@ -492,7 +495,10 @@ impl LocalStorage {
         let db = self.db.lock().unwrap();
         let entry = db
             .query_row(
-                &format!("SELECT {} FROM entries WHERE id = ?1", ENTRY_SELECT_COLUMNS),
+                &format!(
+                    "SELECT {} FROM entries WHERE id = ?1 AND deleted_at IS NULL",
+                    ENTRY_SELECT_COLUMNS
+                ),
                 params![id],
                 row_to_entry,
             )
@@ -550,37 +556,144 @@ impl LocalStorage {
         Ok(updated > 0)
     }
 
+    /// Delete an entry locally, leaving a tombstone for the server push.
+    ///
+    /// A local-only hard delete never reached the server: the row stayed there,
+    /// and `Reset Sync Cursor` — offered to users as "Mobile Sync Repair" —
+    /// re-pulled the full history and resurrected everything they had deleted.
+    ///
+    /// The row is kept as metadata with `synced = 0`, so the ordinary push loop
+    /// picks it up and issues the server-side DELETE.
     pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
 
-        // Read blob_hash before deleting so we can clean up the file
-        let blob_hash: Option<String> = db
+        let blob_hash: Option<String> = tx
             .query_row(
-                "SELECT blob_hash FROM entries WHERE id = ?1",
+                "SELECT blob_hash FROM entries WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
                 |row| row.get(0),
             )
             .optional()?
             .flatten();
 
-        let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+        let now = Utc::now().to_rfc3339();
+        let rows = tx.execute(
+            "UPDATE entries
+             SET deleted_at = ?1,
+                 updated_at = ?1,
+                 synced = 0,
+                 text_content = NULL,
+                 text_plain = NULL,
+                 text_html = NULL,
+                 text_rtf = NULL,
+                 search_text = NULL,
+                 blob_hash = NULL,
+                 blob_size = NULL,
+                 starred = 0
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![now, id],
+        )?;
 
-        // Remove blob file if no other entry references the same hash
-        if rows > 0 {
-            if let Some(ref hash) = blob_hash {
-                let count: i64 = db.query_row(
-                    "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
-                    params![hash],
-                    |row| row.get(0),
-                )?;
-                if count == 0 {
-                    let blob_path = self.blob_dir.join(hash);
-                    let _ = std::fs::remove_file(blob_path);
+        let orphaned = if rows > 0 {
+            match blob_hash {
+                Some(hash) => {
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
+                        params![hash],
+                        |row| row.get(0),
+                    )?;
+                    (count == 0).then_some(hash)
                 }
+                None => None,
             }
+        } else {
+            None
+        };
+
+        tx.commit()?;
+
+        // Remove the blob only after the row change is durable, so a crash can
+        // never leave a live row pointing at a missing file.
+        if let Some(hash) = orphaned {
+            let _ = std::fs::remove_file(self.blob_dir.join(hash));
         }
 
         Ok(rows > 0)
+    }
+
+    /// Apply a deletion that happened on another device.
+    ///
+    /// Marked `synced = 1`: the server already knows, so this must not be
+    /// pushed back.
+    pub fn apply_remote_deletion(&self, id: &str, deleted_at: &str) -> anyhow::Result<bool> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+
+        let blob_hash: Option<String> = tx
+            .query_row(
+                "SELECT blob_hash FROM entries WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        let rows = tx.execute(
+            "UPDATE entries
+             SET deleted_at = ?1,
+                 updated_at = ?1,
+                 synced = 1,
+                 text_content = NULL,
+                 text_plain = NULL,
+                 text_html = NULL,
+                 text_rtf = NULL,
+                 search_text = NULL,
+                 blob_hash = NULL,
+                 blob_size = NULL,
+                 starred = 0
+             WHERE id = ?2 AND deleted_at IS NULL",
+            params![deleted_at, id],
+        )?;
+
+        let orphaned = if rows > 0 {
+            match blob_hash {
+                Some(hash) => {
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
+                        params![hash],
+                        |row| row.get(0),
+                    )?;
+                    (count == 0).then_some(hash)
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        tx.commit()?;
+
+        if let Some(hash) = orphaned {
+            let _ = std::fs::remove_file(self.blob_dir.join(hash));
+        }
+
+        Ok(rows > 0)
+    }
+
+    /// Ids of locally deleted entries still waiting to be pushed to the server.
+    pub fn get_pending_deletions(&self) -> anyhow::Result<Vec<String>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id FROM entries
+             WHERE deleted_at IS NOT NULL AND synced = 0
+             ORDER BY deleted_at ASC
+             LIMIT 100",
+        )?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -600,7 +713,7 @@ impl LocalStorage {
         let entry = db
             .query_row(
                 &format!(
-                    "SELECT {} FROM entries ORDER BY updated_at DESC LIMIT 1",
+                    "SELECT {} FROM entries WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
                     ENTRY_SELECT_COLUMNS
                 ),
                 [],
@@ -613,7 +726,7 @@ impl LocalStorage {
     pub fn get_unsynced_entries(&self) -> anyhow::Result<Vec<ClipboardEntry>> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(&format!(
-            "SELECT {} FROM entries WHERE synced = 0 ORDER BY created_at ASC LIMIT 50",
+            "SELECT {} FROM entries WHERE synced = 0 AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 50",
             ENTRY_SELECT_COLUMNS
         ))?;
 
@@ -1085,6 +1198,120 @@ mod tests {
             )
             .unwrap());
         assert_eq!(storage.get_entries(10, 0, false, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_leaves_a_tombstone_queued_for_the_server() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("delete me");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        storage.mark_synced(&entry.id).unwrap();
+
+        assert!(storage.delete_entry(&entry.id).unwrap());
+
+        // Gone from every user-facing read...
+        assert!(storage.get_entries(10, 0, false, None).unwrap().is_empty());
+        assert!(storage.get_entry(&entry.id).unwrap().is_none());
+        assert!(storage.get_most_recent_entry().unwrap().is_none());
+
+        // ...but retained as a deletion still owed to the server. Without this
+        // the delete never propagated and a cursor reset resurrected it.
+        assert_eq!(storage.get_pending_deletions().unwrap(), vec![entry.id]);
+
+        // A tombstone is not content, so the create-push must not pick it up.
+        assert!(storage.get_unsynced_entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_pushed_deletion_stops_being_pending() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("delete me");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+
+        storage.delete_entry(&entry.id).unwrap();
+        storage.mark_synced(&entry.id).unwrap();
+
+        assert!(storage.get_pending_deletions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tombstone_blocks_the_entry_being_pulled_back() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("deleted here, still on the server");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        storage.delete_entry(&entry.id).unwrap();
+
+        // The server has not been told yet, so a pull still offers the entry.
+        // Re-ingesting it would undo the user's delete in front of them.
+        assert!(!storage
+            .insert_remote_entry(
+                RemoteEntryIdentity {
+                    id: &entry.id,
+                    created_at: ts("2026-07-01T10:00:00Z"),
+                    updated_at: ts("2026-07-01T10:00:00Z"),
+                },
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                false,
+            )
+            .unwrap());
+        assert!(storage.get_entries(10, 0, false, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_remote_deletion_removes_the_local_copy_without_queueing_a_push() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("deleted on another device");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        storage.mark_synced(&entry.id).unwrap();
+
+        assert!(storage
+            .apply_remote_deletion(&entry.id, "2026-07-04T08:00:00Z")
+            .unwrap());
+
+        assert!(storage.get_entries(10, 0, false, None).unwrap().is_empty());
+        // The server already knows; echoing it back would be pointless work.
+        assert!(storage.get_pending_deletions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_removes_an_unreferenced_blob() {
+        let (dir, storage) = temp_storage();
+        let bytes = b"\x89PNG\r\n\x1a\n blob to drop";
+        let hash = copywraith_core::content::hash_bytes(bytes);
+        let entry = storage
+            .insert_entry(
+                ContentType::Image,
+                &ClipboardFlavors::default(),
+                Some(bytes),
+                &hash,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert!(dir.path().join("blobs").join(&hash).exists());
+        storage.delete_entry(&entry.id).unwrap();
+        assert!(!dir.path().join("blobs").join(&hash).exists());
     }
 
     #[test]

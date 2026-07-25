@@ -104,7 +104,19 @@ pub async fn toggle_star(state: State<'_, AppState>, id: String) -> Result<bool,
 
 #[tauri::command]
 pub async fn delete_entry(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    state.storage.delete_entry(&id).map_err(|e| e.to_string())
+    let deleted = state.storage.delete_entry(&id).map_err(|e| e.to_string())?;
+
+    if deleted {
+        // The row is now a local tombstone with synced = 0. Push it promptly so
+        // other devices drop their copy without waiting for the next loop tick.
+        let sync = state.sync_client.clone();
+        let storage = state.storage.clone();
+        tauri::async_runtime::spawn(async move {
+            sync.push_pending_deletions(&storage).await;
+        });
+    }
+
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -664,10 +676,10 @@ pub async fn sync_now(
         ),
     );
 
-    if tokio::time::timeout(
-        std::time::Duration::from_secs(35),
-        sync_client.sync_unsynced_entries(&storage),
-    )
+    if tokio::time::timeout(std::time::Duration::from_secs(35), async {
+        sync_client.sync_unsynced_entries(&storage).await;
+        sync_client.push_pending_deletions(&storage).await;
+    })
     .await
     .is_err()
     {

@@ -807,8 +807,10 @@ fn start_sync_loop(
         loop {
             tokio::time::sleep(Duration::from_secs(current_interval)).await;
 
-            // Push local unsynced entries first
+            // Push local unsynced entries first, then local deletions, so the
+            // server has both before we pull its view back.
             sync_client.sync_unsynced_entries(&storage).await;
+            sync_client.push_pending_deletions(&storage).await;
 
             // Then pull entries created on other devices
             match sync_client.pull_new_entries(&storage).await {
