@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "copywraith-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -796,6 +796,7 @@ dependencies = [
  "tauri-plugin-clipboard",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-global-shortcut",
+ "tempfile",
  "tokio",
  "ulid",
 ]

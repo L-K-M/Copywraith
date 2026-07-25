@@ -288,6 +288,12 @@ impl Storage {
             "
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
+            -- WAL + NORMAL survives process crashes; only a full OS/power loss
+            -- can drop the most recent commit. The default (FULL) fsyncs on
+            -- every insert, which serialises bulk client pushes behind disk.
+            PRAGMA synchronous=NORMAL;
+            -- Wait rather than fail when concurrent requests contend.
+            PRAGMA busy_timeout=5000;
 
             CREATE TABLE IF NOT EXISTS entries (
                 id TEXT PRIMARY KEY,
