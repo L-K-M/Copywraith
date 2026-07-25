@@ -313,7 +313,11 @@ impl LocalStorage {
     /// pull that disk time dominates everything else, so the three writes are
     /// committed together here instead.
     ///
-    /// Returns `Ok(true)` when a new row was created.
+    /// Returns `Ok(true)` when a new row was created, or `Ok(false)` when the
+    /// entry was already present — matched either by content hash or by the
+    /// server id. Re-pulling a known id with different content keeps the
+    /// existing row: entries are immutable apart from `starred`, which the
+    /// caller reconciles separately.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_remote_entry(
         &self,
@@ -342,7 +346,7 @@ impl LocalStorage {
 
         let existing_id: Option<String> = tx
             .query_row(
-                "SELECT id FROM entries WHERE content_hash = ?1 OR id = ?2",
+                "SELECT id FROM entries WHERE content_hash = ?1 OR id = ?2 LIMIT 1",
                 params![content_hash, remote.id],
                 |row| row.get(0),
             )
