@@ -425,9 +425,10 @@ MAC-13, ANDROID-13/14.
 
 ## Priority 2: engineering and release hardening
 
-- **Add `svelte-check` to `server/ui`** and wire it into CI. The popup frontend
-  is type-checked; the admin UI is only built. This gates the admin refactors
-  above.
+- **Add `svelte-check` to `server/ui`** and wire it into CI. The admin UI now has
+  unit tests (vitest, run in CI) but still no type checking — `svelte-check`
+  needs a `tsconfig.json` that does not exist there yet. This gates the admin
+  refactors above, including deduplicating the blob-loading logic.
 - Triage current npm advisories by reachability; record temporary exceptions.
 - Move CI/Docker to a supported Node/npm combination; verify the claimed
   package release-age policy.
@@ -567,6 +568,12 @@ Full rationale in `sol.md` sections H and I and `awesome.md` sections 5 and 6.
   was made and then disproved by measurement — the pattern stays near-linear
   because its greedy `[^}]*` stops at the first `}`. That same property was the
   real bug: it truncated header stripping and corrupted previews.
+- **New (2026-07-25):** do not use `TextDecoder('windows-1252')` for CP1252.
+  It depends on the host's ICU data; a Node build without full ICU decodes
+  `0x80`-`0x9F` as Latin-1 and produces invisible C1 control characters. This
+  passes locally and fails on CI. Use the explicit table in
+  `server/ui/src/lib/text.ts`, which mirrors `cp1252_byte_to_char` in
+  `crates/copywraith-core/src/content.rs`.
 
 ---
 
@@ -608,7 +615,7 @@ Work completed and merged out of the backlog. Listed so it is not reimplemented.
 | [#88](https://github.com/L-K-M/Copywraith/pull/88) | `synchronous=NORMAL` + `busy_timeout` on both databases; single-transaction remote ingest (3 fsyncs → 1 per entry); endpoint config resolved once per push batch instead of 7 queries per entry. Server → 0.2.1. | fmt, clippy, 64 tests (+5 new storage tests) |
 | [#89](https://github.com/L-K-M/Copywraith/pull/89) | List projection computed the plain text twice per row (2× flavor clone + 2× full HTML/RTF parse); `full_text` shipped every entry's complete text over IPC. Now computed once and bounded, with on-demand `get_entry_text`. | fmt, clippy, 66 tests (+7), check, build |
 | [#90](https://github.com/L-K-M/Copywraith/pull/90) | Viewport-gated cancellable image loading; double-click no longer pastes twice; live-updating relative times via a shared clock; correct data-URL MIME; popup type scale; focus/hover/selection distinguished; keyboard-reachable row actions; `viewport-fit=cover`. | check, build |
-| [#91](https://github.com/L-K-M/Copywraith/pull/91) | Admin RTF stripper rewritten as a linear brace-tracking pass (font names no longer leak into previews, paragraphs no longer run together, `\uN` decoded); images no longer re-downloaded on every list refresh; admin type scale. | server UI build, 10 stripper cases |
+| [#91](https://github.com/L-K-M/Copywraith/pull/91) | Admin RTF stripper rewritten as a linear brace-tracking pass: font names no longer leak into previews, paragraphs no longer run together, CP1252 hex escapes and `\uN`/`\ucN` decoded correctly (group-scoped), `\~` no longer shows as a tilde. Text helpers extracted to `lib/text.ts`; images no longer re-downloaded on every list refresh; admin type scale. | server UI build, 23 vitest cases |
 | [#92](https://github.com/L-K-M/Copywraith/pull/92) | Sync Details is read-only again (opening it no longer triggers a full sync); explicit Sync Now with in-flight guard and outcome reporting. | check, build |
 
 ### Earlier (merged before 2026-07-25)
