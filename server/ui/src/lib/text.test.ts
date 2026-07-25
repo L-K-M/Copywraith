@@ -59,6 +59,32 @@ describe('rtfToPlainText', () => {
 			expect(rtfToPlainText(rtf`{\rtf1\ansi caf\'e9 na\'efve}`)).toBe('café naïve');
 		});
 
+		// Pins the whole divergent range. This started as a TextDecoder call,
+		// which depends on the host's ICU data — a Node build without full ICU
+		// decodes these as Latin-1 and yields invisible C1 control characters.
+		// That passed locally and failed on CI, so the mapping is now explicit.
+		it('maps every byte of 0x80-0x9F, never to a C1 control', () => {
+			const expected: Record<number, string> = {
+				0x80: '€', 0x82: '‚', 0x83: 'ƒ', 0x84: '„', 0x85: '…', 0x86: '†',
+				0x87: '‡', 0x88: 'ˆ', 0x89: '‰', 0x8a: 'Š', 0x8b: '‹', 0x8c: 'Œ',
+				0x8e: 'Ž', 0x91: '‘', 0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•',
+				0x96: '–', 0x97: '—', 0x98: '˜', 0x99: '™', 0x9a: 'š', 0x9b: '›',
+				0x9c: 'œ', 0x9e: 'ž', 0x9f: 'Ÿ'
+			};
+
+			for (const [raw, char] of Object.entries(expected)) {
+				const byte = Number(raw);
+				const hex = byte.toString(16).padStart(2, '0');
+				expect(rtfToPlainText(`{\\rtf1\\ansi a\\'${hex}b`)).toBe(`a${char}b`);
+			}
+
+			// The five unassigned positions become U+FFFD, not a C1 control.
+			for (const byte of [0x81, 0x8d, 0x8f, 0x90, 0x9d]) {
+				const hex = byte.toString(16).padStart(2, '0');
+				expect(rtfToPlainText(`{\\rtf1\\ansi a\\'${hex}b`)).toBe('a�b');
+			}
+		});
+
 		it('ignores a malformed escape rather than emitting garbage', () => {
 			expect(rtfToPlainText(rtf`{\rtf1\ansi a\'zzb}`)).toBe('ab');
 		});

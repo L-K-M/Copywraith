@@ -8,12 +8,32 @@
  */
 
 /**
- * Decoder for `\'xx` hex escapes, built once rather than per escape.
- * Windows-1252 is the RTF default codepage and what the Rust `strip_rtf`
- * assumes; 0x80-0x9F carry printable characters there (smart quotes, dashes)
- * that a naive byte-to-char cast would turn into C1 control codes.
+ * Windows-1252 code points for the bytes 0x80-0x9F — the only range where
+ * CP1252 diverges from Latin-1. Ported from `cp1252_byte_to_char` in
+ * `crates/copywraith-core/src/content.rs` so the two implementations agree.
+ *
+ * A table rather than the platform decoder, because that depends on the host's
+ * ICU data: a Node build without full ICU silently decodes these bytes as
+ * Latin-1, turning smart quotes and dashes into invisible C1 control
+ * characters. That is exactly the corruption the decode exists to prevent, and
+ * it reproduced on CI while passing locally.
+ *
+ * 0xFFFD marks the five positions unassigned in CP1252.
  */
-const CP1252_DECODER = new TextDecoder('windows-1252');
+const CP1252_HIGH: readonly number[] = [
+	0x20ac, 0xfffd, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, // 0x80-0x87
+	0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0xfffd, 0x017d, 0xfffd, // 0x88-0x8F
+	0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, // 0x90-0x97
+	0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178 // 0x98-0x9F
+];
+
+/** Decode one Windows-1252 byte. Outside 0x80-0x9F, CP1252 is Latin-1. */
+function cp1252ByteToChar(byte: number): string {
+	if (byte >= 0x80 && byte <= 0x9f) {
+		return String.fromCharCode(CP1252_HIGH[byte - 0x80]);
+	}
+	return String.fromCharCode(byte);
+}
 
 /** RTF header groups whose contents are markup, not document text. */
 const RTF_SKIPPED_GROUPS = [
@@ -132,9 +152,7 @@ export function rtfToPlainText(rtf: string): string {
 			if (next === "'") {
 				const hex = rtf.slice(i + 1, i + 3);
 				if (/^[0-9a-f]{2}$/i.test(hex)) {
-					out += CP1252_DECODER.decode(
-						new Uint8Array([Number.parseInt(hex, 16)])
-					);
+					out += cp1252ByteToChar(Number.parseInt(hex, 16));
 				}
 				i += 3;
 				continue;
