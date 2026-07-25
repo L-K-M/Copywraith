@@ -590,6 +590,8 @@ impl LocalStorage {
                  search_text = NULL,
                  blob_hash = NULL,
                  blob_size = NULL,
+                 source_app = NULL,
+                 sensitive = 0,
                  starred = 0
              WHERE id = ?2 AND deleted_at IS NULL",
             params![now, id],
@@ -651,6 +653,8 @@ impl LocalStorage {
                  search_text = NULL,
                  blob_hash = NULL,
                  blob_size = NULL,
+                 source_app = NULL,
+                 sensitive = 0,
                  starred = 0
              WHERE id = ?2 AND deleted_at IS NULL",
             params![deleted_at, id],
@@ -1224,6 +1228,33 @@ mod tests {
 
         // A tombstone is not content, so the create-push must not pick it up.
         assert!(storage.get_unsynced_entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tombstone_retains_no_identifying_metadata() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("sk-secret-value-from-a-password-manager");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, Some("1Password"))
+            .unwrap()
+            .unwrap();
+
+        storage.delete_entry(&entry.id).unwrap();
+
+        // The content is gone, so the app that produced it should not linger
+        // either — a tombstone is bookkeeping, not a record of what was copied.
+        let db = storage.db.lock().unwrap();
+        let (source_app, sensitive, text): (Option<String>, i32, Option<String>) = db
+            .query_row(
+                "SELECT source_app, sensitive, text_plain FROM entries WHERE id = ?1",
+                params![entry.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(source_app, None);
+        assert_eq!(sensitive, 0);
+        assert_eq!(text, None);
     }
 
     #[test]

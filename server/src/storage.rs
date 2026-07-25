@@ -752,9 +752,10 @@ impl Storage {
     /// is bumped so the tombstone sorts into the sync window like any other
     /// change and reaches clients through the existing keyset pagination.
     pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
 
-        let blob_hash: Option<String> = db
+        let blob_hash: Option<String> = tx
             .query_row(
                 "SELECT blob_hash FROM entries WHERE id = ?1 AND deleted_at IS NULL",
                 params![id],
@@ -764,7 +765,7 @@ impl Storage {
             .flatten();
 
         let now = Utc::now().to_rfc3339();
-        let rows = db.execute(
+        let rows = tx.execute(
             "UPDATE entries
              SET deleted_at = ?1,
                  updated_at = ?1,
@@ -782,19 +783,28 @@ impl Storage {
             params![now, id],
         )?;
 
-        // Remove the blob once no live entry references it.
-        if rows > 0 {
-            if let Some(hash) = blob_hash {
-                let count: i64 = db.query_row(
-                    "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
-                    params![hash],
-                    |row| row.get(0),
-                )?;
-                if count == 0 {
-                    let blob_path = self.blob_dir.join(&hash);
-                    let _ = std::fs::remove_file(blob_path);
+        let orphaned = if rows > 0 {
+            match blob_hash {
+                Some(hash) => {
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
+                        params![hash],
+                        |row| row.get(0),
+                    )?;
+                    (count == 0).then_some(hash)
                 }
+                None => None,
             }
+        } else {
+            None
+        };
+
+        tx.commit()?;
+
+        // Remove the blob only after the row change is durable, so a crash can
+        // never leave a live row pointing at a missing file.
+        if let Some(hash) = orphaned {
+            let _ = std::fs::remove_file(self.blob_dir.join(hash));
         }
 
         Ok(rows > 0)

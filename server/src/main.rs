@@ -56,6 +56,24 @@ pub struct AppState {
     pub crypto: SharedCryptoState,
 }
 
+/// How long a deletion stays visible to clients before the row is removed.
+const TOMBSTONE_RETAIN_DAYS: i64 = 90;
+
+/// How often expired tombstones are swept.
+const TOMBSTONE_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+fn purge_tombstones(storage: &Storage) {
+    match storage.purge_expired_tombstones(TOMBSTONE_RETAIN_DAYS) {
+        Ok(0) => {}
+        Ok(purged) => tracing::info!(
+            "Purged {} tombstones older than {} days",
+            purged,
+            TOMBSTONE_RETAIN_DAYS
+        ),
+        Err(e) => tracing::warn!("Failed to purge expired tombstones: {}", e),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
@@ -74,20 +92,10 @@ async fn main() -> anyhow::Result<()> {
 
     let storage = Storage::new(&data_dir)?;
 
-    // Tombstones only need to outlive the slowest client's sync interval.
-    // Purging at startup keeps the table from growing without bound; the window
-    // is deliberately generous, because a device offline since before a delete
-    // will resurrect the entry once its tombstone is gone.
-    const TOMBSTONE_RETAIN_DAYS: i64 = 90;
-    match storage.purge_expired_tombstones(TOMBSTONE_RETAIN_DAYS) {
-        Ok(0) => {}
-        Ok(purged) => tracing::info!(
-            "Purged {} tombstones older than {} days",
-            purged,
-            TOMBSTONE_RETAIN_DAYS
-        ),
-        Err(e) => tracing::warn!("Failed to purge expired tombstones: {}", e),
-    }
+    // Tombstones only need to outlive the slowest client's sync interval. The
+    // window is deliberately generous, because a device offline since before a
+    // delete will resurrect the entry once its tombstone is gone.
+    purge_tombstones(&storage);
 
     let crypto_state = CryptoState::load(&data_dir)?;
     if crypto_state.is_initialized() {
@@ -100,6 +108,21 @@ async fn main() -> anyhow::Result<()> {
         storage,
         crypto: Mutex::new(crypto_state),
     });
+
+    // Purging at startup alone leaves the table growing for the lifetime of a
+    // long-running deployment, which for a Docker service is months.
+    {
+        let maintenance_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(TOMBSTONE_PURGE_INTERVAL);
+            // The first tick fires immediately; startup already purged.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                purge_tombstones(&maintenance_state.storage);
+            }
+        });
+    }
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
