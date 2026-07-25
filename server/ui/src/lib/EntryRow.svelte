@@ -266,16 +266,26 @@
 					}
 					// Skip the fallback characters emitted for readers that
 					// cannot handle \u — otherwise they show as stray "?"s.
+					//
+					// A fallback unit is either a plain character or a whole
+					// \'xx escape. Word and Outlook overwhelmingly emit the
+					// latter (舗\'92), so treating the backslash as a stop
+					// condition leaves the escape to be decoded by the main
+					// loop, printing the same character twice.
 					let remaining = ucSkip;
-					while (
-						remaining > 0 &&
-						i < length &&
-						rtf[i] !== '{' &&
-						rtf[i] !== '}' &&
-						rtf[i] !== '\\'
-					) {
-						i += 1;
-						remaining -= 1;
+					while (remaining > 0 && i < length) {
+						if (rtf[i] === '\\' && rtf[i + 1] === "'") {
+							// \'xx counts as a single fallback character.
+							i = Math.min(i + 4, length);
+							remaining -= 1;
+						} else if (rtf[i] !== '{' && rtf[i] !== '}' && rtf[i] !== '\\') {
+							i += 1;
+							remaining -= 1;
+						} else {
+							// A group delimiter or another control word: the
+							// fallback run is over.
+							break;
+						}
 					}
 				}
 				continue;
