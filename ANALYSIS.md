@@ -26,11 +26,14 @@ three places:
 1. **Sync convergence.** The Android client could not finish a first sync on a
    large history — see *Android sync latency* below. Three of the seven causes
    are fixed; four remain and each needs a protocol or product decision.
-2. **Remote identity and chronology.** Pulled entries still lose their server
-   id and timestamps, so a fresh install shows history in reverse order.
-3. **Test coverage of the sync protocol.** Still the single highest-leverage
-   piece of missing engineering work. Most of the above would have been caught
-   by a mocked-server integration test.
+   **SYNC-A3 is the one that matters**: a timed-out `sync_now` discards all
+   pull-watermark progress, so a large history never converges at all.
+2. **Test coverage of the sync protocol.** Still the single highest-leverage
+   piece of missing engineering work. The storage layer now has unit tests on
+   both sides, but nothing exercises the protocol end to end.
+
+Remote identity/chronology and delete propagation were the other two Priority 0
+items; both are now implemented (#94, #95) and have moved to *Shipped*.
 
 ### Verification baseline
 
@@ -113,22 +116,6 @@ times.
 ---
 
 ## Priority 0: data integrity and security
-
-### Preserve remote identity and chronology
-
-`sync.rs:631` ingests remote rows through a path that mints a **fresh ULID** and
-sets `created_at = updated_at = now()` (`storage.rs:252`), discarding the
-server's id and timestamps. Because the server returns newest-first and the
-client walks in that order, the **oldest** server entry gets the **newest**
-local timestamp — a fresh install shows history in reverse, and "paste most
-recent" picks the wrong item.
-
-- Add a dedicated remote upsert preserving server id, `created_at`,
-  `updated_at`, source, and revision.
-- Define canonical identity across primary/fallback URLs.
-- Test multi-page initial pull ordering and restart persistence.
-
-`opus.md` BUG-01; `sol.md` SYNC-03 and SYNC-13.
 
 ### Make sync one revision-safe pipeline
 
@@ -266,15 +253,6 @@ can intervene and produce plaintext writes or ciphertext responses.
 
 `sol.md` SERVER-07.
 
-### Propagate deletes
-
-`commands.rs:106` deletes locally only; the row stays on the server. It will not
-immediately return (the watermark has passed it), but **`Reset Sync Cursor` —
-which Settings offers to users as "Mobile Sync Repair" — resurrects every entry
-ever deleted on any device.** There are no tombstones.
-
-`opus.md` BUG-10, UX-09; `sol.md` SYNC-09.
-
 ---
 
 ## Priority 1: reliability, performance, and UX trust
@@ -285,6 +263,9 @@ ever deleted on any device.** There are no tombstones.
 - Add Undo/Graveyard behaviour before permanent deletion.
 - Add configurable age/count/byte retention with starred exclusions. **Nothing
   bounds growth today** — the DB and blob directory grow forever on every device.
+  This should also own expiry of *local* tombstones: the server purges its own
+  after 90 days, but clients currently keep theirs indefinitely (they are
+  metadata only, so the cost is small but unbounded).
 - Show DB/blob/staging usage and a cleanup preview. No client shows any storage
   figure; the server exposes `entries_count` on `/api/health` only when
   authorised, and the admin UI does not display it.
@@ -425,10 +406,12 @@ MAC-13, ANDROID-13/14.
 
 ## Priority 2: engineering and release hardening
 
-- **Add `svelte-check` to `server/ui`** and wire it into CI. The admin UI now has
-  unit tests (vitest, run in CI) but still no type checking — `svelte-check`
-  needs a `tsconfig.json` that does not exist there yet. This gates the admin
-  refactors above, including deduplicating the blob-loading logic.
+- Keep `typescript` pinned to `~6.0.3` in both packages. **TypeScript 7 is the
+  native port and `svelte-check` 4.x cannot drive it** — `npm run check` dies
+  with `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')`,
+  verified at the repo root. `@sveltejs/kit` also declares a peer of
+  `^5.3.3 || ^6.0.0`. **Dependabot #63 proposes exactly this bump and will break
+  CI.**
 - Triage current npm advisories by reachability; record temporary exceptions.
 - Move CI/Docker to a supported Node/npm combination; verify the claimed
   package release-age policy.
@@ -459,42 +442,35 @@ MAC-13, ANDROID-13/14.
 
 ## Product roadmap
 
-### Aesthetics: the "high-value app" question
+### Aesthetics
 
-Worth stating the tension explicitly, because it will come up again.
-**Copywraith's identity is deliberately System 7** — `@lkmc/system7-ui`, 1-bit
-chrome, pixel icons, the spooky name. Replacing that with iOS translucency would
-not make it a high-value app; it would make it a generic one.
+**Maintainer position (2026-07-25): the small, varied type sizes, the mixed
+accent colours, and the absence of dark mode are how System 7 worked, not
+defects.** An earlier revision of this document framed them as a consistency
+problem; that framing was wrong and has been removed. Copywraith is a System 7
+pastiche and the retro idiom takes precedence over modern design-system
+conventions.
 
-What distinguishes premium software is **craft consistency**, not a particular
-visual language. A meticulously executed System 7 app reads as expensive. The
-remaining gaps, in rough order of impact:
+What is left here is only what is defective on its own terms:
 
-1. **A spacing grid.** Padding in the popup alone: `2px 2px`, `2px 4px`,
-   `3px 6px`, `4px 8px`, `5px 6px`, `6px 8px`, `8px`. Snap to 4 px.
-2. **One accent, used consistently.** Currently `#f5a623` stars, `#ffd700`
-   hover, `#2f6d35`/`#e7f4e7` online, `#b35a00`/`#fff3e6` unreachable, `#c44`
-   sensitive, `#a01717` field errors — six unrelated hues chosen ad hoc. Define
-   tokens.
-3. **Dark mode.** Every colour in the popup is a hardcoded light-mode hex;
-   `prefers-color-scheme` appears nowhere in `src/`. On a phone in the evening
-   this is the single most obvious "not a premium app" signal.
-4. **Motion with intent.** A 120–160 ms ease on selection change, row insertion,
-   and dialog entry, gated on `prefers-reduced-motion`.
-5. **Icons instead of glyph characters.** `★ ☆ ✕ …` render differently on every
-   platform. The admin UI already uses real `@lkmc/system7-ui` icons; the popup
-   should too.
-6. **First-run polish.** No onboarding, no empty-state illustration, no sense
-   that anyone considered the app's first open.
-7. **Replace `filter: hue-rotate()`** for the sync progress tone
-   (`StatusBar.svelte:313`) with real tokens — it cannot hit a specified colour
-   and forces a compositing layer.
-8. **Give the status bar a graceful narrow layout.** Below 920 px the hint is
-   `display: none`, leaving an empty grid column, and the endpoint label
-   ellipsises to uselessness instead of degrading to icon + colour.
+- **`filter: hue-rotate()` for the sync progress tone**
+  (`StatusBar.svelte:313`) cannot hit a specified colour and forces a
+  compositing layer. Whatever colours are wanted, name them directly.
+- **The status bar has no graceful narrow layout.** Below 920 px the hint is
+  `display: none`, leaving an empty grid column, and the endpoint label
+  ellipsises to uselessness rather than degrading to an icon plus colour.
+- **No mobile layout for the admin UI at all** — see the Admin section above.
+  The five-column fixed-width table simply overflows on a phone.
+- **First-run has no empty state or onboarding.** Independent of visual idiom.
 
-A type scale now exists in the popup rows and the admin table (see Shipped); the
-rest of the app still needs the same treatment.
+Two changes already shipped that touched this area, both flagged here in case
+they should be reverted rather than kept:
+
+- #90 set the popup row's content preview to 15px (from 24px) and introduced
+  four custom properties for the row's sizes. **If the large preview text was
+  deliberate, change `--entry-text` back — it is one value.**
+- #91 set the admin table to 12/14px (from 18/22px `!important`) and aligned
+  the surrounding page to 11/12/14/20px.
 
 ### Power-user features
 
@@ -568,6 +544,15 @@ Full rationale in `sol.md` sections H and I and `awesome.md` sections 5 and 6.
   was made and then disproved by measurement — the pattern stays near-linear
   because its greedy `[^}]*` stops at the first `}`. That same property was the
   real bug: it truncated header stripping and corrupted previews.
+- **New (2026-07-25):** star reconciliation is keyed on `content_hash`, not on
+  the server id, and that is deliberate. Two devices copying the same text mint
+  different ids, so an id-keyed lookup would miss the locally-captured row.
+  Content identity is the right key; do not "fix" it to use the id.
+- **New (2026-07-25):** entries pulled *before* #94 keep their pull-time id and
+  timestamps. A backfill was considered and rejected: matching local rows to
+  server rows by hash and rewriting primary keys is destructive on the one table
+  the user cannot re-derive, and ids now also key tombstone matching. Those rows
+  age out on their own.
 - **New (2026-07-25):** do not use `TextDecoder('windows-1252')` for CP1252.
   It depends on the host's ICU data; a Node build without full ICU decodes
   `0x80`-`0x9F` as Latin-1 and produces invisible C1 control characters. This
@@ -615,7 +600,9 @@ Work completed and merged out of the backlog. Listed so it is not reimplemented.
 | [#88](https://github.com/L-K-M/Copywraith/pull/88) | `synchronous=NORMAL` + `busy_timeout` on both databases; single-transaction remote ingest (3 fsyncs → 1 per entry); endpoint config resolved once per push batch instead of 7 queries per entry. Server → 0.2.1. | fmt, clippy, 64 tests (+5 new storage tests) |
 | [#89](https://github.com/L-K-M/Copywraith/pull/89) | List projection computed the plain text twice per row (2× flavor clone + 2× full HTML/RTF parse); `full_text` shipped every entry's complete text over IPC. Now computed once and bounded, with on-demand `get_entry_text`. | fmt, clippy, 66 tests (+7), check, build |
 | [#90](https://github.com/L-K-M/Copywraith/pull/90) | Viewport-gated cancellable image loading; double-click no longer pastes twice; live-updating relative times via a shared clock; correct data-URL MIME; popup type scale; focus/hover/selection distinguished; keyboard-reachable row actions; `viewport-fit=cover`. | check, build |
-| [#91](https://github.com/L-K-M/Copywraith/pull/91) | Admin RTF stripper rewritten as a linear brace-tracking pass: font names no longer leak into previews, paragraphs no longer run together, CP1252 hex escapes and `\uN`/`\ucN` decoded correctly (group-scoped), `\~` no longer shows as a tilde. Text helpers extracted to `lib/text.ts`; images no longer re-downloaded on every list refresh; admin type scale. | server UI build, 23 vitest cases |
+| [#91](https://github.com/L-K-M/Copywraith/pull/91) | Admin RTF stripper rewritten as a linear brace-tracking pass: font names no longer leak into previews, paragraphs no longer run together, CP1252 hex escapes and `\uN`/`\ucN` decoded correctly (group-scoped), `\~` no longer shows as a tilde. Text helpers extracted to `lib/text.ts`; images no longer re-downloaded on every list refresh; admin type scale. | server UI build, svelte-check, 27 vitest cases |
+| [#94](https://github.com/L-K-M/Copywraith/pull/94) | Pulled entries keep the server's id and timestamps. Fixes a fresh install showing its whole history in reverse and "paste most recent" picking the oldest item; prerequisite for tombstones. | fmt, clippy, 67 tests |
+| [#95](https://github.com/L-K-M/Copywraith/pull/95) | Tombstones. Server DELETE retains a payload-free row with `deleted_at`, reaching clients through existing keyset pagination; clients push local deletions and apply remote ones. `Reset Sync Cursor` no longer resurrects deleted entries. | fmt, clippy, 78 tests |
 | [#92](https://github.com/L-K-M/Copywraith/pull/92) | Sync Details is read-only again (opening it no longer triggers a full sync); explicit Sync Now with in-flight guard and outcome reporting. | check, build |
 
 ### Earlier (merged before 2026-07-25)
