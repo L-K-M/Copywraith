@@ -125,6 +125,14 @@
 			.trim();
 	}
 
+	/**
+	 * Decoder for `\'xx` hex escapes, built once rather than per escape.
+	 * Windows-1252 is the RTF default codepage and what the Rust `strip_rtf`
+	 * assumes; 0x80-0x9F carry printable characters there (smart quotes, dashes)
+	 * that a naive byte-to-char cast would turn into C1 control codes.
+	 */
+	const CP1252_DECODER = new TextDecoder('windows-1252');
+
 	/** RTF header groups whose contents are markup, not document text. */
 	const RTF_SKIPPED_GROUPS = [
 		'fonttbl',
@@ -165,6 +173,8 @@
 		let depth = 0;
 		// Depth of the header group currently being skipped, or -1 for none.
 		let skipDepth = -1;
+		// Fallback characters emitted after each \uN, set by \ucN. Default is 1.
+		let ucSkip = 1;
 		let i = 0;
 
 		while (i < length) {
@@ -207,8 +217,18 @@
 					i += 1;
 					continue;
 				}
-				// \'xx hex escape: dropped, as before.
+				// \'xx hex escape. RTF encodes these in the document codepage;
+				// Windows-1252 is overwhelmingly the common case and is what the
+				// Rust strip_rtf assumes too. Word and Outlook emit smart quotes,
+				// em dashes, and accented letters this way constantly, so
+				// dropping them (as the old regex did) visibly mangles previews.
 				if (next === "'") {
+					const hex = rtf.slice(i + 1, i + 3);
+					if (/^[0-9a-f]{2}$/i.test(hex)) {
+						out += CP1252_DECODER.decode(
+							new Uint8Array([Number.parseInt(hex, 16)])
+						);
+					}
 					i += 3;
 					continue;
 				}
@@ -230,7 +250,12 @@
 
 				if (word === 'par' || word === 'line') out += '\n';
 				else if (word === 'tab') out += '\t';
-				else if (word === 'u' && param) {
+				else if (word === 'uc' && param) {
+					// \uc0 means \uN carries no fallback at all; hardcoding a
+					// skip of 1 would eat the following real character.
+					const count = Number.parseInt(param, 10);
+					ucSkip = Number.isFinite(count) ? Math.min(Math.max(count, 0), 8) : 1;
+				} else if (word === 'u' && param) {
 					// \uN is a signed 16-bit UTF-16 code unit; negatives wrap.
 					const signed = Number.parseInt(param, 10);
 					if (Number.isFinite(signed)) {
@@ -239,9 +264,19 @@
 						// recombine naturally in the resulting JS string.
 						out += String.fromCharCode(unit);
 					}
-					// Skip the single fallback character emitted for readers
-					// that cannot handle \u — otherwise it shows as a stray "?".
-					if (i < length && rtf[i] !== '{' && rtf[i] !== '}' && rtf[i] !== '\\') i += 1;
+					// Skip the fallback characters emitted for readers that
+					// cannot handle \u — otherwise they show as stray "?"s.
+					let remaining = ucSkip;
+					while (
+						remaining > 0 &&
+						i < length &&
+						rtf[i] !== '{' &&
+						rtf[i] !== '}' &&
+						rtf[i] !== '\\'
+					) {
+						i += 1;
+						remaining -= 1;
+					}
 				}
 				continue;
 			}
