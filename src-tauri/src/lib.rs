@@ -169,6 +169,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_entries,
+            commands::get_entry_text,
             commands::get_entry_image,
             commands::toggle_star,
             commands::delete_entry,
