@@ -27,6 +27,14 @@ const CP1252_HIGH: readonly number[] = [
 	0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178 // 0x98-0x9F
 ];
 
+/** Render a code point, leaving invalid ones out rather than throwing. */
+function codePointToString(codePoint: number): string {
+	if (!Number.isFinite(codePoint) || codePoint < 0 || codePoint > 0x10ffff) return '';
+	// Lone surrogates are not valid scalar values.
+	if (codePoint >= 0xd800 && codePoint <= 0xdfff) return '';
+	return String.fromCodePoint(codePoint);
+}
+
 /** Decode one Windows-1252 byte. Outside 0x80-0x9F, CP1252 is Latin-1. */
 function cp1252ByteToChar(byte: number): string {
 	if (byte >= 0x80 && byte <= 0x9f) {
@@ -41,7 +49,10 @@ const RTF_SKIPPED_GROUPS = [
 	'colortbl',
 	'expandedcolortbl',
 	'stylesheet',
-	'info'
+	'info',
+	// An embedded picture's payload is hex-encoded image bytes. Without this
+	// a rich-text copy containing an inline image previews as a wall of hex.
+	'pict'
 ];
 
 /**
@@ -243,6 +254,10 @@ export function htmlToPlainText(html: string): string {
 		.replace(/&gt;/gi, '>')
 		.replace(/&quot;/gi, '"')
 		.replace(/&#39;/gi, "'")
+		// Numeric character references, hex and decimal. Rich-text editors emit
+		// these for smart quotes and dashes, which otherwise showed raw.
+		.replace(/&#x([0-9a-f]{1,6});/gi, (_, hex) => codePointToString(Number.parseInt(hex, 16)))
+		.replace(/&#(\d{1,7});/g, (_, dec) => codePointToString(Number.parseInt(dec, 10)))
 		.replace(/\s+/g, ' ')
 		.trim();
 }

@@ -136,6 +136,14 @@ describe('rtfToPlainText', () => {
 		});
 	});
 
+	it('skips embedded picture data', () => {
+		// \pict payloads are hex-encoded image bytes; without skipping the group
+		// a rich-text copy containing an inline image previews as a wall of hex.
+		expect(
+			rtfToPlainText(rtf`{\rtf1\ansi Before{\pict\jpegblip ffd8ffe000104a464946}After}`)
+		).toBe('BeforeAfter');
+	});
+
 	describe('line continuations', () => {
 		it('consumes a CRLF pair, not just the CR', () => {
 			// Word and Outlook on Windows emit CRLF, so eating only the \r left
@@ -182,5 +190,17 @@ describe('htmlToPlainText', () => {
 		expect(htmlToPlainText('a &amp; b &lt; c &gt; d &quot;e&quot; &#39;f&#39;')).toBe(
 			'a & b < c > d "e" \'f\''
 		);
+	});
+
+	it('decodes decimal and hex numeric character references', () => {
+		expect(htmlToPlainText('It&#8217;s an &#8212; dash')).toBe('It’s an — dash');
+		expect(htmlToPlainText('It&#x2019;s an &#x2014; dash')).toBe('It’s an — dash');
+		expect(htmlToPlainText('&#x1F600; emoji')).toBe('😀 emoji');
+	});
+
+	it('drops invalid numeric references rather than throwing', () => {
+		// Out of range and lone surrogates must not blow up the preview.
+		expect(htmlToPlainText('a&#x110000;b')).toBe('ab');
+		expect(htmlToPlainText('a&#xD800;b')).toBe('ab');
 	});
 });
