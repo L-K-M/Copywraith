@@ -10,7 +10,7 @@
 		TextFileIcon,
 		TrashIcon
 	} from '@lkmc/system7-ui';
-	import * as api from './api';
+	import { createEntryImage } from './entryImage.svelte';
 	import { htmlToPlainText, rtfToPlainText } from './text';
 	import type { EntryResponse } from './types';
 
@@ -28,55 +28,9 @@
 		ondelete: (id: string) => void;
 	} = $props();
 
-	let imageObjectUrl = $state<string | null>(null);
-	let imagePreviewFailed = $state(false);
-
-	/*
-	 * Reading `entry.blob_url` directly inside the effect re-ran it every time
-	 * the parent reassigned `entries` — which happens after every star toggle —
-	 * revoking the object URL and re-downloading every image on the page.
-	 * Routing through a $derived means an unchanged URL string does not notify,
-	 * so the fetch happens once per actual image.
-	 */
-	let imageBlobUrl = $derived(
+	const image = createEntryImage(() =>
 		entry.content_type === 'image' ? (entry.blob_url ?? null) : null
 	);
-
-	$effect(() => {
-		const blobUrl = imageBlobUrl;
-		let disposed = false;
-		let localObjectUrl: string | null = null;
-
-		imageObjectUrl = null;
-		imagePreviewFailed = false;
-
-		if (!blobUrl) {
-			return;
-		}
-
-		api
-			.fetchBlobObjectUrl(blobUrl)
-			.then((objectUrl) => {
-				if (disposed) {
-					URL.revokeObjectURL(objectUrl);
-					return;
-				}
-				localObjectUrl = objectUrl;
-				imageObjectUrl = objectUrl;
-			})
-			.catch(() => {
-				if (!disposed) {
-					imagePreviewFailed = true;
-				}
-			});
-
-		return () => {
-			disposed = true;
-			if (localObjectUrl) {
-				URL.revokeObjectURL(localObjectUrl);
-			}
-		};
-	});
 
 	function formatDate(iso: string | null): string {
 		if (!iso) return '--';
@@ -147,10 +101,10 @@
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="preview" onclick={() => onview(entry.id)}>
-			{#if entry.content_type === 'image' && imageObjectUrl}
-				<img class="img-preview" src={imageObjectUrl} alt="Clipboard preview" />
+			{#if entry.content_type === 'image' && image.objectUrl}
+				<img class="img-preview" src={image.objectUrl} alt="Clipboard preview" />
 			{:else if entry.content_type === 'image'}
-				<span>{imagePreviewFailed ? '[Image unavailable]' : '[Image]'}</span>
+				<span>{image.failed ? '[Image unavailable]' : '[Image]'}</span>
 			{:else}
 				<span class:sensitive-content={entry.sensitive}>{getPreview(entry)}</span>
 			{/if}

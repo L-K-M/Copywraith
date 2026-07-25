@@ -157,9 +157,13 @@ export function rtfToPlainText(rtf: string): string {
 				i += 3;
 				continue;
 			}
-			// A backslash before a newline is a line continuation.
+			// A backslash before a newline is a line continuation. Consume the
+			// whole CRLF pair — Windows RTF writers emit \r\n, and leaving the
+			// \n behind turns into a stray space via the final whitespace
+			// collapse, so output differed by the producer's platform.
 			if (next === '\n' || next === '\r') {
 				i += 1;
+				if (next === '\r' && rtf[i] === '\n') i += 1;
 				continue;
 			}
 

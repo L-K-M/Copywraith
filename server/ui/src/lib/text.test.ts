@@ -136,6 +136,16 @@ describe('rtfToPlainText', () => {
 		});
 	});
 
+	describe('line continuations', () => {
+		it('consumes a CRLF pair, not just the CR', () => {
+			// Word and Outlook on Windows emit CRLF, so eating only the \r left
+			// the \n to become a stray space — output differed by platform.
+			expect(rtfToPlainText('{\\rtf1\\ansi Hello\\\r\nWorld}')).toBe('HelloWorld');
+			expect(rtfToPlainText('{\\rtf1\\ansi Hello\\\nWorld}')).toBe('HelloWorld');
+			expect(rtfToPlainText('{\\rtf1\\ansi Hello\\\rWorld}')).toBe('HelloWorld');
+		});
+	});
+
 	describe('malformed input', () => {
 		it('survives more closing braces than opening ones', () => {
 			expect(rtfToPlainText(rtf`{\rtf1\ansi Hello}}}} world}`)).toBe('Hello world');

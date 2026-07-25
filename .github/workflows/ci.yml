@@ -42,6 +42,10 @@ jobs:
         run: npm ci
         working-directory: server/ui
 
+      - name: Type-check server UI (svelte-check)
+        run: npm run check
+        working-directory: server/ui
+
       - name: Test server UI
         run: npm run test
         working-directory: server/ui
