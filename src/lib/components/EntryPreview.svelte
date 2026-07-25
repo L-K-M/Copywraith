@@ -49,7 +49,9 @@
 			isLoadingFullText = true;
 			TauriService.getEntryText(id)
 				.then((text) => {
-					if (!disposed && text) fetchedText = text;
+					// `!= null` rather than a truthiness check: an empty string is
+					// a successful fetch, not a missing one.
+					if (!disposed && text != null) fetchedText = text;
 				})
 				.catch((e) => {
 					// The truncated prefix stays on screen, so this is not fatal

@@ -27,6 +27,20 @@ const LIST_PREVIEW_CHARS: usize = 200;
 /// are truncated and flagged; the dialog fetches the rest via `get_entry_text`.
 const LIST_FULL_TEXT_CHARS: usize = 4_000;
 
+/// Upper bound on the text `get_entry_text` will return.
+///
+/// Generous — this is a deliberate, one-entry-at-a-time request, so the cost is
+/// paid once rather than per row. It exists only so that a pathological entry
+/// (someone copies a multi-megabyte log) cannot push an unbounded string across
+/// the IPC bridge and into a single `<pre>` element, which on mobile is enough
+/// to stall the WebView.
+const ENTRY_TEXT_CHARS: usize = 500_000;
+
+// The on-demand command exists to give the dialog *more* than the list already
+// carries. Inverting these would make the extra round trip pointless, so it is
+// a compile error rather than a runtime surprise.
+const _: () = assert!(ENTRY_TEXT_CHARS > LIST_FULL_TEXT_CHARS);
+
 /// Truncate to `max_chars` characters (not bytes), appending an ellipsis.
 ///
 /// Returns `None` when the text already fits.
@@ -133,7 +147,8 @@ pub async fn get_entry_text(
             &plain,
             LIST_PREVIEW_CHARS,
         )),
-        other => other,
+        Some(plain) => Some(truncate_chars(&plain, ENTRY_TEXT_CHARS).unwrap_or(plain)),
+        None => None,
     })
 }
 
@@ -961,7 +976,7 @@ pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_entry, LIST_FULL_TEXT_CHARS, LIST_PREVIEW_CHARS};
+    use super::{project_entry, truncate_chars, LIST_FULL_TEXT_CHARS, LIST_PREVIEW_CHARS};
     use copywraith_core::models::ClipboardEntry;
 
     fn char_len(text: &str) -> usize {
@@ -1033,6 +1048,13 @@ mod tests {
         ));
 
         assert_eq!(projected.preview, "Hello world");
+    }
+
+    #[test]
+    fn truncate_chars_returns_none_when_the_text_already_fits() {
+        assert_eq!(truncate_chars("short", 100), None);
+        assert_eq!(truncate_chars("exact", 5), None);
+        assert_eq!(truncate_chars("abcdef", 3).as_deref(), Some("abc..."));
     }
 
     #[test]
