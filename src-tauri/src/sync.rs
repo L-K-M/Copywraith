@@ -656,7 +656,16 @@ impl SyncClient {
         // One transaction for the row, its starred flag, and its synced flag.
         // Doing these as three separate statements costs three fsyncs per
         // entry, which is the dominant cost of a bulk pull on mobile.
+        //
+        // The server's id and timestamps are carried through rather than
+        // regenerated, so an entry is the same entry on every device and the
+        // local list stays in true chronological order.
         storage.insert_remote_entry(
+            crate::storage::RemoteEntryIdentity {
+                id: &remote.entry.id,
+                created_at: remote.entry.created_at,
+                updated_at: remote.entry.updated_at,
+            },
             remote.entry.content_type,
             &remote_flavors,
             blob_data.as_deref(),
