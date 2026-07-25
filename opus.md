@@ -32,6 +32,11 @@ implementation PR referenced in the `ANALYSIS.md` ledger (#32–#36, #41–#49) 
 been merged or closed. That ledger is now stale and should be dropped when
 `ANALYSIS.md` is rebuilt.
 
+`ANALYSIS.md` also claims GitHub Actions "creates jobs with zero steps and no
+assigned runner for every new PR". That is **no longer true** — the PRs opened
+from this review received runners immediately and CI ran green. Red badges can
+be read as real results again.
+
 ---
 
 ## 1. Headline: why the Android client takes a huge amount of time to sync
@@ -191,7 +196,7 @@ dedicated remote-upsert path that preserves server id/timestamps.
 and simulates Cmd+V. So a double-click *pastes the entry twice into the target
 app* and only then tries to show a preview over a hidden window.
 
-### BUG-03 — ReDoS in the admin UI's RTF stripper *(medium)*
+### BUG-03 — The admin UI's RTF stripper produces wrong previews *(medium)*
 
 `server/ui/src/lib/EntryRow.svelte:120`:
 
@@ -199,11 +204,25 @@ app* and only then tries to show a preview over a hidden window.
 .replace(/\{\\(?:fonttbl|colortbl|stylesheet|info|\*\\)[^}]*(?:\{[^}]*\}[^}]*)*\}/g, '')
 ```
 
-`(?:\{[^}]*\}[^}]*)*` is a nested quantifier followed by a required `\}`. On an
-RTF font table that does not terminate as the pattern expects, this backtracks
-super-linearly and **hangs the admin browser tab**. RTF from real word processors
-routinely has deeply nested groups. This runs synchronously for every RTF row in
-the list.
+`[^}]*` is greedy but **cannot cross a `}`**, so this pattern always terminates
+at the *first* closing brace — it only ever removes the first nested group of a
+header. Real word processors emit nested font and colour tables, and the
+remainder falls through to the blunt `\\[a-z]+\d*\s?` and `[{}]` passes.
+Measured outputs:
+
+| input | output |
+|---|---|
+| `{\fonttbl{\f0 Helvetica;}{\f1 Times New Roman;}}Actual text` | `"Times New Roman;Actual text"` |
+| `Line one\par Line two` | `"Line oneLine two"` |
+| `Escaped \{braces\} here` | `"Escaped \\braces\\ here"` |
+| `{\colortbl;...;}Body copy` | `"copy"` |
+
+> **Correction.** My first pass called this a ReDoS, on the shape of
+> `(?:\{[^}]*\}[^}]*)*\}`. That was wrong, and I verified it: measured against
+> several adversarial inputs up to 3,200 repetitions the pattern stays
+> near-linear — precisely *because* the greedy `[^}]*` stops at the first `}`
+> and the match succeeds immediately. The same property is what causes the
+> correctness bug. Replace it for wrong output, not for a hang.
 
 ### BUG-04 — Opening "Sync Details" performs a full sync *(medium)*
 
