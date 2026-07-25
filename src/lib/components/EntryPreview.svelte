@@ -12,6 +12,7 @@
 	// frame while the fetch is in flight.
 	let fetchedText: string | null = $state(null);
 	let isLoadingFullText = $state(false);
+	let fullTextFailed = $state(false);
 
 	let fullText = $derived(fetchedText ?? entry.full_text);
 
@@ -24,6 +25,7 @@
 		imageData = null;
 		fetchedText = null;
 		isLoadingFullText = false;
+		fullTextFailed = false;
 
 		if (hasImage) {
 			TauriService.getEntryImage(id)
@@ -40,8 +42,10 @@
 					if (!disposed && text) fetchedText = text;
 				})
 				.catch((e) => {
-					// The truncated prefix stays on screen, so this is not fatal.
+					// The truncated prefix stays on screen, so this is not fatal
+					// — but the user must be told that what they see is partial.
 					console.error('Failed to load full entry text:', e);
+					if (!disposed) fullTextFailed = true;
 				})
 				.finally(() => {
 					if (!disposed) isLoadingFullText = false;
@@ -133,6 +137,10 @@
 				<pre class="text-content" class:sensitive-content={entry.sensitive}>{fullText}</pre>
 				{#if isLoadingFullText}
 					<div class="loading-more" role="status">Loading the rest of this entry...</div>
+				{:else if fullTextFailed}
+					<div class="loading-more failed" role="alert">
+						Showing a shortened version — the rest of this entry could not be loaded.
+					</div>
 				{/if}
 			{:else if entry.preview}
 				<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.preview}</pre>
@@ -218,6 +226,11 @@
 		color: #888;
 		font-size: 10px;
 		font-style: italic;
+	}
+
+	.loading-more.failed {
+		color: #a01717;
+		font-style: normal;
 	}
 
 	.sensitive-content {
