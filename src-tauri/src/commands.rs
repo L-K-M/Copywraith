@@ -40,6 +40,9 @@ const ENTRY_TEXT_CHARS: usize = 500_000;
 // carries. Inverting these would make the extra round trip pointless, so it is
 // a compile error rather than a runtime surprise.
 const _: () = assert!(ENTRY_TEXT_CHARS > LIST_FULL_TEXT_CHARS);
+// Likewise, a row's dialog text must never be shorter than its own one-line
+// preview — that projection would read as backwards.
+const _: () = assert!(LIST_FULL_TEXT_CHARS > LIST_PREVIEW_CHARS);
 
 /// Truncate to `max_chars` characters (not bytes), appending an ellipsis.
 ///
