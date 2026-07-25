@@ -252,7 +252,10 @@ export function htmlToPlainText(html: string): string {
 		.replace(/&lt;/gi, '<')
 		.replace(/&gt;/gi, '>')
 		.replace(/&quot;/gi, '"')
-		.replace(/&#39;/gi, "'")
+		// &apos; is the XML/HTML5 named form of &#39;. XHTML-serialising editors
+		// emit it, and copywraith-core's decode_html_entity already accepts both,
+		// so leaving it out here made the two previews disagree.
+		.replace(/&#39;|&apos;/gi, "'")
 		// Numeric character references, hex and decimal. Rich-text editors emit
 		// these for smart quotes and dashes, which otherwise showed raw.
 		.replace(/&#x([0-9a-f]{1,6});/gi, (_, hex) => codePointToString(Number.parseInt(hex, 16)))

@@ -192,6 +192,12 @@ describe('htmlToPlainText', () => {
 		);
 	});
 
+	it('decodes &apos; as well as &#39;', () => {
+		// Matches copywraith-core's decode_html_entity, which accepts both.
+		expect(htmlToPlainText('it&apos;s')).toBe("it's");
+		expect(htmlToPlainText('<p>it&apos;s &#39;fine&apos;</p>')).toBe("it's 'fine'");
+	});
+
 	it('decodes decimal and hex numeric character references', () => {
 		expect(htmlToPlainText('It&#8217;s an &#8212; dash')).toBe('It’s an — dash');
 		expect(htmlToPlainText('It&#x2019;s an &#x2014; dash')).toBe('It’s an — dash');
@@ -203,6 +209,7 @@ describe('htmlToPlainText', () => {
 		// &amp; before the numeric pass collapsed it all the way to "'".
 		expect(htmlToPlainText('a &amp;#39; b')).toBe('a &#39; b');
 		expect(htmlToPlainText('a &amp;lt; b')).toBe('a &lt; b');
+		expect(htmlToPlainText('a &amp;apos; b')).toBe('a &apos; b');
 	});
 
 	it('drops invalid numeric references rather than throwing', () => {
