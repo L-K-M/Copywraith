@@ -46,7 +46,7 @@ Measured on `9ca8179` before any change, and again after the PRs below:
 | `cd server/ui && npm run build` | Pass |
 | `cargo fmt --all --check` | Pass |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Pass |
-| `cargo test --workspace` | Pass — 59 baseline, 71 after the PRs below |
+| `cargo test --workspace` | Pass — 59 baseline, 79 after the PRs below |
 | Android device build | Not run (no NDK in the review environment) |
 | Docker build | Not run (no Docker in the review environment) |
 
@@ -458,7 +458,7 @@ What is left here is only what is defective on its own terms:
   compositing layer. Whatever colours are wanted, name them directly.
 - **The status bar has no graceful narrow layout.** Below 920 px the hint is
   `display: none`, leaving an empty grid column, and the endpoint label
-  ellipsises to uselessness rather than degrading to an icon plus colour.
+  ellipsizes to uselessness rather than degrading to an icon plus colour.
 - **No mobile layout for the admin UI at all** — see the Admin section above.
   The five-column fixed-width table simply overflows on a phone.
 - **First-run has no empty state or onboarding.** Independent of visual idiom.
@@ -593,7 +593,7 @@ Full rationale in `sol.md` sections H and I and `awesome.md` sections 5 and 6.
 
 Work completed and merged out of the backlog. Listed so it is not reimplemented.
 
-### 2026-07-25 review (PRs #88–#92)
+### 2026-07-25 review (PRs #88–#95)
 
 | PR | Scope | Verification |
 |---|---|---|

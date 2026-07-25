@@ -214,7 +214,7 @@ Measured outputs:
 |---|---|
 | `{\fonttbl{\f0 Helvetica;}{\f1 Times New Roman;}}Actual text` | `"Times New Roman;Actual text"` |
 | `Line one\par Line two` | `"Line oneLine two"` |
-| `Escaped \{braces\} here` | `"Escaped \\braces\\ here"` |
+| `Escaped \\{braces\\} here` | `"Escaped \\braces\\ here"` |
 | `{\colortbl;...;}Body copy` | `"copy"` |
 
 > **Correction.** My first pass called this a ReDoS, on the shape of
@@ -361,7 +361,7 @@ rendered thumbnail needs roughly 0.02 % of those bytes.
 
 ### PERF-04 — Client-side search is an unindexed `LIKE '%…%'` *(medium)*
 
-`storage.rs:336`: `search_text LIKE ?N ESCAPE '\'` with a leading `%`. This is a
+`storage.rs:336`: `search_text LIKE ?N ESCAPE '\\'` with a leading `%`. This is a
 full table scan of the whole clipboard history on every keystroke (150 ms
 debounce, `clipboardStore.ts:185`). The **server** has a proper FTS5 index
 (`server/src/storage.rs:321`); the client has none, despite storing the same
@@ -765,7 +765,7 @@ Items I have high confidence in, scoped as independent low-conflict branches.
 | 3 | `claude/list-image-loading-…` | Viewport-gated, cancellable image loading; correct MIME in data URLs | PERF-03, BUG-07 |
 | 4 | `claude/viewport-typography-…` | `viewport-fit=cover`; normalise the type scale; reconcile column widths | BUG-05, VIS-01, VIS-02 |
 | 5 | `claude/interaction-fixes-…` | Fix double-click double-paste; make Sync Details passive + add explicit Sync Now | BUG-02, BUG-04, UX-03 |
-| 6 | `claude/admin-ui-fixes-…` | Replace the backtracking RTF regex; stop re-fetching blobs on every reload | BUG-03, BUG-06 |
+| 6 | `claude/admin-ui-fixes-…` | Replace the incorrect RTF regex; stop re-fetching blobs on every reload | BUG-03, BUG-06 |
 | 7 | `claude/live-timestamps-…` | Shared relative-time clock so rows age correctly | BUG-11 |
 
 Deliberately **not** implemented without a product decision:
