@@ -198,6 +198,13 @@ describe('htmlToPlainText', () => {
 		expect(htmlToPlainText('&#x1F600; emoji')).toBe('😀 emoji');
 	});
 
+	it('does not decode double-encoded entities twice', () => {
+		// "&amp;#39;" is the literal text "&#39;", not an apostrophe. Decoding
+		// &amp; before the numeric pass collapsed it all the way to "'".
+		expect(htmlToPlainText('a &amp;#39; b')).toBe('a &#39; b');
+		expect(htmlToPlainText('a &amp;lt; b')).toBe('a &lt; b');
+	});
+
 	it('drops invalid numeric references rather than throwing', () => {
 		// Out of range and lone surrogates must not blow up the preview.
 		expect(htmlToPlainText('a&#x110000;b')).toBe('ab');

@@ -249,7 +249,6 @@ export function htmlToPlainText(html: string): string {
 		.replace(/<script[\s\S]*?<\/script>/gi, ' ')
 		.replace(/<[^>]+>/g, ' ')
 		.replace(/&nbsp;/gi, ' ')
-		.replace(/&amp;/gi, '&')
 		.replace(/&lt;/gi, '<')
 		.replace(/&gt;/gi, '>')
 		.replace(/&quot;/gi, '"')
@@ -258,6 +257,10 @@ export function htmlToPlainText(html: string): string {
 		// these for smart quotes and dashes, which otherwise showed raw.
 		.replace(/&#x([0-9a-f]{1,6});/gi, (_, hex) => codePointToString(Number.parseInt(hex, 16)))
 		.replace(/&#(\d{1,7});/g, (_, dec) => codePointToString(Number.parseInt(dec, 10)))
+		// &amp; is decoded last. Decoding it first turns the double-encoded
+		// "&amp;#39;" — which represents the literal text "&#39;" — into
+		// "&#39;", which the pass above would then decode a second time.
+		.replace(/&amp;/gi, '&')
 		.replace(/\s+/g, ' ')
 		.trim();
 }
