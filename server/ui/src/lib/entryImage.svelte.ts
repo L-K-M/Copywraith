@@ -3,7 +3,7 @@ import * as api from './api';
 export interface EntryImage {
 	/** Object URL for the fetched blob, or null while loading / on failure. */
 	readonly objectUrl: string | null;
-	/** True once the fetch has definitively failed. */
+	/** True when there is no fetchable URL, or the fetch definitively failed. */
 	readonly failed: boolean;
 }
 
@@ -36,6 +36,10 @@ export function createEntryImage(getBlobUrl: () => string | null): EntryImage {
 		failed = false;
 
 		if (!url) {
+			// An image entry with no blob_url has nothing to wait for. Without
+			// this both callers sit on their loading branch forever, because
+			// neither objectUrl nor failed ever transitions.
+			failed = true;
 			return;
 		}
 
