@@ -250,6 +250,11 @@
 			i += 1;
 		}
 
+		// \par and \line emit \n above so that paragraph boundaries separate
+		// words — without them "Line one\\par Line two" collapses to
+		// "Line oneLine two". Flattening that \n to a space here is the desired
+		// final form: the only consumer is the one-line .preview cell, which is
+		// white-space: nowrap and would render a newline as a space regardless.
 		return out.replace(/\s+/g, ' ').trim();
 	}
 
