@@ -30,19 +30,31 @@
 	let imageObjectUrl = $state<string | null>(null);
 	let imagePreviewFailed = $state(false);
 
+	/*
+	 * Reading `entry.blob_url` directly inside the effect re-ran it every time
+	 * the parent reassigned `entries` — which happens after every star toggle —
+	 * revoking the object URL and re-downloading every image on the page.
+	 * Routing through a $derived means an unchanged URL string does not notify,
+	 * so the fetch happens once per actual image.
+	 */
+	let imageBlobUrl = $derived(
+		entry.content_type === 'image' ? (entry.blob_url ?? null) : null
+	);
+
 	$effect(() => {
+		const blobUrl = imageBlobUrl;
 		let disposed = false;
 		let localObjectUrl: string | null = null;
 
 		imageObjectUrl = null;
 		imagePreviewFailed = false;
 
-		if (entry.content_type !== 'image' || !entry.blob_url) {
+		if (!blobUrl) {
 			return;
 		}
 
 		api
-			.fetchBlobObjectUrl(entry.blob_url)
+			.fetchBlobObjectUrl(blobUrl)
 			.then((objectUrl) => {
 				if (disposed) {
 					URL.revokeObjectURL(objectUrl);
@@ -113,20 +125,132 @@
 			.trim();
 	}
 
+	/** RTF header groups whose contents are markup, not document text. */
+	const RTF_SKIPPED_GROUPS = [
+		'fonttbl',
+		'colortbl',
+		'expandedcolortbl',
+		'stylesheet',
+		'info'
+	];
+
+	/**
+	 * Strip RTF markup to plain text with a single linear pass.
+	 *
+	 * The previous implementation stripped header groups with
+	 * `\{\\(?:fonttbl|...)[^}]*(?:\{[^}]*\}[^}]*)*\}`. Because `[^}]*` is greedy
+	 * but cannot cross a `}`, that pattern always ends at the *first* closing
+	 * brace, so it only ever removes the first nested group of a header. Real
+	 * word processors emit nested font and colour tables, and the remainder then
+	 * fell through to the blunt `\\[a-z]+\d*\s?` and `[{}]` passes. Observed
+	 * results on representative RTF:
+	 *
+	 *   {\fonttbl{\f0 Helvetica;}{\f1 Times New Roman;}}Actual text
+	 *     old -> "Times New Roman;Actual text"   (font name leaks into preview)
+	 *   Line one\par Line two
+	 *     old -> "Line oneLine two"              (paragraphs run together)
+	 *   Escaped \{braces\} here
+	 *     old -> "Escaped \\braces\\ here"       (escapes inverted)
+	 *   {\colortbl;...;}Body copy
+	 *     old -> "copy"                          ("Body" swallowed)
+	 *
+	 * Tracking brace depth handles arbitrary nesting, and a single pass with no
+	 * backtracking is O(n) by construction.
+	 */
 	function rtfToPlainText(rtf: string): string {
 		if (!rtf.trimStart().startsWith('{\\rtf')) return rtf;
-		return rtf
-			// Remove RTF header groups: {\fonttbl...}, {\colortbl...}, etc.
-			.replace(/\{\\(?:fonttbl|colortbl|stylesheet|info|\*\\)[^}]*(?:\{[^}]*\}[^}]*)*\}/g, '')
-			// Remove control words with optional numeric param
-			.replace(/\\[a-z]+[-]?\d*\s?/gi, '')
-			// Remove hex-encoded chars \'xx
-			.replace(/\\'[0-9a-f]{2}/gi, '')
-			// Remove remaining braces
-			.replace(/[{}]/g, '')
-			// Collapse whitespace
-			.replace(/\s+/g, ' ')
-			.trim();
+
+		const length = rtf.length;
+		let out = '';
+		let depth = 0;
+		// Depth of the header group currently being skipped, or -1 for none.
+		let skipDepth = -1;
+		let i = 0;
+
+		while (i < length) {
+			const ch = rtf[i];
+
+			if (ch === '{') {
+				depth += 1;
+				if (skipDepth < 0 && rtf[i + 1] === '\\') {
+					const head = rtf.slice(i + 2, i + 2 + 20);
+					// `\*\` marks a destination the reader may ignore wholesale.
+					if (head.startsWith('*\\') || RTF_SKIPPED_GROUPS.some((g) => head.startsWith(g))) {
+						skipDepth = depth;
+					}
+				}
+				i += 1;
+				continue;
+			}
+
+			if (ch === '}') {
+				if (skipDepth === depth) skipDepth = -1;
+				// Malformed RTF can close more groups than it opened.
+				depth = Math.max(0, depth - 1);
+				i += 1;
+				continue;
+			}
+
+			if (skipDepth >= 0) {
+				i += 1;
+				continue;
+			}
+
+			if (ch === '\\') {
+				i += 1;
+				const next = rtf[i];
+				if (next === undefined) break;
+
+				// Escaped literals.
+				if (next === '\\' || next === '{' || next === '}') {
+					out += next;
+					i += 1;
+					continue;
+				}
+				// \'xx hex escape: dropped, as before.
+				if (next === "'") {
+					i += 3;
+					continue;
+				}
+				// A backslash before a newline is a line continuation.
+				if (next === '\n' || next === '\r') {
+					i += 1;
+					continue;
+				}
+
+				const wordStart = i;
+				while (i < length && /[a-zA-Z]/.test(rtf[i])) i += 1;
+				const word = rtf.slice(wordStart, i);
+
+				// Optional numeric parameter, then the space delimiter.
+				const paramStart = i;
+				while (i < length && (rtf[i] === '-' || (rtf[i] >= '0' && rtf[i] <= '9'))) i += 1;
+				const param = rtf.slice(paramStart, i);
+				if (rtf[i] === ' ') i += 1;
+
+				if (word === 'par' || word === 'line') out += '\n';
+				else if (word === 'tab') out += '\t';
+				else if (word === 'u' && param) {
+					// \uN is a signed 16-bit UTF-16 code unit; negatives wrap.
+					const signed = Number.parseInt(param, 10);
+					if (Number.isFinite(signed)) {
+						const unit = signed < 0 ? signed + 65536 : signed;
+						// Surrogate halves are emitted as-is; adjacent halves
+						// recombine naturally in the resulting JS string.
+						out += String.fromCharCode(unit);
+					}
+					// Skip the single fallback character emitted for readers
+					// that cannot handle \u — otherwise it shows as a stray "?".
+					if (i < length && rtf[i] !== '{' && rtf[i] !== '}' && rtf[i] !== '\\') i += 1;
+				}
+				continue;
+			}
+
+			out += ch;
+			i += 1;
+		}
+
+		return out.replace(/\s+/g, ' ').trim();
 	}
 
 	function handleStarClick(e: MouseEvent) {

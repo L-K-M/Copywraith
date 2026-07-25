@@ -16,19 +16,31 @@
 	let imageObjectUrl = $state<string | null>(null);
 	let imageLoadFailed = $state(false);
 
+	/*
+	 * Reading `entry.blob_url` directly inside the effect makes it re-run
+	 * whenever the prop object is reassigned, even when the URL is unchanged —
+	 * revoking the object URL and re-downloading. A $derived does not notify on
+	 * an unchanged string, so the blob is fetched once. Same pattern as
+	 * EntryRow.
+	 */
+	let imageBlobUrl = $derived(
+		entry.content_type === 'image' ? (entry.blob_url ?? null) : null
+	);
+
 	$effect(() => {
+		const blobUrl = imageBlobUrl;
 		let disposed = false;
 		let localObjectUrl: string | null = null;
 
 		imageObjectUrl = null;
 		imageLoadFailed = false;
 
-		if (entry.content_type !== 'image' || !entry.blob_url) {
+		if (!blobUrl) {
 			return;
 		}
 
 		api
-			.fetchBlobObjectUrl(entry.blob_url)
+			.fetchBlobObjectUrl(blobUrl)
 			.then((objectUrl) => {
 				if (disposed) {
 					URL.revokeObjectURL(objectUrl);

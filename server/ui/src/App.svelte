@@ -536,13 +536,13 @@
 
 	.auth-heading {
 		margin: 0 0 8px;
-		font-size: 22px;
+		font-size: 20px;
 		font-weight: bold;
 	}
 
 	.auth-description {
 		margin: 0 0 18px;
-		font-size: 16px;
+		font-size: 14px;
 		color: #444;
 		line-height: 1.4;
 	}
@@ -563,7 +563,7 @@
 	.auth-loading {
 		text-align: center;
 		padding: 24px;
-		font-size: 18px;
+		font-size: 14px;
 		color: #666;
 	}
 
@@ -614,14 +614,20 @@
 		border-top: 1px solid #000;
 	}
 
+	/*
+	 * Table cells were 22px and headers 18px, both with `!important` so nothing
+	 * downstream could correct them. These now follow the same scale as the
+	 * rest of the admin UI (11 / 12 / 14 / 20px) and drop `!important`, so a
+	 * theme or a future override can win.
+	 */
 	.table-container :global(th) {
-		font-size: 18px !important;
-		line-height: 1.4 !important;
+		font-size: 12px;
+		line-height: 1.4;
 	}
 
 	.table-container :global(td) {
-		font-size: 22px !important;
-		line-height: 1.4 !important;
+		font-size: 14px;
+		line-height: 1.4;
 	}
 
 	.footer-bar {
@@ -642,13 +648,13 @@
 	}
 
 	.page-info {
-		font-size: 18px;
+		font-size: 12px;
 		line-height: 1;
 		white-space: nowrap;
 	}
 
 	.footer-version {
-		font-size: 14px;
+		font-size: 11px;
 		color: #888;
 		white-space: nowrap;
 	}
