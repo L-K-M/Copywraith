@@ -4,23 +4,15 @@
 	import { isMobile } from '$lib/util/platform';
 	import { BalloonHelp } from '@lkmc/system7-ui';
 	import { TauriService } from '$lib/tauri';
-	import { onMount } from 'svelte';
+	import { now, formatRelativeTime, imageMimeFromBase64 } from '$lib/util/clock';
 
-	function formatTime(dateStr: string): string {
-		const date = new Date(dateStr);
-		const now = new Date();
-		const diffMs = now.getTime() - date.getTime();
-		const diffSec = Math.floor(diffMs / 1000);
-		const diffMin = Math.floor(diffSec / 60);
-		const diffHour = Math.floor(diffMin / 60);
-		const diffDay = Math.floor(diffHour / 24);
-
-		if (diffSec < 60) return 'now';
-		if (diffMin < 60) return `${diffMin}m`;
-		if (diffHour < 24) return `${diffHour}h`;
-		if (diffDay < 30) return `${diffDay}d`;
-		return date.toLocaleDateString();
-	}
+	/**
+	 * Start fetching a row's image this far outside the viewport.
+	 *
+	 * Large enough that a normal scroll never shows an empty cell, small enough
+	 * that opening the popup does not decode every image in the history.
+	 */
+	const IMAGE_PREFETCH_MARGIN_PX = 300;
 
 	function getTypeLabel(type: string): string {
 		switch (type) {
@@ -47,21 +39,71 @@
 		onpreview?: (entry: ClipboardEntry) => void;
 	} = $props();
 
-	let rowElement: HTMLTableRowElement | null = null;
+	let rowElement: HTMLTableRowElement | null = $state(null);
 	let imageData: string | null = $state(null);
 	let imageLoading = $state(false);
+	let imageFailed = $state(false);
+	let imageVisible = $state(false);
 
-	// Lazy-load image data only for image entries
-	onMount(() => {
-		if (entry.has_image) {
-			imageLoading = true;
-			TauriService.getEntryImage(entry.id).then((data) => {
-				imageData = data;
-				imageLoading = false;
-			}).catch(() => {
-				imageLoading = false;
-			});
+	let relativeTime = $derived(formatRelativeTime(entry.updated_at, $now));
+	let imageSrc = $derived(
+		imageData ? `data:${imageMimeFromBase64(imageData)};base64,${imageData}` : null
+	);
+
+	// Only fetch a row's image once the row is on (or near) screen. Loading every
+	// image eagerly meant a page of screenshots pushed tens of megabytes of
+	// base64 across the IPC bridge before the user had scrolled at all.
+	$effect(() => {
+		if (!entry.has_image || imageVisible || !rowElement) return;
+
+		if (typeof IntersectionObserver === 'undefined') {
+			imageVisible = true;
+			return;
 		}
+
+		const observer = new IntersectionObserver(
+			(observed) => {
+				if (observed.some((observation) => observation.isIntersecting)) {
+					imageVisible = true;
+					observer.disconnect();
+				}
+			},
+			{ rootMargin: `${IMAGE_PREFETCH_MARGIN_PX}px` }
+		);
+		observer.observe(rowElement);
+
+		return () => observer.disconnect();
+	});
+
+	$effect(() => {
+		if (!entry.has_image || !imageVisible) return;
+
+		const id = entry.id;
+		let disposed = false;
+
+		imageLoading = true;
+		imageFailed = false;
+
+		TauriService.getEntryImage(id)
+			.then((data) => {
+				if (disposed) return;
+				imageData = data;
+				imageFailed = data === null;
+			})
+			.catch((e) => {
+				if (disposed) return;
+				console.error('Failed to load entry image:', e);
+				imageFailed = true;
+			})
+			.finally(() => {
+				// The invoke cannot be cancelled, but a row scrolled out of view
+				// (or replaced) must not overwrite the current row's state.
+				if (!disposed) imageLoading = false;
+			});
+
+		return () => {
+			disposed = true;
+		};
 	});
 
 	$effect(() => {
@@ -80,9 +122,10 @@
 		}
 	}
 
-	function handleDblClick(e: MouseEvent) {
+	function handlePreviewClick(e: MouseEvent) {
 		e.preventDefault();
 		e.stopPropagation();
+		onselect?.(entry.id);
 		onpreview?.(entry);
 	}
 
@@ -125,12 +168,19 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
+<!--
+	Note: there is deliberately no `ondblclick` here. A double-click emits
+	`click, click, dblclick`, and `handleClick` pastes and hides the popup — so
+	double-clicking to preview used to paste the entry into the target app twice
+	before trying to show a dialog over a hidden window. Preview is reachable via
+	the Space key and the preview button in the actions cell, which also gives
+	touch devices a preview path they never had.
+-->
 <tr
 	class="entry-row"
 	class:selected={selected}
 	bind:this={rowElement}
 	onclick={handleClick}
-	ondblclick={handleDblClick}
 	onfocus={handleFocus}
 	onkeydown={handleKeydown}
 	tabindex="0"
@@ -149,14 +199,16 @@
 		</button>
 	</td>
 	<td class="col-content">
-		{#if entry.has_image && imageData}
+		{#if entry.has_image && imageSrc}
 			<div class="image-preview">
-				<img src="data:image/png;base64,{imageData}" alt="Copied screenshot" />
+				<img src={imageSrc} alt="Copied screenshot" />
 			</div>
 		{:else if entry.has_image && imageLoading}
-			<div class="text-preview">[Loading image...]</div>
+			<div class="text-preview muted">[Loading image...]</div>
+		{:else if entry.has_image && imageFailed}
+			<div class="text-preview muted">[Image unavailable]</div>
 		{:else if entry.has_image}
-			<div class="text-preview">[Image]</div>
+			<div class="text-preview muted">[Image]</div>
 		{:else}
 			<div class="text-preview" class:sensitive-content={entry.sensitive}>
 				{entry.preview}
@@ -168,28 +220,59 @@
 	</td>
 	<td class="col-time">
 		<BalloonHelp message={new Date(entry.updated_at).toLocaleString()} delay={600}>
-			<span class="time">{formatTime(entry.updated_at)}</span>
+			<span class="time">{relativeTime}</span>
 		</BalloonHelp>
 	</td>
 	<td class="col-actions">
-		<button
-			type="button"
-			class="delete-btn"
-			onmousedown={stopRowClick}
-			onclick={handleDeleteClick}
-			title="Delete"
-		>
-			{'\u2715'}
-		</button>
+		<div class="row-actions">
+			<button
+				type="button"
+				class="row-action-btn"
+				onmousedown={stopRowClick}
+				onclick={handlePreviewClick}
+				title="Preview"
+				aria-label="Preview entry"
+			>
+				{'\u2026'}
+			</button>
+			<button
+				type="button"
+				class="row-action-btn delete-btn"
+				onmousedown={stopRowClick}
+				onclick={handleDeleteClick}
+				title="Delete"
+				aria-label="Delete entry"
+			>
+				{'\u2715'}
+			</button>
+		</div>
 	</td>
 </tr>
 
 <style>
+	/*
+	 * One type scale for the whole row. The content preview was 24px while the
+	 * type badge beside it was 9px — a 2.7x ratio inside a single row, which is
+	 * what made the list read as unconsidered. These four steps are the only
+	 * sizes used here; change --entry-text to re-tune the row's density.
+	 */
 	.entry-row {
+		--entry-text: 15px;
+		--entry-meta: 11px;
+		--entry-badge: 10px;
+		--entry-action: 12px;
+		--entry-thumb-height: 48px;
+
 		cursor: pointer;
 		user-select: none;
 	}
 
+	/*
+	 * Hover, selection, and keyboard focus used to be styled identically, so
+	 * keyboard navigation was invisible whenever the pointer rested elsewhere.
+	 * Selection is the strong state; hover is a lighter hint; focus adds a ring
+	 * on top of either.
+	 */
 	.entry-row:hover {
 		background: var(--system7-color-highlight, #000);
 		color: var(--system7-color-highlight-text, #fff);
@@ -200,14 +283,16 @@
 		color: var(--system7-color-highlight-text, #fff);
 	}
 
-	.entry-row:focus {
-		background: var(--system7-color-highlight, #000);
-		color: var(--system7-color-highlight-text, #fff);
-		outline: none;
+	.entry-row:focus-visible {
+		outline: 2px solid var(--system7-color-highlight, #000);
+		outline-offset: -2px;
+	}
+
+	.entry-row.selected:focus-visible {
+		outline-color: var(--system7-color-highlight-text, #fff);
 	}
 
 	.col-star {
-		width: 24px;
 		text-align: center;
 		padding: 2px 4px;
 	}
@@ -226,7 +311,8 @@
 		color: #f5a623;
 	}
 
-	.entry-row:hover .star-btn.starred {
+	.entry-row:hover .star-btn.starred,
+	.entry-row.selected .star-btn.starred {
 		color: #ffd700;
 	}
 
@@ -235,14 +321,20 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		padding: 3px 6px;
+		padding: 4px 8px;
 	}
 
 	.text-preview {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 24px;
+		font-size: var(--entry-text);
+		line-height: 1.35;
+	}
+
+	.text-preview.muted {
+		opacity: 0.6;
+		font-size: var(--entry-meta);
 	}
 
 	.sensitive-content {
@@ -251,72 +343,96 @@
 	}
 
 	.image-preview {
-		height: 48px;
+		height: var(--entry-thumb-height);
 		display: flex;
 		align-items: center;
 	}
 
 	.image-preview img {
-		max-height: 48px;
+		max-height: var(--entry-thumb-height);
 		max-width: 180px;
 		image-rendering: auto;
 	}
 
 	.col-type {
-		width: 40px;
 		text-align: center;
 		padding: 2px 4px;
 	}
 
 	.type-badge {
-		font-size: 9px;
-		padding: 1px 3px;
+		font-size: var(--entry-badge);
+		padding: 1px 4px;
 		border: 1px solid currentColor;
 		border-radius: 2px;
 		opacity: 0.7;
 	}
 
 	.col-time {
-		width: 36px;
 		text-align: right;
 		padding: 2px 4px;
-		font-size: 11px;
+		font-size: var(--entry-meta);
 		opacity: 0.7;
 	}
 
 	.col-actions {
-		width: 20px;
-		text-align: center;
-		padding: 2px 2px;
+		text-align: right;
+		padding: 2px 4px;
 	}
 
-	.delete-btn {
+	.row-actions {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 2px;
+	}
+
+	.row-action-btn {
 		background: none;
 		border: none;
 		cursor: pointer;
-		font-size: 10px;
-		padding: 0;
+		font-size: var(--entry-action);
+		line-height: 1;
+		padding: 2px;
 		color: inherit;
 		opacity: 0;
-		transition: opacity 0.1s;
+		transition: opacity 0.12s ease;
 	}
 
-	.entry-row:hover .delete-btn {
-		opacity: 0.5;
+	/*
+	 * Reveal on hover, on row focus, and whenever the row is selected — the
+	 * previous hover-only rule left these controls permanently invisible to a
+	 * keyboard user who could nonetheless tab straight to them.
+	 */
+	.entry-row:hover .row-action-btn,
+	.entry-row:focus-within .row-action-btn,
+	.entry-row.selected .row-action-btn {
+		opacity: 0.6;
 	}
 
-	.delete-btn:hover {
-		opacity: 1 !important;
+	.row-action-btn:hover,
+	.row-action-btn:focus-visible {
+		opacity: 1;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.row-action-btn {
+			transition: none;
+		}
 	}
 
 	/* Mobile: larger touch targets, always-visible actions */
 	@media (pointer: coarse) {
 		.entry-row {
+			--entry-text: 16px;
+			--entry-meta: 12px;
+			--entry-badge: 11px;
+			--entry-action: 16px;
+			--entry-thumb-height: 56px;
+
 			min-height: 44px;
 		}
 
 		.col-star {
-			width: 36px;
 			padding: 4px 6px;
 		}
 
@@ -329,27 +445,14 @@
 			padding: 6px 8px;
 		}
 
-		.text-preview {
-			font-size: 16px;
+		.row-actions {
+			gap: 4px;
 		}
 
-		.image-preview {
-			height: 56px;
-		}
-
-		.image-preview img {
-			max-height: 56px;
-		}
-
-		.col-actions {
-			width: 32px;
-			padding: 4px;
-		}
-
-		.delete-btn {
-			font-size: 14px;
-			opacity: 0.4;
-			padding: 4px;
+		/* There is no hover on touch, so the controls must always be visible. */
+		.row-action-btn {
+			opacity: 0.5;
+			padding: 6px;
 		}
 	}
 </style>
