@@ -13,6 +13,7 @@
 	let fetchedText: string | null = $state(null);
 	let isLoadingFullText = $state(false);
 	let fullTextFailed = $state(false);
+	let imageFailed = $state(false);
 
 	let fullText = $derived(fetchedText ?? entry.full_text);
 
@@ -26,13 +27,22 @@
 		fetchedText = null;
 		isLoadingFullText = false;
 		fullTextFailed = false;
+		imageFailed = false;
 
 		if (hasImage) {
 			TauriService.getEntryImage(id)
 				.then((data) => {
-					if (!disposed) imageData = data;
+					if (disposed) return;
+					imageData = data;
+					// A null payload means the blob is gone, not that it is
+					// still arriving — otherwise the dialog would sit on
+					// "Loading image..." forever.
+					imageFailed = data === null;
 				})
-				.catch(() => {});
+				.catch((e) => {
+					console.error('Failed to load entry image:', e);
+					if (!disposed) imageFailed = true;
+				});
 		}
 
 		if (needsFullText) {
@@ -130,6 +140,10 @@
 			{#if entry.has_image && imageData}
 				<div class="image-container">
 					<img src="data:image/png;base64,{imageData}" alt="Clipboard preview" />
+				</div>
+			{:else if entry.has_image && imageFailed}
+				<div class="empty-content failed" role="alert">
+					This image could not be loaded. The stored file may be missing.
 				</div>
 			{:else if entry.has_image}
 				<div class="empty-content">Loading image...</div>
@@ -231,6 +245,10 @@
 	.loading-more.failed {
 		color: #a01717;
 		font-style: normal;
+	}
+
+	.empty-content.failed {
+		color: #a01717;
 	}
 
 	.sensitive-content {
