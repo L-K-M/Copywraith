@@ -122,6 +122,11 @@
 		}
 	}
 
+	function handleImageDecodeError() {
+		imageData = null;
+		imageFailed = true;
+	}
+
 	function handlePreviewClick(e: MouseEvent) {
 		e.preventDefault();
 		e.stopPropagation();
@@ -201,7 +206,17 @@
 	<td class="col-content">
 		{#if entry.has_image && imageSrc}
 			<div class="image-preview">
-				<img src={imageSrc} alt="Copied screenshot" />
+				<!--
+					A blob can be truncated, corrupt, or in a format this WebView
+					cannot decode. Without onerror the cell would show a broken
+					image icon forever, even though the fallback text state below
+					already exists.
+				-->
+				<img
+					src={imageSrc}
+					alt="Copied screenshot"
+					onerror={handleImageDecodeError}
+				/>
 			</div>
 		{:else if entry.has_image && imageLoading}
 			<div class="text-preview muted">[Loading image...]</div>

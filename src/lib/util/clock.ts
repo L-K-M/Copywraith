@@ -49,12 +49,22 @@ export function formatRelativeTime(dateStr: string, nowMs: number): string {
  * Four base64 characters encode exactly three bytes, so a prefix comparison
  * reads the magic number without decoding anything. Data URLs previously
  * hardcoded `image/png` for every format.
+ *
+ * Anything unrecognised falls back to `image/*`: browsers sniff `<img>` sources
+ * anyway, and an image-family type is a safer guess than
+ * `application/octet-stream` for a payload we already know came from an image
+ * entry. The `onerror` fallback in EntryRow covers whatever still fails.
  */
 export function imageMimeFromBase64(base64: string): string {
 	if (base64.startsWith('iVBORw0KGgo')) return 'image/png';
 	if (base64.startsWith('/9j/')) return 'image/jpeg';
 	if (base64.startsWith('R0lGOD')) return 'image/gif';
 	if (base64.startsWith('UklGR')) return 'image/webp';
-	if (base64.startsWith('Qk')) return 'image/bmp';
-	return 'application/octet-stream';
+	// BMP magic is 42 4D. Base64 encodes three bytes per four characters, so
+	// "Qk" alone only pins the first byte plus the high nibble of the second —
+	// it would also match 42 40..42 4F. The third character disambiguates, and
+	// all four of Qk0/Qk1/Qk2/Qk3 encode a genuine 42 4D (they differ only in
+	// the third byte), so matching just one of them would miss 3 in 4 bitmaps.
+	if (/^Qk[0-3]/.test(base64)) return 'image/bmp';
+	return 'image/*';
 }
