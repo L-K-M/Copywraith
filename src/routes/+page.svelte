@@ -61,6 +61,7 @@
 	let unlistenPopupShow: UnlistenFn;
 	let unlistenSyncEndpointStatus: UnlistenFn;
 	let unlistenPasteFailed: UnlistenFn;
+	let unlistenPasteManual: UnlistenFn;
 	let unlistenShizukuClipboardStaged: { unregister: () => Promise<void> } | undefined;
 	let mobileRefreshInFlight = false;
 	let shareProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -155,6 +156,12 @@
 			unlistenPasteFailed = await listen<string>('paste-failed', (event) => {
 				notify('error', event.payload, 6000);
 			});
+
+			// Linux/Wayland: automatic paste isn't available (no ydotool), so the
+			// entry is left on the clipboard and we tell the user to press Ctrl+V.
+			unlistenPasteManual = await listen<string>('paste-manual', (event) => {
+				notify('info', event.payload, 6000);
+			});
 		}
 
 		// Clipboard monitoring is started from the Rust backend via
@@ -180,6 +187,7 @@
 		unlistenPopupShow?.();
 		unlistenSyncEndpointStatus?.();
 		unlistenPasteFailed?.();
+		unlistenPasteManual?.();
 		void unlistenShizukuClipboardStaged?.unregister();
 	});
 
