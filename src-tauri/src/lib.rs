@@ -143,6 +143,18 @@ pub fn run() {
                     });
                 });
 
+                // Register native KDE global shortcuts (KGlobalAccel). When the
+                // user binds and presses one, dispatch the same verbs as the
+                // tray and CLI. The action id maps directly to a `--<verb>` flag.
+                let shortcut_app = app_handle.clone();
+                linux::start_global_shortcuts(move |action| {
+                    let dispatch_app = shortcut_app.clone();
+                    let argv = vec![String::new(), format!("--{action}")];
+                    let _ = shortcut_app.run_on_main_thread(move || {
+                        dispatch_cli_command(&dispatch_app, &argv);
+                    });
+                });
+
                 let argv: Vec<String> = std::env::args().collect();
                 dispatch_cli_command(&app_handle, &argv);
             }

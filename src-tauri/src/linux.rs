@@ -202,6 +202,108 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Global shortcuts (KDE KGlobalAccel over D-Bus)
+// ---------------------------------------------------------------------------
+//
+// Registers named actions with `org.kde.kglobalaccel` so they show up under
+// "Copywraith" in System Settings → Shortcuts, where the user assigns keys.
+// When a bound shortcut fires, kglobalacceld emits `globalShortcutPressed` and
+// we dispatch the matching verb. This is the KDE-native complement to the
+// Unix-socket CLI path (`copywraith --toggle`, etc.), which still works for
+// custom-command bindings and on X11.
+//
+// We intentionally register the actions WITHOUT default keys: assigning one
+// (e.g. Meta+V) would collide with Klipper and other built-ins, and the daemon
+// would reject it. Leaving them unbound lets the user pick a free combination.
+
+/// KGlobalAccel component id — this string names the group in System Settings.
+const KGA_COMPONENT: &str = "copywraith";
+const KGA_COMPONENT_FRIENDLY: &str = "Copywraith";
+
+/// (unique action id, human-friendly label). The unique id doubles as the
+/// CLI-style verb passed back to the dispatcher (`toggle` → `--toggle`).
+const KGA_ACTIONS: &[(&str, &str)] = &[
+    ("toggle", "Show clipboard history"),
+    ("starred", "Show starred entries"),
+    ("paste-plaintext", "Paste last entry as plain text"),
+];
+
+/// Register Copywraith's global-shortcut actions with KDE and dispatch on
+/// activation. `on_activate` receives the unique action id (e.g. `"toggle"`)
+/// on a background thread; callers should marshal to the main thread for UI.
+///
+/// Best-effort: if the session bus or kglobalaccel is unavailable (non-KDE,
+/// no D-Bus), this logs and returns without affecting the rest of the app.
+pub fn start_global_shortcuts<F>(on_activate: F)
+where
+    F: Fn(&str) + Send + 'static,
+{
+    let spawned = std::thread::Builder::new()
+        .name("kglobalaccel".into())
+        .spawn(move || match run_global_shortcuts(on_activate) {
+            Ok(()) => {}
+            Err(e) => log::info!("KDE global shortcuts unavailable: {e}"),
+        });
+    if let Err(e) = spawned {
+        log::warn!("Failed to spawn KDE global-shortcut thread: {e}");
+    }
+}
+
+fn run_global_shortcuts<F>(on_activate: F) -> Result<(), dbus::Error>
+where
+    F: Fn(&str) + Send + 'static,
+{
+    use dbus::blocking::Connection;
+    use dbus::message::MatchRule;
+
+    let conn = Connection::new_session()?;
+    let proxy = conn.with_proxy(
+        "org.kde.kglobalaccel",
+        "/kglobalaccel",
+        Duration::from_secs(5),
+    );
+
+    // `doRegister(actionId: as)` where actionId is
+    // [componentUnique, actionUnique, componentFriendly, actionFriendly].
+    for (unique, friendly) in KGA_ACTIONS {
+        let action_id = vec![
+            KGA_COMPONENT.to_string(),
+            (*unique).to_string(),
+            KGA_COMPONENT_FRIENDLY.to_string(),
+            (*friendly).to_string(),
+        ];
+        let _: () = proxy.method_call("org.kde.KGlobalAccel", "doRegister", (action_id,))?;
+    }
+
+    // Receive activation signals for our component. kglobalacceld emits
+    // `globalShortcutPressed(componentUnique, actionUnique, timestamp)` on the
+    // component object; a broadcast match filtered by component id catches it.
+    let rule = MatchRule::new_signal("org.kde.kglobalaccel.Component", "globalShortcutPressed");
+    conn.add_match(
+        rule,
+        move |(component, action, _ts): (String, String, i64),
+              _: &Connection,
+              _: &dbus::Message| {
+            if component == KGA_COMPONENT {
+                on_activate(&action);
+            }
+            true
+        },
+    )?;
+
+    log::info!(
+        "Registered {} KDE global-shortcut action(s); assign keys in System Settings → Shortcuts → Copywraith",
+        KGA_ACTIONS.len()
+    );
+
+    // Pump the connection so the match callback fires. The thread lives for the
+    // process lifetime, like the single-instance listener.
+    loop {
+        conn.process(Duration::from_millis(1000))?;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Autostart (XDG ~/.config/autostart/copywraith.desktop)
 // ---------------------------------------------------------------------------
 

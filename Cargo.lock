@@ -783,6 +783,7 @@ dependencies = [
  "clipboard-rs",
  "copywraith-core",
  "copywraith-share-target",
+ "dbus",
  "env_logger",
  "log",
  "reqwest 0.12.28",

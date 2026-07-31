@@ -72,10 +72,32 @@ copied and you press **Ctrl+V** yourself.
 
 ## Global shortcuts (KDE-native)
 
-Wayland doesn't let apps grab global hotkeys, so Copywraith exposes its actions
-on the command line and uses a single-instance guard: running the binary again
-forwards the command to the instance already in the tray. Bind KDE shortcuts to
-these commands:
+Wayland doesn't let apps grab global hotkeys directly, so Copywraith integrates
+with **KGlobalAccel** — KDE's own shortcut service — instead. There are two ways
+to bind keys; the first is the recommended one.
+
+### Recommended: assign keys in System Settings
+
+While Copywraith is running it registers three actions with KGlobalAccel, so
+they appear alongside every other app under **System Settings → Keyboard →
+Shortcuts → Copywraith**:
+
+| Action | What it does |
+| --- | --- |
+| Show clipboard history | Toggle the popup |
+| Show starred entries | Toggle the popup filtered to starred entries |
+| Paste last entry as plain text | Paste the most recent entry, stripped of formatting |
+
+The actions ship **unbound** on purpose — a baked-in default like `Meta+V`
+would collide with Klipper. Open that page, click each action, and assign a free
+combination (e.g. `Meta+V` after freeing it from Klipper, or `Meta+Shift+V`).
+The bindings live in KDE's config and survive reboots. Copywraith must be
+running for a shortcut to fire; pair this with **Start at login** (below).
+
+### Alternative: bind a command
+
+Copywraith also accepts its verbs on the command line, forwarding them to the
+running instance via a single-instance guard. This works on X11 too:
 
 | Command | Action |
 | --- | --- |
@@ -83,16 +105,8 @@ these commands:
 | `copywraith --starred` | Toggle the popup filtered to starred entries |
 | `copywraith --paste-plaintext` | Paste the most recent entry as plain text |
 
-To bind them in Plasma 6:
-
-1. **System Settings → Keyboard → Shortcuts → Add New → Command or Script…**
-2. Enter the command (e.g. `copywraith --toggle`).
-3. Assign a key combination (e.g. `Meta+V`).
-4. Repeat for the other commands.
-
-These live in KDE's own shortcut configuration and survive reboots. (On an X11
-session the app's built-in global-shortcut registration also works, but the
-command approach above is the reliable cross-session option.)
+Bind them under **System Settings → Keyboard → Shortcuts → Add New → Command or
+Script…**, entering e.g. `copywraith --toggle` and assigning a key.
 
 ## Autostart
 

@@ -37,6 +37,12 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard = "2"
 clipboard-rs = "0.2.4"
 
+# Linux/KDE: register native global shortcuts with KGlobalAccel over D-Bus.
+# `dbus` is already in the tree (pulled by libappindicator for the tray), so
+# this adds no new crates.
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
 
