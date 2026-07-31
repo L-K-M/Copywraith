@@ -263,21 +263,12 @@ where
         Duration::from_secs(5),
     );
 
-    // `doRegister(actionId: as)` where actionId is
-    // [componentUnique, actionUnique, componentFriendly, actionFriendly].
-    for (unique, friendly) in KGA_ACTIONS {
-        let action_id = vec![
-            KGA_COMPONENT.to_string(),
-            (*unique).to_string(),
-            KGA_COMPONENT_FRIENDLY.to_string(),
-            (*friendly).to_string(),
-        ];
-        let _: () = proxy.method_call("org.kde.KGlobalAccel", "doRegister", (action_id,))?;
-    }
-
-    // Receive activation signals for our component. kglobalacceld emits
-    // `globalShortcutPressed(componentUnique, actionUnique, timestamp)` on the
-    // component object; a broadcast match filtered by component id catches it.
+    // Install the activation match rule *before* registering the actions so no
+    // signal is missed in the window between registration and subscription.
+    // kglobalacceld emits `globalShortcutPressed(componentUnique, actionUnique,
+    // timestamp)` on the component object; the `timestamp` is a `qlonglong`,
+    // i.e. D-Bus type `x` / Rust `i64` (per org.kde.kglobalaccel.Component.xml).
+    // A broadcast match filtered by component id catches it.
     let rule = MatchRule::new_signal("org.kde.kglobalaccel.Component", "globalShortcutPressed");
     conn.add_match(
         rule,
@@ -290,6 +281,18 @@ where
             true
         },
     )?;
+
+    // `doRegister(actionId: as)` where actionId is
+    // [componentUnique, actionUnique, componentFriendly, actionFriendly].
+    for (unique, friendly) in KGA_ACTIONS {
+        let action_id = vec![
+            KGA_COMPONENT.to_string(),
+            (*unique).to_string(),
+            KGA_COMPONENT_FRIENDLY.to_string(),
+            (*friendly).to_string(),
+        ];
+        let _: () = proxy.method_call("org.kde.KGlobalAccel", "doRegister", (action_id,))?;
+    }
 
     log::info!(
         "Registered {} KDE global-shortcut action(s); assign keys in System Settings → Shortcuts → Copywraith",
