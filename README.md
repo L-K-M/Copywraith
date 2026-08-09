@@ -2,6 +2,8 @@
 
 Copywraith is a local-first clipboard manager with an optional sync server for durable, searchable clipboard history across devices.
 
+**Latest release:** [Download](https://github.com/L-K-M/Copywraith/releases/latest)
+
 It has three main pieces:
 
 - [Server](server/README.md): Rust/Axum API, SQLite storage, encrypted blobs, and Svelte admin UI.
