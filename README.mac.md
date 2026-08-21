@@ -24,8 +24,19 @@ Tauri setup guide: https://v2.tauri.app/start/prerequisites/
 > [!IMPORTANT]
 > Released macOS bundles are **unsigned and un-notarized** (see the signing
 > caveats in [`CICD.md`](CICD.md)), so Gatekeeper blocks them on first launch.
-> Open the app once via **right-click → Open → Open**, or clear the quarantine
-> flag:
+> To open one:
+>
+> 1. Double-click the app and dismiss the warning. This first attempt is what
+>    makes the override appear.
+> 2. Open **System Settings → Privacy & Security**, scroll to **Security**, and
+>    click **Open Anyway** — it only shows up for about an hour after step 1.
+> 3. Enter your login password.
+>
+> Older instructions elsewhere suggest Control-clicking the app and choosing
+> **Open**. Apple removed that bypass in macOS Sequoia (15), so on current
+> systems it just shows the same refusal.
+>
+> Or clear the quarantine flag directly:
 >
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/Copywraith.app
