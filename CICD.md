@@ -11,7 +11,7 @@ Copywraith is a cross-platform Tauri app (Rust backend + Svelte frontend) with a
 
 ## Continuous integration (`ci.yml`)
 
-Two jobs run in parallel on `ubuntu-22.04`. In-progress runs for the same ref are cancelled when a new commit is pushed.
+Three jobs run in parallel on `ubuntu-22.04`. In-progress runs for the same ref are cancelled when a new commit is pushed.
 
 **Frontend (check & build)** — uses Node 20 with npm caching:
 
@@ -27,6 +27,15 @@ Two jobs run in parallel on `ubuntu-22.04`. In-progress runs for the same ref ar
 - `cargo fmt --all --check` — formatting must be clean.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clippy warnings are treated as errors.
 - `cargo test --workspace` — run the test suite.
+
+**Linux bundle (deb + AppImage)** — builds the desktop bundle the release workflow ships, using the same `tauri-apps/tauri-action@v1` action, so packaging breakage surfaces on a pull request instead of at tag time:
+
+- Installs the same Tauri system dependencies as the Rust job.
+- `tauri build --bundles deb,appimage` (the action runs `npm run build` first via `beforeBuildCommand`).
+- `scripts/check-linux-bundle.sh` — asserts the `.deb` installs `/usr/bin/copywraith`, ships a `copywraith.png` icon, and execs `copywraith` from its desktop entry. The Ubuntu and KDE docs tell users to bind `copywraith --toggle` to a global shortcut, and the app writes `Icon=copywraith` into its autostart entry, so a renamed binary would silently break both. The binary name comes from `mainBinaryName` in `src-tauri/tauri.conf.json`.
+- Uploads the `.deb` and AppImage as a build artifact (7-day retention).
+
+The release workflow runs the same `check-linux-bundle.sh` on its Linux desktop build.
 
 ### Running CI checks locally
 
@@ -46,7 +55,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+```sh
+# Linux bundle (needs the Tauri system dependencies below)
+npm ci
+npm run tauri -- build --bundles deb,appimage
+./scripts/check-linux-bundle.sh
+```
+
 On Linux you also need the Tauri system dependencies listed above before running the cargo commands.
+
+### Optional: the GNOME keybinding test
+
+`cargo test --workspace` covers the accelerator translation and `gsettings` parsing with pure unit tests. The round-trip against a real `gsettings` — creating, updating, and removing GNOME custom keybindings — is opt-in, because it rewrites whatever dconf database the process can reach. CI does not run it. Against a throwaway session:
+
+```sh
+sudo apt install gnome-settings-daemon-common dconf-gsettings-backend dbus-x11
+XDG_CONFIG_HOME=$(mktemp -d) COPYWRAITH_TEST_GSETTINGS=1 \
+  dbus-run-session -- cargo test -p copywraith-tauri gnome_keybinding
+```
 
 ## Releases (`release.yml`)
 

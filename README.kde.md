@@ -5,6 +5,10 @@ build. This page covers the KDE Plasma (Wayland-first) integration: system tray,
 paste injection, global shortcuts, and autostart.
 
 > [!NOTE]
+> On Ubuntu/GNOME, read [`README.ubuntu.md`](README.ubuntu.md) instead — there
+> Copywraith registers the global shortcuts with GNOME for you.
+
+> [!NOTE]
 > Plasma 6 defaults to a **Wayland** session, which forbids apps from injecting
 > keystrokes directly. Copywraith uses [`ydotool`](https://github.com/ReimuNotMoe/ydotool)
 > (a uinput-based injector) for automatic paste, and falls back to leaving the
@@ -72,10 +76,12 @@ copied and you press **Ctrl+V** yourself.
 
 ## Global shortcuts (KDE-native)
 
-Wayland doesn't let apps grab global hotkeys, so Copywraith exposes its actions
-on the command line and uses a single-instance guard: running the binary again
-forwards the command to the instance already in the tray. Bind KDE shortcuts to
-these commands:
+Wayland doesn't let apps grab global hotkeys, and KDE's shortcut store isn't
+scriptable the way GNOME's is, so on Plasma you bind the shortcuts yourself.
+Copywraith exposes its actions on the command line and uses a single-instance
+guard: running the binary again forwards the command to the instance already in
+the tray. The Settings dialog lists these same commands under the shortcut
+fields. Bind KDE shortcuts to them:
 
 | Command | Action |
 | --- | --- |
@@ -91,8 +97,9 @@ To bind them in Plasma 6:
 4. Repeat for the other commands.
 
 These live in KDE's own shortcut configuration and survive reboots. (On an X11
-session the app's built-in global-shortcut registration also works, but the
-command approach above is the reliable cross-session option.)
+session the shortcuts you set in Copywraith's own Settings dialog work too —
+the app grabs them directly — but the command approach above is the reliable
+cross-session option.)
 
 ## Autostart
 
@@ -105,9 +112,11 @@ writes/removes:
 
 ## Packaging notes
 
-`npm run tauri build` emits a `.deb`, `.rpm`, and AppImage. The `.deb` declares
-runtime dependencies on WebKitGTK, GTK 3, and the Ayatana AppIndicator library,
-and recommends `ydotool` + `libnotify-bin` for the full paste experience.
+`npm run tauri build` emits a `.deb`, `.rpm`, and AppImage. The `.deb` installs
+the binary as `/usr/bin/copywraith` (which is what the shortcut commands above
+call), declares runtime dependencies on WebKitGTK, GTK 3, and the Ayatana
+AppIndicator library, and recommends `ydotool` + `libnotify-bin` for the full
+paste experience.
 
 ## Troubleshooting
 
@@ -120,4 +129,3 @@ and recommends `ydotool` + `libnotify-bin` for the full paste experience.
   prevention in System Settings → Window Management.
 - **Tray icon missing**: ensure `libayatana-appindicator3-1` is installed and the
   Plasma "System Tray" widget is shown.
-</content>
