@@ -42,3 +42,34 @@ impl Default for Settings {
         }
     }
 }
+
+/// How Copywraith's global shortcuts are bound, for display in Settings.
+///
+/// Only Linux has more than one answer here: Wayland forbids in-app key grabs,
+/// so the shortcuts are handed to the desktop environment instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortcutStatus {
+    /// `in_process`, `gnome`, `manual`, or `unsupported`.
+    pub mechanism: String,
+    /// One sentence explaining the mechanism to the user.
+    pub message: String,
+    /// Commands to bind by hand, when `mechanism` is `manual`.
+    pub commands: Vec<ShortcutCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortcutCommand {
+    pub label: String,
+    pub accelerator: String,
+    pub command: String,
+}
+
+impl Default for ShortcutStatus {
+    fn default() -> Self {
+        Self {
+            mechanism: "in_process".to_string(),
+            message: String::new(),
+            commands: Vec::new(),
+        }
+    }
+}

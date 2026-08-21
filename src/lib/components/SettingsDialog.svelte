@@ -4,6 +4,7 @@
 	import { isMobile } from '$lib/util/platform';
 	import { notify } from '$lib/util/notifications';
 	import { onMount } from 'svelte';
+	import type { ShortcutStatus } from '$lib/types';
 
 	let { onclose }: { onclose: () => void } = $props();
 
@@ -22,6 +23,9 @@
 	let isLoadingSettings = $state(true);
 	let isSaving = $state(false);
 	let loadError = $state('');
+	// How the backend actually bound the shortcuts. Only interesting when it is
+	// not the usual in-process grab (i.e. on a Wayland session).
+	let shortcutStatus = $state<ShortcutStatus | null>(null);
 
 	onMount(() => {
 		void loadSettings();
@@ -41,6 +45,8 @@
 			shizukuClipboardEnabled = settings.shizuku_clipboard_enabled;
 			if ($isMobile) {
 				void refreshShizukuStatus();
+			} else {
+				void refreshShortcutStatus();
 			}
 		} catch (e) {
 			console.error('Failed to load settings:', e);
@@ -73,6 +79,16 @@
 			});
 			if (!$isMobile) {
 				await TauriService.reregisterShortcuts();
+				await refreshShortcutStatus();
+				// On Wayland the app cannot grab keys itself, so say where the
+				// shortcuts actually ended up before the dialog closes.
+				if (shortcutStatus && shortcutStatus.mechanism !== 'in_process') {
+					notify(
+						shortcutStatus.mechanism === 'gnome' ? 'info' : 'error',
+						shortcutStatus.message,
+						6000
+					);
+				}
 			}
 			void TauriService.syncNow().catch((e) => {
 				console.error('Failed to refresh sync status after saving settings:', e);
@@ -83,6 +99,15 @@
 			notify('error', `Failed to save settings: ${e}`);
 		} finally {
 			isSaving = false;
+		}
+	}
+
+	async function refreshShortcutStatus() {
+		try {
+			shortcutStatus = await TauriService.getShortcutStatus();
+		} catch (e) {
+			console.error('Failed to read the global-shortcut status:', e);
+			shortcutStatus = null;
 		}
 	}
 
@@ -292,6 +317,29 @@
 			<div class="shortcut-hint">
 				Use format: CmdOrCtrl+Shift+Key. Leave empty to disable.
 			</div>
+
+			{#if shortcutStatus && shortcutStatus.mechanism !== 'in_process'}
+				<div
+					class="shortcut-status"
+					class:shortcut-status-warning={shortcutStatus.mechanism !== 'gnome'}
+					role="status"
+				>
+					{shortcutStatus.message}
+					{#if shortcutStatus.commands.length > 0}
+						<ul class="shortcut-commands">
+							{#each shortcutStatus.commands as command (command.label)}
+								<li>
+									<span class="shortcut-command-label">{command.label}</span>
+									<code>{command.command}</code>
+									{#if command.accelerator}
+										<span class="shortcut-command-accel">{command.accelerator}</span>
+									{/if}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			{/if}
 		{/if}
 
 		<div class="settings-actions s7-actions">
@@ -357,6 +405,48 @@
 		font-size: 10px;
 		color: #888;
 		line-height: 1.3;
+	}
+
+	.shortcut-status {
+		font-size: 10px;
+		line-height: 1.35;
+		color: #333;
+		border: 1px solid #999;
+		background: #f0f0f0;
+		padding: 5px 6px;
+		margin-top: 4px;
+	}
+
+	.shortcut-status-warning {
+		border-color: #a08000;
+		background: #fff8e0;
+	}
+
+	.shortcut-commands {
+		list-style: none;
+		margin: 4px 0 0;
+		padding: 0;
+	}
+
+	.shortcut-commands li {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 4px;
+		margin-top: 2px;
+	}
+
+	.shortcut-commands code {
+		font-size: 10px;
+		word-break: break-all;
+	}
+
+	.shortcut-command-label {
+		font-weight: bold;
+	}
+
+	.shortcut-command-accel {
+		color: #666;
 	}
 
 	.field-hint {

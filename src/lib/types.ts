@@ -23,3 +23,18 @@ export interface Settings {
 	shortcut_paste_plaintext: string;
 	shizuku_clipboard_enabled: boolean;
 }
+
+/** One command a user can bind by hand when the app cannot bind it itself. */
+export interface ShortcutCommand {
+	label: string;
+	accelerator: string;
+	command: string;
+}
+
+/** How the global shortcuts ended up bound (Linux has more than one answer). */
+export interface ShortcutStatus {
+	/** `in_process`, `gnome`, `manual`, or `unsupported`. */
+	mechanism: string;
+	message: string;
+	commands: ShortcutCommand[];
+}

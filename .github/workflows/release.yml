@@ -135,6 +135,11 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
+      # Guards the binary name the Linux shortcut docs depend on.
+      - name: Verify the Linux bundle contents
+        if: matrix.platform == 'ubuntu-22.04'
+        run: ./scripts/check-linux-bundle.sh
+
   # ---------------------------------------------------------------------------
   # Android APK. Signed when an upload keystore is configured via secrets,
   # otherwise the unsigned release APK is attached.
