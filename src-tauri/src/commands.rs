@@ -874,6 +874,28 @@ pub async fn reregister_shortcuts(
     Ok(())
 }
 
+/// How the global shortcuts are actually bound, so Settings can explain it.
+#[tauri::command]
+pub async fn get_shortcut_status(
+    #[allow(unused_variables)] state: State<'_, AppState>,
+) -> Result<crate::models::ShortcutStatus, String> {
+    #[cfg(desktop)]
+    let status = state
+        .shortcut_status
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or_default();
+
+    #[cfg(mobile)]
+    let status = crate::models::ShortcutStatus {
+        mechanism: "unsupported".to_string(),
+        message: "Global shortcuts are desktop-only.".to_string(),
+        commands: Vec::new(),
+    };
+
+    Ok(status)
+}
+
 #[tauri::command]
 pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(desktop)]

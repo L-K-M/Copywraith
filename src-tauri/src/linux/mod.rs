@@ -9,6 +9,8 @@
 //! This module is only compiled on Linux and is kept entirely separate from the
 //! macOS paste path.
 
+pub mod shortcuts;
+
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;

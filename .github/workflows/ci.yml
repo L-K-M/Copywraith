@@ -97,3 +97,63 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # The Ubuntu/Linux desktop bundle is what the release workflow ships, so build
+  # it here too — packaging breakage (a renamed binary, a missing icon, an
+  # AppImage that will not assemble) otherwise only surfaces at tag time.
+  linux-bundle:
+    name: Linux bundle (deb + AppImage)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-bundle
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Same action the release workflow uses, so this catches release-time
+      # packaging failures on a pull request instead of on a tag.
+      - name: Build Linux bundles
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: --bundles deb,appimage
+
+      - name: Verify the bundle contents
+        run: ./scripts/check-linux-bundle.sh
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 7

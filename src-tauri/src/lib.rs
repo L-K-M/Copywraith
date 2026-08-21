@@ -30,6 +30,9 @@ pub struct AppState {
     /// per-event counter management.
     #[cfg(desktop)]
     pub suppress_monitor_until: std::sync::Mutex<Option<std::time::Instant>>,
+    /// How the global shortcuts ended up bound, surfaced in the Settings dialog.
+    #[cfg(desktop)]
+    pub shortcut_status: std::sync::Mutex<models::ShortcutStatus>,
     #[cfg(target_os = "macos")]
     pub popup_panel_initialized: std::sync::atomic::AtomicBool,
 }
@@ -97,6 +100,8 @@ pub fn run() {
                 last_popup_opened_at: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
                 suppress_monitor_until: std::sync::Mutex::new(None),
+                #[cfg(desktop)]
+                shortcut_status: std::sync::Mutex::new(models::ShortcutStatus::default()),
                 #[cfg(target_os = "macos")]
                 popup_panel_initialized: std::sync::atomic::AtomicBool::new(false),
             };
@@ -177,6 +182,7 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::reregister_shortcuts,
+            commands::get_shortcut_status,
             commands::capture_clipboard,
             commands::has_pending_shares,
             commands::import_pending_shares,
@@ -197,6 +203,27 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
     // Unregister all existing shortcuts first
     let _ = app.global_shortcut().unregister_all();
+
+    // Linux: the plugin can only grab keys on X11. On Wayland (the Ubuntu
+    // default) registration reports success but never fires, so hand the
+    // shortcuts to the desktop environment instead and stop here.
+    #[cfg(target_os = "linux")]
+    {
+        let outcome = linux::shortcuts::sync(settings);
+        log::info!(
+            "Global shortcuts bound via `{}`: {}",
+            outcome.status.mechanism,
+            outcome.status.message
+        );
+        if let Some(state) = app.try_state::<AppState>() {
+            if let Ok(mut status) = state.shortcut_status.lock() {
+                *status = outcome.status;
+            }
+        }
+        if !outcome.use_in_process {
+            return;
+        }
+    }
 
     let shortcut_toggle = &settings.shortcut_toggle_popup;
     let shortcut_starred = &settings.shortcut_starred_popup;

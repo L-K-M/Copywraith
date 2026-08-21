@@ -1,5 +1,5 @@
 import { addPluginListener, invoke, type PluginListener } from '@tauri-apps/api/core';
-import type { ClipboardEntry, Settings } from './types';
+import type { ClipboardEntry, Settings, ShortcutStatus } from './types';
 import type { SyncEndpointStatusInput } from './util/syncStatusStore';
 
 export interface SyncNowResult {
@@ -77,6 +77,11 @@ export class TauriService {
 
 	static async reregisterShortcuts(): Promise<void> {
 		await invoke('reregister_shortcuts');
+	}
+
+	/** How the global shortcuts are bound — see `ShortcutStatus.mechanism`. */
+	static async getShortcutStatus(): Promise<ShortcutStatus> {
+		return await invoke('get_shortcut_status');
 	}
 
 	/** Read the current system clipboard and save it as a new entry (mobile). */

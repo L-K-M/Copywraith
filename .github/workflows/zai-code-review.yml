@@ -1,4 +1,4 @@
-name: GLM 5.2 PR Review
+name: GLM 5.3 PR Review
 
 on:
   pull_request_target:
@@ -22,20 +22,33 @@ concurrency:
 
 jobs:
   review:
-    name: Review PR with GLM 5.2
+    name: Review PR with GLM 5.3
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    if: ${{ github.event.pull_request.draft == false }}
+    # The action splits the diff into ~50k-char chunks and gives each chunk 3
+    # attempts at a 300s request timeout — so one chunk can legitimately spend
+    # 15 minutes before it gives up and moves on. A 15-minute cap killed the job
+    # mid-retry on a large PR, which reported `cancelled` and posted nothing;
+    # this cap lets the action exhaust its own budget on a few chunks and still
+    # post its partial-review comment. A healthy review takes a minute or two.
+    timeout-minutes: 45
+    # pull_request_target exposes repository secrets and a write-capable token.
+    # Never run this privileged job for branches from untrusted forks.
+    if: >-
+      ${{ github.event.pull_request.draft == false &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
     env:
       ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
     steps:
       - name: Z.ai Code Review
         if: ${{ env.ZAI_API_KEY != '' }}
-        uses: L-K-M/zai-code-review@main
+        # Pin privileged third-party actions to an immutable commit.
+        # 7d0ce7b = v0.0.9, the current main tip. Verify before bumping:
+        #   git ls-remote https://github.com/L-K-M/zai-code-review refs/tags/v0.0.9
+        uses: L-K-M/zai-code-review@7d0ce7b0c226c70eed194615130fa5b632ba4798
         with:
           ZAI_API_KEY: ${{ env.ZAI_API_KEY }}
-          ZAI_MODEL: glm-5.2
-          ZAI_REVIEWER_NAME: GLM 5.2 Code Review
+          ZAI_MODEL: glm-5.3
+          ZAI_REVIEWER_NAME: GLM 5.3 Code Review
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Skip when Z.ai API key is unavailable
