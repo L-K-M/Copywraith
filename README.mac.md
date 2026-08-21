@@ -34,7 +34,8 @@ Tauri setup guide: https://v2.tauri.app/start/prerequisites/
 >
 > Older instructions elsewhere suggest Control-clicking the app and choosing
 > **Open**. Apple removed that bypass in macOS Sequoia (15), so on current
-> systems it just shows the same refusal.
+> systems it just shows the same refusal. The steps above follow Apple's
+> [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
 >
 > Or clear the quarantine flag directly:
 >
