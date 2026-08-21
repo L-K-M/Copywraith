@@ -96,23 +96,23 @@ The workflow runs as a fan-out:
 4. **Server Docker image** — builds `server/Dockerfile` and pushes to GHCR at `ghcr.io/<owner>/copywraith-server`, tagged with the semver `{{version}}`, `{{major}}.{{minor}}`, and `latest` (the `latest` tag is skipped for prereleases).
 5. **Publish release** — once all build jobs succeed, the draft is flipped to published.
 
-**Signing/notarization caveats:** all builds succeed without any signing secrets. When the optional Apple secrets are present the macOS bundles are code-signed and notarized; otherwise they are unsigned. Likewise, the Android APK is only properly signed when the keystore secrets are set — without them it is unsigned and suitable only for sideloading. The optional `TAURI_SIGNING_*` secrets enable Tauri updater signatures.
+**Signing/notarization caveats:** the **macOS bundles are unsigned and un-notarized by design** — `release.yml` deliberately does not pass any `APPLE_*` secrets to `tauri-action`. macOS will warn on first launch. Users approve the app under **System Settings → Privacy & Security → Open Anyway** (which appears for about an hour after the first blocked launch attempt), or clear the quarantine attribute. The older Control-click → Open bypass no longer works — Apple removed it in macOS Sequoia (15) — so don't document it; see [`README.mac.md`](README.mac.md) for the steps given to users.
+
+This is not an oversight. `tauri-action` attempts code-signing whenever `APPLE_CERTIFICATE` is set, and a certificate it cannot import fails the build outright (`failed codesign application: failed to run command security import: failed to import keychain certificate`). That sank both macOS jobs on v0.2.0 and v0.3.0, and since `publish-release` requires the whole `build-desktop` matrix, both releases were left as drafts. Not passing the secrets makes the result independent of whatever happens to be in the secret store. To sign again, restore the `APPLE_*` environment entries on the "Build and upload Tauri bundles" step and verify the certificate imports (`security import`) before relying on it.
+
+The Android APK is only properly signed when the keystore secrets are set — without them it is unsigned and suitable only for sideloading. The optional `TAURI_SIGNING_*` secrets enable Tauri updater signatures.
 
 ## Secrets
 
-`GITHUB_TOKEN` is provided automatically (used to create the release and push to GHCR). Every secret below is **optional — release builds complete without them**, just unsigned / un-notarized.
+`GITHUB_TOKEN` is provided automatically (used to create the release and push to GHCR). Every secret below is **optional — release builds complete without them**, just unsigned.
 
 | Secret | Enables |
 | --- | --- |
-| `APPLE_CERTIFICATE` | macOS code-signing certificate (base64). |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the certificate. |
-| `APPLE_SIGNING_IDENTITY` | Developer ID signing identity. |
-| `APPLE_ID` | Apple ID used for notarization. |
-| `APPLE_PASSWORD` | App-specific password for notarization. |
-| `APPLE_TEAM_ID` | Apple Developer team ID. |
 | `TAURI_SIGNING_PRIVATE_KEY` | Tauri updater signing key. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for the Tauri updater key. |
 | `ANDROID_KEYSTORE_BASE64` | Android upload keystore (base64); without it the APK is unsigned. |
 | `ANDROID_KEYSTORE_PASSWORD` | Keystore password. |
 | `ANDROID_KEY_ALIAS` | Key alias within the keystore. |
 | `ANDROID_KEY_PASSWORD` | Password for the signing key. |
+
+The `APPLE_*` secrets are **not** read by any workflow — see the signing caveats above. Any that remain in the repository's secret store are inert; deleting them avoids the impression that macOS builds are signed.

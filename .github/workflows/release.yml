@@ -120,15 +120,13 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional macOS code signing / notarization. The build still works
-          # unsigned when these secrets are absent.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Optional Tauri updater signing key.
+          # macOS bundles ship UNSIGNED on purpose. tauri-action code-signs
+          # whenever APPLE_CERTIFICATE is set, and a certificate it cannot
+          # import fails the whole build — which blocks publish-release. Read
+          # CICD.md, "Signing/notarization caveats", before adding any APPLE_*
+          # entry here.
+          #
+          # Optional Tauri updater signing key (unrelated to Apple signing).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
