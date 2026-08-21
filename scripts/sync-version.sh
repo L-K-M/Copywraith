@@ -82,18 +82,47 @@ SEM="[0-9]+\.[0-9]+\.[0-9]+"
 # which release.yml runs against the tag -- requires every manifest to agree, so
 # a release that skipped these would fail validation before building anything.
 # npm owns the lockfile format, so let it do the edit rather than sed.
+# True when the manifest -- and its lockfile, if one is committed -- all record
+# $VERSION. npm writes the version to package.json and to two places in the
+# lockfile, and check-release-version.mjs reads both files, so a drifted
+# lockfile has to count as stale: reporting "ok" on it would leave a tree that
+# still fails the release check.
+npm_project_at_version() {
+  local manifest="$1"
+  local lockfile="$2"
+
+  VERSION="$VERSION" node -e '
+    const fs = require("node:fs");
+    const [manifest, lockfile] = process.argv.slice(1);
+    const version = process.env.VERSION;
+    const read = (path) => JSON.parse(fs.readFileSync(path, "utf8"));
+
+    let matches = read(manifest).version === version;
+    if (matches && fs.existsSync(lockfile)) {
+      const lock = read(lockfile);
+      matches = lock.version === version && lock.packages?.[""]?.version === version;
+    }
+    process.exit(matches ? 0 : 1);
+  ' "$manifest" "$lockfile"
+}
+
 update_npm_project() {
   local dir="$1"
   local rel="${dir#"$REPO_ROOT"/}"
+  local manifest="$dir/package.json"
+  local lockfile="$dir/package-lock.json"
 
-  if [[ ! -f "$dir/package.json" ]]; then
+  if [[ ! -f "$manifest" ]]; then
     return
   fi
 
-  local current
-  current="$(node -p "require('$dir/package.json').version" 2>/dev/null || echo "")"
-  if [[ "$current" == "$VERSION" ]]; then
-    echo "  ok       $rel/package.json"
+  local label="$rel/package.json"
+  if [[ -f "$lockfile" ]]; then
+    label="$label + package-lock.json"
+  fi
+
+  if npm_project_at_version "$manifest" "$lockfile"; then
+    echo "  ok       $label"
     return
   fi
 
@@ -101,9 +130,9 @@ update_npm_project() {
   if [[ "$WRITE" == "1" ]]; then
     npm version "$VERSION" --no-git-tag-version --allow-same-version \
       --prefix "$dir" >/dev/null
-    echo "  updated  $rel/package.json + package-lock.json"
+    echo "  updated  $label"
   else
-    echo "  stale    $rel/package.json ($current)"
+    echo "  stale    $label"
   fi
 }
 
