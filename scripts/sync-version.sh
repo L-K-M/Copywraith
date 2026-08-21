@@ -77,6 +77,36 @@ update_file() {
 
 SEM="[0-9]+\.[0-9]+\.[0-9]+"
 
+# The release engine bumps the root package.json/-lock, but server/ui is a
+# second npm project with its own pair. scripts/check-release-version.mjs --
+# which release.yml runs against the tag -- requires every manifest to agree, so
+# a release that skipped these would fail validation before building anything.
+# npm owns the lockfile format, so let it do the edit rather than sed.
+update_npm_project() {
+  local dir="$1"
+  local rel="${dir#"$REPO_ROOT"/}"
+
+  if [[ ! -f "$dir/package.json" ]]; then
+    return
+  fi
+
+  local current
+  current="$(node -p "require('$dir/package.json').version" 2>/dev/null || echo "")"
+  if [[ "$current" == "$VERSION" ]]; then
+    echo "  ok       $rel/package.json"
+    return
+  fi
+
+  changed=1
+  if [[ "$WRITE" == "1" ]]; then
+    npm version "$VERSION" --no-git-tag-version --allow-same-version \
+      --prefix "$dir" >/dev/null
+    echo "  updated  $rel/package.json + package-lock.json"
+  else
+    echo "  stale    $rel/package.json ($current)"
+  fi
+}
+
 echo "Checking files..."
 
 # docker-compose.yml (root)
@@ -108,6 +138,9 @@ update_file "$REPO_ROOT/README.md" \
 update_file "$REPO_ROOT/scripts/redeploy-server-docker.sh" \
   "COPYWRAITH_SERVER_IMAGE_TAG=${SEM}" \
   "COPYWRAITH_SERVER_IMAGE_TAG=${VERSION}"
+
+# server/ui npm manifests
+update_npm_project "$REPO_ROOT/server/ui"
 
 echo ""
 if [[ "$changed" == "0" ]]; then
