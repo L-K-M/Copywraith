@@ -21,6 +21,19 @@ Tauri setup guide: https://v2.tauri.app/start/prerequisites/
 
 ## Install
 
+> [!IMPORTANT]
+> Released macOS bundles are **unsigned and un-notarized** (see the signing
+> caveats in [`CICD.md`](CICD.md)), so Gatekeeper blocks them on first launch.
+> Open the app once via **right-click → Open → Open**, or clear the quarantine
+> flag:
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/Copywraith.app
+> ```
+>
+> This applies only to downloaded releases. A build you make yourself with
+> `npm run tauri build` runs without the prompt.
+
 From the repository root:
 
 ```bash

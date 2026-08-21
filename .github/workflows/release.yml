@@ -120,15 +120,24 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional macOS code signing / notarization. The build still works
-          # unsigned when these secrets are absent.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Optional Tauri updater signing key.
+          # macOS bundles ship UNSIGNED, deliberately. tauri-action attempts
+          # code-signing whenever APPLE_CERTIFICATE is set, and an unimportable
+          # certificate fails the build outright:
+          #
+          #   failed codesign application: failed to run command security
+          #   import: failed to import keychain certificate
+          #
+          # That sank both macOS jobs on v0.2.0 and v0.3.0, and because
+          # publish-release needs the whole build-desktop matrix, it left both
+          # releases stuck as drafts. Not passing the Apple secrets keeps the
+          # outcome independent of whatever is in the secret store.
+          #
+          # To sign again: restore APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
+          # APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID
+          # here, and make sure the certificate is a base64 .p12 whose password
+          # matches — verify with `security import` before relying on it.
+          #
+          # Optional Tauri updater signing key (unrelated to Apple signing).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
