@@ -24,13 +24,7 @@ jobs:
   review:
     name: Review PR with GLM 5.3
     runs-on: ubuntu-latest
-    # The action splits the diff into ~50k-char chunks and gives each chunk 3
-    # attempts at a 300s request timeout — so one chunk can legitimately spend
-    # 15 minutes before it gives up and moves on. A 15-minute cap killed the job
-    # mid-retry on a large PR, which reported `cancelled` and posted nothing;
-    # this cap lets the action exhaust its own budget on a few chunks and still
-    # post its partial-review comment. A healthy review takes a minute or two.
-    timeout-minutes: 45
+    timeout-minutes: 90
     # pull_request_target exposes repository secrets and a write-capable token.
     # Never run this privileged job for branches from untrusted forks.
     if: >-
@@ -42,7 +36,7 @@ jobs:
       - name: Z.ai Code Review
         if: ${{ env.ZAI_API_KEY != '' }}
         # Pin privileged third-party actions to an immutable commit.
-        # 7d0ce7b = v0.0.9, the current main tip. Verify before bumping:
+        # 7d0ce7b = v0.0.9. Verify before bumping:
         #   git ls-remote https://github.com/L-K-M/zai-code-review refs/tags/v0.0.9
         uses: L-K-M/zai-code-review@7d0ce7b0c226c70eed194615130fa5b632ba4798
         with:
