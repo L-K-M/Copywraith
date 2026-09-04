@@ -98,6 +98,14 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Test GNOME shortcut registration in an isolated session
+        run: |
+          sudo apt-get install -y gnome-settings-daemon-common dconf-gsettings-backend dbus-x11
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          XDG_CONFIG_HOME="$config" COPYWRAITH_TEST_GSETTINGS=1 \
+            dbus-run-session -- cargo test -p copywraith-tauri gnome_keybinding_round_trip
+
   # The Ubuntu/Linux desktop bundle is what the release workflow ships, so build
   # it here too — packaging breakage (a renamed binary, a missing icon, an
   # AppImage that will not assemble) otherwise only surfaces at tag time.
@@ -157,3 +165,30 @@ jobs:
             target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 7
+
+  # Test the installed package without the build job's development libraries.
+  linux-smoke:
+    name: Ubuntu client smoke (${{ matrix.platform }})
+    needs: linux-bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundles
+          path: linux-bundles
+
+      - name: Install the deb and desktop test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./linux-bundles/deb/*.deb \
+            xvfb xauth xclip xdotool openbox dbus-x11
+
+      - name: Exercise the installed client
+        run: python3 scripts/smoke-linux-client.py
