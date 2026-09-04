@@ -51,9 +51,10 @@ def wait_for(description, condition, client):
     while time.monotonic() < deadline:
         assert client.poll() is None, f"Client exited: {client.returncode}"
         if condition():
-            print(f"PASS: {description}", flush=True)
-            # Respect the client's toggle debounce between successive actions.
+            # Respect toggle debounce and reject disappearance caused by exit.
             time.sleep(POLL_SECONDS)
+            assert client.poll() is None, f"Client exited: {client.returncode}"
+            print(f"PASS: {description}", flush=True)
             return
         time.sleep(POLL_SECONDS)
     raise AssertionError(f"Timed out: {description}")
@@ -206,10 +207,12 @@ def isolated_session(binary):
             path.mkdir(mode=0o700)
             env[key] = str(path)
         env.update(GDK_BACKEND="x11", XDG_SESSION_TYPE="x11",
-                   XDG_CURRENT_DESKTOP="Openbox", RUST_LOG="info",
+                   XDG_CURRENT_DESKTOP="Openbox",
+                   RUST_LOG="info,copywraith_tauri_lib=debug", G_MESSAGES_DEBUG="all",
                    LIBGL_ALWAYS_SOFTWARE="1")
         child = subprocess.Popen(
-            ["xvfb-run", "--auto-servernum", "dbus-run-session", "--",
+            ["xvfb-run", "--auto-servernum", "--error-file=/dev/stderr",
+             "dbus-run-session", "--",
              sys.executable, str(Path(__file__).resolve()), binary, "--session"],
             env=env, start_new_session=True,
         )

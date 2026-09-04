@@ -35,6 +35,9 @@ jobs:
       - name: Type-check (svelte-check)
         run: npm run check
 
+      - name: Test Linux smoke harness
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
       - name: Build popup frontend
         run: npm run build
 
