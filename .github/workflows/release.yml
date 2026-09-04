@@ -138,6 +138,23 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: ./scripts/check-linux-bundle.sh
 
+      - name: Install and exercise the release deb
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          COPYWRAITH_SMOKE_ARTIFACTS: linux-smoke-results
+        run: |
+          sudo apt-get install -y ./target/release/bundle/deb/*.deb \
+            xvfb xauth xclip xdotool openbox dbus-x11 scrot
+          python3 scripts/smoke-linux-client.py
+
+      - name: Upload Linux smoke diagnostics
+        if: always() && matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-smoke
+          path: linux-smoke-results
+          retention-days: 7
+
   # ---------------------------------------------------------------------------
   # Android APK. Signed when an upload keystore is configured via secrets,
   # otherwise the unsigned release APK is attached.

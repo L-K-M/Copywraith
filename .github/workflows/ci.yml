@@ -188,7 +188,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ./linux-bundles/deb/*.deb \
-            xvfb xauth xclip xdotool openbox dbus-x11
+            xvfb xauth xclip xdotool openbox dbus-x11 scrot
 
       - name: Exercise the installed client
+        env:
+          COPYWRAITH_SMOKE_ARTIFACTS: linux-smoke-results
         run: python3 scripts/smoke-linux-client.py
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-smoke-${{ matrix.platform }}
+          path: linux-smoke-results
+          retention-days: 7

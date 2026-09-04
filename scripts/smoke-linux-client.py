@@ -5,6 +5,8 @@ import argparse
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -82,7 +84,12 @@ def copy_text(text):
 
 
 def clipboard_text():
-    return run("xclip", "-selection", "clipboard", "-o", capture_output=True).stdout
+    # Ownership transfers can temporarily leave no readable selection.
+    result = subprocess.run(
+        ["xclip", "-selection", "clipboard", "-o"],
+        text=True, capture_output=True, timeout=COMMAND_SECONDS,
+    )
+    return result.stdout if result.returncode == 0 else None
 
 
 def press(key):
@@ -126,15 +133,16 @@ def exercise(binary, client, log_path):
 
     def selection_pasted():
         press("Return")
-        return not popup_visible(client)
+        return not popup_visible(client) and clipboard_text() == FIRST_TEXT
 
     wait_for("search result pastes and closes popup", selection_pasted, client)
-    assert clipboard_text() == FIRST_TEXT, "Search pasted the wrong entry"
 
     # Empty clipboard content is ignored by history; CLI paste restores history.
     time.sleep(PASTE_SETTLE_SECONDS)  # Let self-write suppression expire.
     expected = history_texts()[0]
     copy_text("")
+    wait_for("clipboard is empty before restoring history",
+             lambda: clipboard_text() == "", client)
     run(binary, "--paste-plaintext")
     wait_for("forwarded plaintext paste restores clipboard",
              lambda: clipboard_text() == expected, client)
@@ -147,8 +155,13 @@ def session(binary):
         with process("openbox", log=log), process(binary, log=log) as client:
             try:
                 exercise(binary, client, log_path)
-            finally:
-                print(log_path.read_text(), flush=True)
+            except Exception:
+                subprocess.run(["xdotool", "getwindowfocus", "getwindowname"],
+                               timeout=COMMAND_SECONDS)
+                artifacts = os.environ.get("COPYWRAITH_SMOKE_ARTIFACTS")
+                if artifacts:
+                    run("scrot", str(Path(artifacts) / "desktop.png"))
+                raise
 
 
 def main():
@@ -164,6 +177,11 @@ def main():
     # Isolate history, shortcuts, the instance socket, D-Bus, and display.
     with tempfile.TemporaryDirectory(prefix="copywraith-smoke-") as directory:
         env = os.environ.copy()
+        artifacts = env.get("COPYWRAITH_SMOKE_ARTIFACTS")
+        if artifacts:
+            artifacts = Path(artifacts).resolve()
+            artifacts.mkdir(parents=True, exist_ok=True)
+            env["COPYWRAITH_SMOKE_ARTIFACTS"] = str(artifacts)
         for key in ("APPIMAGE", "APPDIR", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
             env.pop(key, None)
         for key, subdir in {
@@ -176,11 +194,27 @@ def main():
         env.update(GDK_BACKEND="x11", XDG_SESSION_TYPE="x11",
                    XDG_CURRENT_DESKTOP="Openbox", RUST_LOG="info",
                    LIBGL_ALWAYS_SOFTWARE="1")
-        subprocess.run(
-            ["dbus-run-session", "--", "xvfb-run", "--auto-servernum",
+        child = subprocess.Popen(
+            ["xvfb-run", "--auto-servernum", "dbus-run-session", "--",
              sys.executable, str(Path(__file__).resolve()), binary, "--session"],
-            env=env, check=True, timeout=SESSION_SECONDS,
+            env=env, start_new_session=True,
         )
+        try:
+            returncode = child.wait(timeout=SESSION_SECONDS)
+            if returncode:
+                raise subprocess.CalledProcessError(returncode, child.args)
+        finally:
+            # Also clean up desktop grandchildren on timeout or interruption.
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
+            log_path = Path(env["HOME"]) / "client.log"
+            if log_path.exists():
+                print(log_path.read_text(), flush=True)
+                if artifacts:
+                    shutil.copyfile(log_path, artifacts / "client.log")
 
 
 if __name__ == "__main__":
