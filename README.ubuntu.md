@@ -35,6 +35,17 @@ npm run tauri dev      # development
 npm run tauri build    # .deb / .rpm / AppImage under target/release/bundle/
 ```
 
+## Desktop compatibility
+
+The amd64 `.deb` is smoke-tested on Ubuntu 22.04 and 24.04: startup,
+clipboard history, popup commands, search, and copying entries back.
+
+Clipboard monitoring currently uses X11/XWayland, not a native Wayland
+clipboard protocol. Background capture from native Wayland applications is
+not guaranteed. Use **Ubuntu on Xorg** at login for the tested clipboard path.
+GNOME Wayland shortcut registration is tested separately; it does not remove
+this clipboard limitation.
+
 ## Global keyboard shortcuts
 
 Wayland deliberately forbids applications from grabbing keys globally, and the
@@ -105,14 +116,17 @@ Wayland does not let apps inject keystrokes either, so paste goes through
 `/dev/uinput`:
 
 ```bash
-sudo apt install ydotool
-systemctl --user enable --now ydotoold
-sudo usermod -aG input "$USER"   # then log out and back in
+sudo apt install ydotool ydotoold
 ```
 
-With `ydotool` working, tapping an entry copies it and pastes into the window
-that had focus. Without it, the entry is copied and a notification asks you to
-press **Ctrl+V** yourself.
+Ubuntu 22.04/24.04 ship ydotool 0.1.8 and package the daemon separately;
+they do **not** install a `ydotoold` user service. Configure the daemon and
+`/dev/uinput` permissions for your system. Do not run Copywraith as root.
+
+Copywraith supports both 0.1.x symbolic keys (`ydotool key ctrl+v`) and 1.x
+event codes. With a working daemon, selecting an entry copies it and injects
+paste into the focused window. Without working input access, the entry stays
+on the clipboard and a notification asks you to press **Ctrl+V** yourself.
 
 ## Troubleshooting
 

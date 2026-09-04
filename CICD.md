@@ -11,7 +11,7 @@ Copywraith is a cross-platform Tauri app (Rust backend + Svelte frontend) with a
 
 ## Continuous integration (`ci.yml`)
 
-Three jobs run in parallel on `ubuntu-22.04`. In-progress runs for the same ref are cancelled when a new commit is pushed.
+Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Installed-client smoke tests follow on Ubuntu 22.04 and 24.04. In-progress runs for the same ref are cancelled when a new commit is pushed.
 
 **Frontend (check & build)** — uses Node 20 with npm caching:
 
@@ -35,7 +35,9 @@ Three jobs run in parallel on `ubuntu-22.04`. In-progress runs for the same ref 
 - `scripts/check-linux-bundle.sh` — asserts the `.deb` installs `/usr/bin/copywraith`, ships a `copywraith.png` icon, and execs `copywraith` from its desktop entry. The Ubuntu and KDE docs tell users to bind `copywraith --toggle` to a global shortcut, and the app writes `Icon=copywraith` into its autostart entry, so a renamed binary would silently break both. The binary name comes from `mainBinaryName` in `src-tauri/tauri.conf.json`.
 - Uploads the `.deb` and AppImage as a build artifact (7-day retention).
 
-The release workflow runs the same `check-linux-bundle.sh` on its Linux desktop build.
+**Ubuntu client smoke** — installs the `.deb` on fresh Ubuntu 22.04 and 24.04 runners, then runs `scripts/smoke-linux-client.py` in isolated D-Bus/Xvfb/Openbox sessions. It checks startup, clipboard capture, single-instance commands, the X11 global shortcut, frontend Escape handling, search-and-paste, and plaintext restoration without duplicate history.
+
+The release workflow also checks package contents and smoke-tests its actual release `.deb` before publication. These tests do not validate a physical GNOME Wayland session, tray rendering, or `/dev/uinput` keystroke injection.
 
 ### Running CI checks locally
 
@@ -64,9 +66,9 @@ npm run tauri -- build --bundles deb,appimage
 
 On Linux you also need the Tauri system dependencies listed above before running the cargo commands.
 
-### Optional: the GNOME keybinding test
+### GNOME keybinding test
 
-`cargo test --workspace` covers the accelerator translation and `gsettings` parsing with pure unit tests. The round-trip against a real `gsettings` — creating, updating, and removing GNOME custom keybindings — is opt-in, because it rewrites whatever dconf database the process can reach. CI does not run it. Against a throwaway session:
+`cargo test --workspace` covers accelerator translation and `gsettings` parsing. CI separately enables the real `gsettings` round-trip — creating, updating, and removing GNOME custom keybindings — in a disposable configuration and D-Bus session. Keep it isolated locally too:
 
 ```sh
 sudo apt install gnome-settings-daemon-common dconf-gsettings-backend dbus-x11
@@ -85,7 +87,7 @@ git push origin v1.2.3
 
 The tag must match `v*.*.*`. A tag containing `-` (e.g. `v1.2.3-rc.1`) is treated as a prerelease.
 
-The workflow runs as a fan-out:
+The workflow first runs CI (including Ubuntu runtime checks) and validates that the tag matches all manifests. It then fans out:
 
 1. **Create draft release** — creates a draft GitHub Release named `Copywraith <tag>` with auto-generated notes. Every build job uploads into this draft.
 2. **Desktop** (`tauri-action`, matrix, `fail-fast: false`) — builds bundles for:

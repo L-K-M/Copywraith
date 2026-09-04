@@ -289,12 +289,10 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
 
 #[cfg(desktop)]
 fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String> {
-    // On macOS the global-shortcut callback may fire on an arbitrary thread,
-    // but NSWindow operations (is_visible, set_position, unminimize, show,
-    // set_focus, hide, panel.show / order_out) must run on the main thread.
-    // Dispatch the entire toggle body there; on non-macOS platforms the
-    // callback thread is safe for window operations.
-    #[cfg(target_os = "macos")]
+    // Shortcut callbacks can run on worker threads. NSWindow needs the main
+    // thread, as do Linux monitor conversions: Tauri returns native monitor
+    // handles, then reads their GDK properties on the caller's thread.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let app = app.clone();
         if let Some(popup) = app.get_webview_window("popup") {
@@ -302,10 +300,10 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
                 let _ = toggle_popup_impl(&app, starred_only);
             });
         }
-        return Ok(());
+        Ok(())
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         toggle_popup_impl(app, starred_only)
     }
@@ -376,7 +374,10 @@ fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), S
         #[cfg(target_os = "macos")]
         show_popup_and_panel_on_main_thread(app, &popup);
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        linux::show_popup(&popup).map_err(|error| error.to_string())?;
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             let _ = popup.set_always_on_top(true);
             let _ = popup.unminimize();
