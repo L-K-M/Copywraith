@@ -19,6 +19,7 @@ COMMAND_SECONDS = 5
 UI_SETTLE_SECONDS = 1
 PASTE_SETTLE_SECONDS = 1
 SESSION_SECONDS = 300
+SMOKE_REPETITIONS = 3
 APP_ID = "ch.lkmc.copywraith"
 FIRST_TEXT = "Copywraith Ubuntu smoke first entry"
 SECOND_TEXT = "Copywraith Ubuntu smoke second entry"
@@ -149,6 +150,14 @@ def exercise(binary, client, log_path):
     assert len(history_texts()) == 2, "Pasting duplicated clipboard history"
 
 
+def diagnose(*args):
+    # A broken display or missing diagnostic tool must not hide the test error.
+    try:
+        subprocess.run(args, timeout=COMMAND_SECONDS)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"Diagnostic failed: {error}", file=sys.stderr)
+
+
 def session(binary):
     log_path = Path(os.environ["HOME"]) / "client.log"
     with log_path.open("w") as log:
@@ -156,11 +165,10 @@ def session(binary):
             try:
                 exercise(binary, client, log_path)
             except Exception:
-                subprocess.run(["xdotool", "getwindowfocus", "getwindowname"],
-                               timeout=COMMAND_SECONDS)
+                diagnose("xdotool", "getwindowfocus", "getwindowname")
                 artifacts = os.environ.get("COPYWRAITH_SMOKE_ARTIFACTS")
                 if artifacts:
-                    run("scrot", str(Path(artifacts) / "desktop.png"))
+                    diagnose("scrot", str(Path(artifacts) / "desktop.png"))
                 raise
 
 
@@ -174,6 +182,12 @@ def main():
         session(binary)
         return
 
+    for attempt in range(SMOKE_REPETITIONS):
+        print(f"Smoke run {attempt + 1}/{SMOKE_REPETITIONS}", flush=True)
+        isolated_session(binary)
+
+
+def isolated_session(binary):
     # Isolate history, shortcuts, the instance socket, D-Bus, and display.
     with tempfile.TemporaryDirectory(prefix="copywraith-smoke-") as directory:
         env = os.environ.copy()

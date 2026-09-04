@@ -101,7 +101,9 @@ mod tests {
             static EXECUTABLE_LOCK: Mutex<()> = Mutex::new(());
             // A concurrent fork can inherit a writable fixture fd until exec,
             // causing ETXTBSY. Keep fixture creation and execution together.
-            let lock = EXECUTABLE_LOCK.lock().unwrap();
+            let lock = EXECUTABLE_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let directory = std::env::temp_dir().join(format!(
                 "copywraith-ydotool-{}-{}",
                 std::process::id(),
@@ -119,6 +121,17 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(self.path.parent().unwrap());
         }
+    }
+
+    #[test]
+    fn fixture_recovers_after_a_test_panics() {
+        let result = std::panic::catch_unwind(|| {
+            let _program = FakeYdotool::new("exit 0");
+            panic!("simulate a failed assertion while holding the fixture lock");
+        });
+        assert!(result.is_err());
+
+        let _program = FakeYdotool::new("exit 0");
     }
 
     #[test]
