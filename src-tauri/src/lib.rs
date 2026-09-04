@@ -300,7 +300,7 @@ fn toggle_popup(app: &tauri::AppHandle, starred_only: bool) -> Result<(), String
                 let _ = toggle_popup_impl(&app, starred_only);
             });
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]

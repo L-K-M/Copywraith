@@ -20,6 +20,7 @@ UI_SETTLE_SECONDS = 1
 PASTE_SETTLE_SECONDS = 1
 SESSION_SECONDS = 300
 SMOKE_REPETITIONS = 3
+DOCUMENT_PORTAL_DIRECTORY = "doc"
 APP_ID = "ch.lkmc.copywraith"
 FIRST_TEXT = "Copywraith Ubuntu smoke first entry"
 SECOND_TEXT = "Copywraith Ubuntu smoke second entry"
@@ -188,6 +189,17 @@ def main():
         isolated_session(binary)
 
 
+def unmount_document_portal(runtime_directory):
+    # Killing the private portal can leave a disconnected FUSE mount. Detach
+    # only this session's mount before TemporaryDirectory traverses it.
+    runtime = Path(runtime_directory)
+    if not any(path.name == DOCUMENT_PORTAL_DIRECTORY for path in runtime.iterdir()):
+        return
+    unmounter = shutil.which("fusermount3") or shutil.which("fusermount")
+    if unmounter:
+        diagnose(unmounter, "-uz", str(runtime / DOCUMENT_PORTAL_DIRECTORY))
+
+
 def isolated_session(binary):
     # Isolate history, shortcuts, the instance socket, D-Bus, and display.
     with tempfile.TemporaryDirectory(prefix="copywraith-smoke-") as directory:
@@ -227,6 +239,7 @@ def isolated_session(binary):
             except ProcessLookupError:
                 pass
             child.wait()
+            unmount_document_portal(env["XDG_RUNTIME_DIR"])
             log_path = Path(env["HOME"]) / "client.log"
             if log_path.exists():
                 print(log_path.read_text(), flush=True)
