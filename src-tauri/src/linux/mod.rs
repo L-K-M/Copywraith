@@ -10,15 +10,12 @@
 //! macOS paste path.
 
 pub mod shortcuts;
+mod ydotool;
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::time::Duration;
-
-/// Linux input event keycodes (see `linux/input-event-codes.h`).
-const KEY_LEFTCTRL: &str = "29";
-const KEY_V: &str = "47";
 
 /// Simulate Ctrl+V into whatever window regains focus after the popup hides.
 ///
@@ -34,7 +31,7 @@ pub fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
         // window before the keystroke is delivered.
         std::thread::sleep(Duration::from_millis(140));
 
-        match run_ydotool_paste() {
+        match ydotool::paste() {
             Ok(()) => log::debug!("Paste simulation via ydotool succeeded"),
             Err(e) => {
                 log::warn!("Automatic paste unavailable ({e}); leaving content on the clipboard");
@@ -42,38 +39,6 @@ pub fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
             }
         }
     });
-}
-
-/// Run `ydotool` to press and release Ctrl+V.
-fn run_ydotool_paste() -> Result<(), String> {
-    if which("ydotool").is_none() {
-        return Err("ydotool is not installed".to_string());
-    }
-
-    // key syntax: <keycode>:<1=press|0=release>
-    let output = Command::new("ydotool")
-        .args([
-            "key",
-            &format!("{KEY_LEFTCTRL}:1"),
-            &format!("{KEY_V}:1"),
-            &format!("{KEY_V}:0"),
-            &format!("{KEY_LEFTCTRL}:0"),
-        ])
-        .output()
-        .map_err(|e| format!("failed to run ydotool: {e}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        // The most common cause is a missing/unreachable ydotoold daemon.
-        Err(if stderr.is_empty() {
-            "ydotool failed (is ydotoold running?)".to_string()
-        } else {
-            format!("ydotool failed: {stderr}")
-        })
-    }
 }
 
 /// Tell the user the content is on the clipboard and they should paste manually.
