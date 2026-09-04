@@ -9,6 +9,7 @@
 //! This module is only compiled on Linux and is kept entirely separate from the
 //! macOS paste path.
 
+mod popup;
 pub mod shortcuts;
 mod ydotool;
 
@@ -16,6 +17,11 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::time::Duration;
+
+/// Show the popup and focus its webview through the native desktop adapter.
+pub(super) fn show_popup(popup: &tauri::WebviewWindow) -> tauri::Result<()> {
+    popup::show(popup)
+}
 
 /// Simulate Ctrl+V into whatever window regains focus after the popup hides.
 ///

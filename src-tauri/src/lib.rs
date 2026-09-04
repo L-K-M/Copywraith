@@ -376,7 +376,10 @@ fn toggle_popup_impl(app: &tauri::AppHandle, starred_only: bool) -> Result<(), S
         #[cfg(target_os = "macos")]
         show_popup_and_panel_on_main_thread(app, &popup);
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        linux::show_popup(&popup).map_err(|error| error.to_string())?;
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             let _ = popup.set_always_on_top(true);
             let _ = popup.unminimize();
