@@ -55,6 +55,8 @@
 	let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Unlisten functions for cleanup
+	let destroyed = false;
+	let unlistenActivity: UnlistenFn;
 	let unlistenFocus: UnlistenFn;
 	let unlistenClipboardUpdated: UnlistenFn;
 	let unlistenClipboardReordered: UnlistenFn;
@@ -76,6 +78,27 @@
 			platform.set('');
 		}
 
+		if (destroyed) return;
+		const mobile = detectedPlatform === 'android' || detectedPlatform === 'ios';
+
+		// Native move grabs must neither dim nor dismiss the desktop popup.
+		unlistenActivity = windowManager.subscribeActivity((active) => {
+			windowFocused.set(active);
+			if (mobile) return;
+
+			if (autoHideTimer) {
+				clearTimeout(autoHideTimer);
+				autoHideTimer = null;
+			}
+
+			if (active) return;
+
+			autoHideTimer = setTimeout(() => {
+				autoHideTimer = null;
+				windowManager.close();
+			}, AUTO_HIDE_DELAY_MS);
+		});
+
 		try {
 			unlistenSyncEndpointStatus = await listen<SyncEndpointStatusInput>(
 				'sync-endpoint-status',
@@ -84,8 +107,6 @@
 		} catch (e) {
 			console.error('Failed to listen for sync endpoint status:', e);
 		}
-
-		const mobile = detectedPlatform === 'android' || detectedPlatform === 'ios';
 
 		// Load cached entries immediately, then refresh mobile from clipboard/server.
 		void loadEntries();
@@ -104,28 +125,14 @@
 			}
 		}
 
-		// Track window focus
-		unlistenFocus = await appWindow.onFocusChanged(({ payload: focused }) => {
-			windowFocused.set(focused);
-
-			if (focused) {
-				if (autoHideTimer) {
-					clearTimeout(autoHideTimer);
-					autoHideTimer = null;
-				}
-			} else if (!mobile) {
-				if (autoHideTimer) clearTimeout(autoHideTimer);
-				autoHideTimer = setTimeout(() => {
-					autoHideTimer = null;
-					windowManager.close();
-				}, AUTO_HIDE_DELAY_MS);
-			}
-
-			// On mobile, refresh clipboard and server state when the app resumes.
-			if (mobile && focused) {
-				void refreshMobileEntries('App resumed on mobile.');
-			}
-		});
+		// Mobile resume still follows input focus, independently of decorations.
+		if (mobile) {
+			const stop = await appWindow.onFocusChanged(({ payload: focused }) => {
+				if (focused) void refreshMobileEntries('App resumed on mobile.');
+			});
+			if (destroyed) stop();
+			else unlistenFocus = stop;
+		}
 
 		// Listen for clipboard changes from the Rust backend
 		unlistenClipboardUpdated = await listen('clipboard-updated', () => {
@@ -162,6 +169,9 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
+		unlistenActivity?.();
+
 		if (autoHideTimer) {
 			clearTimeout(autoHideTimer);
 			autoHideTimer = null;
