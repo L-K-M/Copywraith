@@ -120,10 +120,10 @@ Shortcuts can be changed in Settings.
 
 ## Clipboard And Paste Behavior
 
-Clipboard monitoring is owned by the Rust backend. The app listens for native clipboard monitor events and reads clipboard content in this priority order:
+Clipboard access is owned by the Rust `NativeClipboard` adapter (clipboard-rs 0.3). Its macOS watcher detects pasteboard `changeCount` changes; capture reads content in this priority order:
 
 ```text
-Image > File > HTML > RTF > Text
+Image > File > Text/HTML/RTF bundle
 ```
 
 On macOS, simulated paste uses `osascript` from a background thread so the popup can hide and focus can return to the previous app before `Cmd+V` is sent.

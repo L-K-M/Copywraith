@@ -3,57 +3,36 @@ use std::sync::Arc;
 
 use copywraith_core::content::hash_bytes;
 use copywraith_core::models::{ClipboardFlavors, ContentType};
-use tauri::{Emitter, Listener, Manager};
-use tauri_plugin_clipboard::Clipboard;
+use tauri::{Emitter, Manager};
+
+use crate::native_clipboard::{ClipboardPayload, NativeClipboard};
 
 use crate::storage::LocalStorage;
 use crate::sync::SyncClient;
 
-/// Start monitoring the clipboard for changes.
-///
-/// Uses the tauri-plugin-clipboard Rust API directly:
-/// 1. Starts the native clipboard monitor via `Clipboard::start_monitor()`
-/// 2. Listens for the single generic `plugin:clipboard://clipboard-monitor/update` event
-/// 3. On each change, reads clipboard contents using has_*/read_* methods
-/// 4. Stores new entries in local SQLite and triggers server sync
+/// Subscribe before starting the native watcher; capture runs on its worker.
 pub fn start_monitoring(
     app: tauri::AppHandle,
     storage: Arc<LocalStorage>,
     sync_client: Arc<SyncClient>,
 ) {
-    // Start the native clipboard monitor from Rust (no JS dependency)
-    let clipboard = app.state::<Clipboard>();
-    if let Err(e) = clipboard.start_monitor(app.clone()) {
-        log::error!("Failed to start clipboard monitor: {}", e);
-        return;
-    }
-    log::info!("Clipboard monitor started");
-
-    // Listen for the single generic clipboard change event
-    // The plugin emits this for ALL clipboard changes (text, image, html, files, etc.)
-    let app_clone = app.clone();
-    app.listen(
-        "plugin:clipboard://clipboard-monitor/update",
-        move |_event| {
-            {
-                let state = app_clone.state::<crate::AppState>();
-                let suppress_guard = state.suppress_monitor_until.lock();
-                if let Ok(guard) = suppress_guard {
-                    if let Some(deadline) = *guard {
-                        if std::time::Instant::now() < deadline {
-                            log::debug!(
-                                "Skipping self-triggered clipboard monitor event (suppress window active)"
-                            );
-                            return;
-                        }
-                    }
-                };
+    let callback_app = app.clone();
+    let clipboard = app.state::<NativeClipboard>();
+    if let Err(error) = clipboard.start_monitor(
+        move || {
+            let state = callback_app.state::<crate::AppState>();
+            if let Ok(guard) = state.suppress_monitor_until.lock() {
+                if guard.is_some_and(|deadline| std::time::Instant::now() < deadline) {
+                    return;
+                }
             }
-
-            let clipboard = app_clone.state::<Clipboard>();
-            handle_clipboard_change(&app_clone, &clipboard, &storage, &sync_client);
+            let clipboard = callback_app.state::<NativeClipboard>();
+            handle_clipboard_change(&callback_app, &clipboard, &storage, &sync_client);
         },
-    );
+        |error| log::error!("Clipboard monitor failed: {error}"),
+    ) {
+        log::error!("Failed to start clipboard monitor: {error}");
+    }
 }
 
 /// Handle a clipboard change by reading current clipboard contents and storing them.
@@ -65,80 +44,69 @@ pub fn start_monitoring(
 /// (`text/plain`, `text/html`, `text/rtf`) in one logical entry.
 fn handle_clipboard_change(
     app: &tauri::AppHandle,
-    clipboard: &Clipboard,
+    clipboard: &NativeClipboard,
     storage: &Arc<LocalStorage>,
     sync_client: &Arc<SyncClient>,
 ) {
     let source_app = read_cached_source_app(app);
 
-    // Check for image first so copied screenshots/files with image payload
-    // are stored as image entries and shown with previews in the UI.
-    if clipboard.has_image().unwrap_or(false) {
-        if let Ok(b64) = clipboard.read_image_base64() {
-            if !b64.is_empty() {
-                if let Ok(bytes) = copywraith_core::content::base64_to_bytes(&b64) {
-                    if !bytes.is_empty() {
-                        let content_hash = hash_bytes(&bytes);
-                        store_entry(
-                            app,
-                            storage,
-                            sync_client,
-                            ContentType::Image,
-                            &ClipboardFlavors::default(),
-                            Some(&bytes),
-                            &content_hash,
-                            source_app.as_deref(),
-                        );
-                        return;
-                    }
-                }
-            }
+    let payload = match clipboard.read() {
+        Ok(payload) => payload,
+        Err(error) => {
+            log::error!("Failed to capture clipboard: {error}");
+            return;
         }
-    }
-
-    // Check for files
-    if clipboard.has_files().unwrap_or(false) {
-        if let Ok(files) = clipboard.read_files() {
-            if !files.is_empty() {
-                // Some apps copy image files without native image payload.
-                // In that case, attempt to read the first image path and store
-                // it as an image entry so previews work as expected.
-                if let Some(bytes) = read_first_image_file(&files) {
-                    let content_hash = hash_bytes(&bytes);
-                    store_entry(
-                        app,
-                        storage,
-                        sync_client,
-                        ContentType::Image,
-                        &ClipboardFlavors::default(),
-                        Some(&bytes),
-                        &content_hash,
-                        source_app.as_deref(),
-                    );
-                    return;
-                }
-
-                let flavors = ClipboardFlavors {
-                    file_list: Some(files),
-                    ..ClipboardFlavors::default()
-                };
-                let content_hash = flavors.payload_hash(ContentType::File, None);
+    };
+    let flavors = match payload {
+        ClipboardPayload::Image(bytes) => {
+            let content_hash = hash_bytes(&bytes);
+            store_entry(
+                app,
+                storage,
+                sync_client,
+                ContentType::Image,
+                &ClipboardFlavors::default(),
+                Some(&bytes),
+                &content_hash,
+                source_app.as_deref(),
+            );
+            return;
+        }
+        ClipboardPayload::Files(files) => {
+            if let Some(bytes) = read_first_image_file(&files) {
+                let content_hash = hash_bytes(&bytes);
                 store_entry(
                     app,
                     storage,
                     sync_client,
-                    ContentType::File,
-                    &flavors,
-                    None,
+                    ContentType::Image,
+                    &ClipboardFlavors::default(),
+                    Some(&bytes),
                     &content_hash,
                     source_app.as_deref(),
                 );
                 return;
             }
+            let flavors = ClipboardFlavors {
+                file_list: Some(files),
+                ..Default::default()
+            };
+            let content_hash = flavors.payload_hash(ContentType::File, None);
+            store_entry(
+                app,
+                storage,
+                sync_client,
+                ContentType::File,
+                &flavors,
+                None,
+                &content_hash,
+                source_app.as_deref(),
+            );
+            return;
         }
-    }
-
-    let flavors = read_text_flavors(clipboard);
+        ClipboardPayload::Flavors(flavors) => flavors,
+        ClipboardPayload::Empty => return,
+    };
     if !flavors.is_empty() {
         let content_type = if flavors.text_plain.is_some() {
             ContentType::Text
@@ -159,42 +127,6 @@ fn handle_clipboard_change(
             &content_hash,
             source_app.as_deref(),
         );
-    }
-}
-
-fn read_text_flavors(clipboard: &Clipboard) -> ClipboardFlavors {
-    let text_plain = if clipboard.has_text().unwrap_or(false) {
-        clipboard
-            .read_text()
-            .ok()
-            .filter(|text| !text.trim().is_empty())
-    } else {
-        None
-    };
-
-    let text_html = if clipboard.has_html().unwrap_or(false) {
-        clipboard
-            .read_html()
-            .ok()
-            .filter(|html| !html.trim().is_empty())
-    } else {
-        None
-    };
-
-    let text_rtf = if clipboard.has_rtf().unwrap_or(false) {
-        clipboard
-            .read_rtf()
-            .ok()
-            .filter(|rtf| !rtf.trim().is_empty())
-    } else {
-        None
-    };
-
-    ClipboardFlavors {
-        text_plain,
-        text_html,
-        text_rtf,
-        file_list: None,
     }
 }
 
