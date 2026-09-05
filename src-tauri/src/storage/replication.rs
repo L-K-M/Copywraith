@@ -420,8 +420,17 @@ impl LocalStorage {
             return Ok(false);
         }
         if matches!(sent.request.action, SyncAction::Delete { .. }) {
+            // An absent generation completes deletion; cancelling a create still
+            // requires confirmation that the server installed its replay fence.
+            let already_absent = receipt.outcome == SyncOutcome::Missing
+                && matches!(
+                    sent.request.action,
+                    SyncAction::Delete {
+                        target: DeleteTarget::Generation { .. }
+                    }
+                );
             anyhow::ensure!(
-                receipt.outcome == SyncOutcome::Applied,
+                receipt.outcome == SyncOutcome::Applied || already_absent,
                 "Server did not acknowledge the requested deletion"
             );
             // Resolve the old incarnation even when its create receipt never arrived.

@@ -331,6 +331,97 @@ async fn lost_create_response_cannot_resurrect_deleted_content() {
 }
 
 #[tokio::test]
+async fn missing_generation_delete_does_not_block_unrelated_captures() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let server_id = server.info().await.server_id;
+    device.storage.bind_sync_server("test", &server_id).unwrap();
+    let obsolete = device.capture("obsolete generation");
+    let candidate = device
+        .storage
+        .sync_candidates(&server_id)
+        .unwrap()
+        .remove(0);
+
+    // Exercise an absent target through the real outbox and HTTP receipt replay.
+    device
+        .storage
+        .enqueue_sync_candidate(
+            &server_id,
+            &candidate,
+            SyncAction::Delete {
+                target: DeleteTarget::Generation {
+                    id: ulid::Ulid::generate().to_string(),
+                },
+            },
+        )
+        .unwrap();
+    device.storage.delete_entry(&obsolete.id).unwrap();
+    let pending = device
+        .storage
+        .pending_mutations(&server_id)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        server.apply(&pending.request).await.outcome,
+        SyncOutcome::Missing
+    );
+    let fresh = device.capture("unrelated capture");
+    let device = device.restart();
+    device.exchange().await;
+
+    assert!(device
+        .storage
+        .pending_mutations(&server_id)
+        .unwrap()
+        .is_empty());
+    assert_eq!(device.entries()[0].id, fresh.id);
+    let entries = server.entries().await;
+    assert_eq!(entries.total, 1);
+    assert_eq!(
+        entries.entries[0].entry.flavors.text_plain.as_deref(),
+        Some("unrelated capture")
+    );
+}
+
+#[tokio::test]
+async fn missing_cancel_receipt_cannot_discard_a_pending_fence() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    const TEXT: &str = "cancel before delivery";
+    let entry = device.capture(TEXT);
+    let create = device.freeze_create(&server, TEXT).await;
+    device.storage.delete_entry(&entry.id).unwrap();
+    let pending = device
+        .storage
+        .pending_mutations(&create.server_id)
+        .unwrap()
+        .remove(0);
+    let mut receipt = server.apply(&pending.request).await;
+
+    // A nonconforming cancellation response must leave its durable intent intact.
+    receipt.outcome = SyncOutcome::Missing;
+    assert!(device
+        .storage
+        .acknowledge_mutation(&pending, &receipt)
+        .is_err());
+    assert_eq!(
+        device
+            .storage
+            .pending_mutations(&create.server_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    device.exchange().await;
+    assert!(device
+        .storage
+        .pending_mutations(&create.server_id)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn cancellation_fences_a_create_that_has_not_arrived() {
     let server = Server::start().await;
     let create = server.create_request("delayed request").await;
