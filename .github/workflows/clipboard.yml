@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-latest]
+        os: [ubuntu-22.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -29,6 +29,6 @@ jobs:
       - name: X11 clipboard events and roundtrips
         if: runner.os == 'Linux'
         run: xvfb-run -a cargo test --locked -p copywraith-server --test native_clipboard -- --ignored --nocapture
-      - name: macOS pasteboard events and roundtrips
-        if: runner.os == 'macOS'
+      - name: Native clipboard events and roundtrips
+        if: runner.os != 'Linux'
         run: cargo test --locked -p copywraith-server --test native_clipboard -- --ignored --nocapture

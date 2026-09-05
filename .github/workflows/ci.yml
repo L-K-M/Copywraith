@@ -38,7 +38,7 @@ jobs:
           npm run check:ts6
 
       - name: Test popup actions and sync status
-        run: node --test scripts/tests/*.test.mjs
+        run: npm run test:frontend
 
       - name: Test storage durability and Linux smoke harness
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
