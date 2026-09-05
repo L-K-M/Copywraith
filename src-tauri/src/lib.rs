@@ -10,6 +10,7 @@ mod native_clipboard;
 mod paste;
 mod storage;
 mod sync;
+mod window_activity;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -76,6 +77,13 @@ pub fn run() {
     builder
         .setup(|app| {
             let app_handle = app.handle().clone();
+            if let Some(popup) = app.get_webview_window("popup") {
+                // Activity tracking must not prevent the clipboard app from starting.
+                window_activity::track(&popup).unwrap_or_else(|error| {
+                    log::warn!("Failed to track window activity: {error}");
+                });
+            }
+
             let data_dir = app
                 .path()
                 .app_data_dir()
@@ -192,6 +200,7 @@ pub fn run() {
             commands::set_shizuku_clipboard_enabled,
             commands::get_platform,
             commands::hide_popup,
+            window_activity::is_window_active,
         ])
         .build(tauri::generate_context!())
         .expect("error while building copywraith")

@@ -18,6 +18,10 @@ POLL_SECONDS = 0.2
 COMMAND_SECONDS = 5
 UI_SETTLE_SECONDS = 1
 PASTE_SETTLE_SECONDS = 1
+DRAG_HOLD_SECONDS = 1  # Exceed the popup's auto-hide grace period.
+TITLE_BAR_DRAG_POINT = (120, 16)
+DRAG_OFFSET_PIXELS = (40, 20)
+PRIMARY_MOUSE_BUTTON = "1"
 SESSION_SECONDS = 300
 SMOKE_REPETITIONS = 3
 DOCUMENT_PORTAL_DIRECTORY = "doc"
@@ -61,14 +65,46 @@ def wait_for(description, condition, client):
     raise AssertionError(f"Timed out: {description}")
 
 
-def popup_visible(client):
+def popup_window_id(client):
     result = subprocess.run(
         ["xdotool", "search", "--onlyvisible", "--pid", str(client.pid),
          "--name", "^Copywraith$"],
         text=True, capture_output=True, timeout=COMMAND_SECONDS,
     )
     assert result.returncode in (0, 1), result.stderr
-    return bool(result.stdout.strip())
+    windows = result.stdout.split()
+    return windows[0] if windows else None
+
+
+def popup_visible(client):
+    return popup_window_id(client) is not None
+
+
+def window_position(window_id):
+    geometry = run("xdotool", "getwindowgeometry", "--shell", window_id,
+                   capture_output=True).stdout
+    values = dict(line.split("=", 1) for line in geometry.splitlines())
+    return int(values["X"]), int(values["Y"])
+
+
+def drag_popup(client):
+    # Hold a real native move grab long enough to expose blur-triggered hiding.
+    time.sleep(UI_SETTLE_SECONDS)
+    window_id = popup_window_id(client)
+    assert window_id is not None, "Popup must be visible before dragging"
+    before = window_position(window_id)
+    run("xdotool", "mousemove", "--sync", "--window", window_id,
+        *map(str, TITLE_BAR_DRAG_POINT))
+    run("xdotool", "mousedown", PRIMARY_MOUSE_BUTTON)
+    try:
+        time.sleep(POLL_SECONDS)  # Let the webview request the native move.
+        run("xdotool", "mousemove_relative", "--sync", "--", *map(str, DRAG_OFFSET_PIXELS))
+        time.sleep(DRAG_HOLD_SECONDS)
+        assert popup_visible(client), "Popup auto-hid during a native drag"
+    finally:
+        run("xdotool", "mouseup", PRIMARY_MOUSE_BUTTON)
+    assert window_position(window_id) != before, "Title-bar drag did not move the popup"
+    print("PASS: native title-bar drag moves without auto-hiding", flush=True)
 
 
 def history_texts():
@@ -121,6 +157,7 @@ def exercise(binary, client, log_path):
     wait_for("frontend Escape hides popup", escape_hides_popup, client)
     press("ctrl+shift+v")
     wait_for("X11 global shortcut opens popup", lambda: popup_visible(client), client)
+    drag_popup(client)
     wait_for("frontend closes popup again", escape_hides_popup, client)
 
     run(binary, "--starred")
