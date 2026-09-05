@@ -22,10 +22,17 @@ xvfb_pid=$!
 trap 'kill "$xvfb_pid" 2>/dev/null || true; wait "$xvfb_pid" 2>/dev/null || true' EXIT
 for attempt in {1..100}; do
     [[ -s "$XDG_RUNTIME_DIR/display" ]] && break
-    kill -0 "$xvfb_pid"
+    if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+        cat "$XDG_RUNTIME_DIR/xvfb.log" >&2
+        exit 1
+    fi
     sleep 0.1
 done
-[[ -s "$XDG_RUNTIME_DIR/display" ]]
+if [[ ! -s "$XDG_RUNTIME_DIR/display" ]]; then
+    echo 'Xvfb did not publish a display before the startup deadline' >&2
+    cat "$XDG_RUNTIME_DIR/xvfb.log" >&2
+    exit 1
+fi
 export DISPLAY=":$(cat "$XDG_RUNTIME_DIR/display")"
 unset WAYLAND_DISPLAY
 export XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=x11 QT_QPA_PLATFORM=xcb
