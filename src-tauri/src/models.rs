@@ -54,11 +54,11 @@ impl Default for Settings {
 /// so the shortcuts are handed to the desktop environment instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutStatus {
-    /// `in_process`, `gnome`, `manual`, or `unsupported`.
+    /// `in_process`, `gnome`, `kde`, `kde_connecting`, `kde_unavailable`, `manual`, or `unsupported`.
     pub mechanism: String,
     /// One sentence explaining the mechanism to the user.
     pub message: String,
-    /// Commands to bind by hand, when `mechanism` is `manual`.
+    /// Commands to bind by hand when native registration is unavailable.
     pub commands: Vec<ShortcutCommand>,
 }
 

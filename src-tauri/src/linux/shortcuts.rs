@@ -15,11 +15,19 @@
 //! - **Wayland + GNOME** (the Ubuntu default): install GNOME custom
 //!   keybindings via `gsettings` that run `copywraith --toggle` and friends.
 //!   The single-instance guard in [`super`] forwards those to the running app.
-//! - **Anything else** (KDE, Sway, …): report the commands so the user can
+//! - **KDE**: register native, user-assigned KGlobalAccel actions.
+//! - **Anything else** (Sway, …): report the commands so the user can
 //!   bind them in their own shortcut editor.
+
+mod kde;
 
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex, Once,
+};
+use std::time::Duration;
 
 use crate::models::{Settings, ShortcutCommand, ShortcutStatus};
 
@@ -98,7 +106,7 @@ impl Action {
     }
 
     /// The flag [`crate::dispatch_cli_command`] understands.
-    fn cli_flag(self) -> &'static str {
+    pub(crate) fn cli_flag(self) -> &'static str {
         match self {
             Action::TogglePopup => "--toggle",
             Action::StarredPopup => "--starred",
@@ -127,7 +135,16 @@ pub struct SyncOutcome {
 }
 
 /// Bind the configured shortcuts using whatever the current session supports.
-pub fn sync(settings: &Settings) -> SyncOutcome {
+pub fn sync(settings: &Settings, on_activate: impl Fn(Action) + Send + 'static) -> SyncOutcome {
+    // KDE owns its assignments on both X11 and Wayland; never also grab keys.
+    if is_kde_session() {
+        start_kde(on_activate);
+        return SyncOutcome {
+            status: kde_status(manual_commands(settings)),
+            use_in_process: false,
+        };
+    }
+
     let session = session_type();
     let gnome = is_gnome_session() && gsettings_usable();
 
@@ -202,6 +219,109 @@ pub fn sync(settings: &Settings) -> SyncOutcome {
         },
         use_in_process: false,
     }
+}
+
+static KDE_STARTED: Once = Once::new();
+static KDE_STOP: AtomicBool = AtomicBool::new(false);
+static KDE_WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static KDE_HEALTH: Mutex<Option<Result<(), String>>> = Mutex::new(None);
+const KDE_RETRY: Duration = Duration::from_secs(2);
+
+fn is_kde_session() -> bool {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("XDG_SESSION_DESKTOP"))
+        .unwrap_or_default();
+    desktop_is_kde(&desktop)
+}
+
+fn desktop_is_kde(desktop: &str) -> bool {
+    desktop
+        .split(':')
+        .any(|part| part.eq_ignore_ascii_case("kde") || part.eq_ignore_ascii_case("plasma"))
+}
+
+fn start_kde(on_activate: impl Fn(Action) + Send + 'static) {
+    KDE_STARTED.call_once(|| {
+        let result = std::thread::Builder::new()
+            .name("kde-shortcuts".into())
+            .spawn(move || loop {
+                if KDE_STOP.load(Ordering::Acquire) {
+                    break;
+                }
+                // Reconnect after bus failure; each new connection restores presence
+                // without changing assignments saved by System Settings.
+                let result = kde::Session::connect().and_then(|mut session| loop {
+                    if KDE_STOP.load(Ordering::Acquire) {
+                        return session.deactivate();
+                    }
+                    let activations = session.poll()?;
+                    *KDE_HEALTH.lock().unwrap() = Some(Ok(()));
+                    for activation in activations {
+                        on_activate(match activation {
+                            kde::Activation::Toggle => Action::TogglePopup,
+                            kde::Activation::Starred => Action::StarredPopup,
+                            kde::Activation::Plaintext => Action::PastePlaintext,
+                        });
+                    }
+                });
+                *KDE_HEALTH.lock().unwrap() = Some(result);
+                if KDE_STOP.load(Ordering::Acquire) {
+                    break;
+                }
+                std::thread::sleep(KDE_RETRY);
+            });
+        match result {
+            Ok(worker) => *KDE_WORKER.lock().unwrap() = Some(worker),
+            Err(error) => *KDE_HEALTH.lock().unwrap() = Some(Err(error.to_string())),
+        }
+    });
+}
+
+/// Stop the worker before exit so KDE releases our keys but keeps assignments.
+pub(crate) fn shutdown() {
+    KDE_STOP.store(true, Ordering::Release);
+    if let Some(worker) = KDE_WORKER.lock().unwrap().take() {
+        if worker.join().is_err() {
+            log::warn!("KDE shortcut worker failed during shutdown");
+        }
+    }
+}
+
+fn kde_status(commands: Vec<ShortcutCommand>) -> ShortcutStatus {
+    status_for_kde_health(KDE_HEALTH.lock().unwrap().as_ref(), commands)
+}
+
+fn status_for_kde_health(
+    health: Option<&Result<(), String>>,
+    commands: Vec<ShortcutCommand>,
+) -> ShortcutStatus {
+    let (mechanism, message) = match health {
+        Some(Ok(())) => ("kde", "Registered with KDE. Assign or disable keys in System Settings → Keyboard → Shortcuts → Copywraith. Existing KDE assignments are preserved; new actions start unbound.".to_string()),
+        Some(Err(error)) => ("kde_unavailable", format!("KDE shortcuts unavailable ({error}). Retrying automatically. You can bind these commands in System Settings instead; avoid assigning the same key to both a command and a native action.")),
+        None => ("kde_connecting", "Connecting to KDE shortcuts. Assign keys in System Settings → Keyboard → Shortcuts → Copywraith once connected.".to_string()),
+    };
+    ShortcutStatus {
+        mechanism: mechanism.into(),
+        message,
+        commands: if mechanism == "kde_unavailable" {
+            commands
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// Refresh asynchronous backend health when Settings asks for status.
+pub(crate) fn current_status(status: ShortcutStatus) -> ShortcutStatus {
+    if !status.mechanism.starts_with("kde") {
+        return status;
+    }
+    // Reconstruct command fallbacks even when the initial state was connecting.
+    let mut commands = manual_commands(&Settings::default());
+    for command in &mut commands {
+        command.accelerator.clear();
+    }
+    kde_status(commands)
 }
 
 /// The commands to bind by hand, for sessions we cannot configure ourselves.
@@ -581,6 +701,33 @@ fn gtk_key_name(key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kde_detection_leaves_ubuntu_and_other_desktops_alone() {
+        for desktop in ["KDE", "plasma", "KDE:Plasma"] {
+            assert!(desktop_is_kde(desktop));
+        }
+        for desktop in ["ubuntu:GNOME", "GNOME", "sway", "", "not-kde"] {
+            assert!(!desktop_is_kde(desktop));
+        }
+    }
+
+    #[test]
+    fn kde_status_distinguishes_connecting_ready_and_failed() {
+        let connecting = status_for_kde_health(None, Vec::new());
+        assert_eq!(connecting.mechanism, "kde_connecting");
+        let ready = status_for_kde_health(Some(&Ok(())), Vec::new());
+        assert_eq!(ready.mechanism, "kde");
+        assert!(ready.message.contains("System Settings"));
+        let failure = status_for_kde_health(
+            Some(&Err("bus disconnected".into())),
+            manual_commands(&Settings::default()),
+        );
+        assert_eq!(failure.mechanism, "kde_unavailable");
+        assert!(failure.message.contains("Retrying"));
+        assert_eq!(failure.commands.len(), Action::ALL.len());
+        assert!(failure.commands[0].command.ends_with(" --toggle"));
+    }
 
     #[test]
     fn translates_the_default_shortcuts() {
