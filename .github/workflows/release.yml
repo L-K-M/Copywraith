@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload Linux smoke diagnostics
         if: always() && matrix.platform == 'ubuntu-22.04'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux-smoke
           path: linux-smoke-results
