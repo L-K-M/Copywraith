@@ -236,7 +236,29 @@ impl LocalStorage {
     ) -> anyhow::Result<Option<ClipboardEntry>> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
+        let result = self.insert_entry_in(
+            &tx,
+            content_type,
+            flavors,
+            blob_data,
+            content_hash,
+            source_app,
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
 
+    // Child modules hold self.db's lock and own commit/rollback, allowing caller
+    // metadata to share the insertion/provenance transaction.
+    fn insert_entry_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        content_type: ContentType,
+        flavors: &ClipboardFlavors,
+        blob_data: Option<&[u8]>,
+        content_hash: &str,
+        source_app: Option<&str>,
+    ) -> anyhow::Result<Option<ClipboardEntry>> {
         let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
         let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
         let search_text = resolved_flavors.best_plain_text();
@@ -251,14 +273,13 @@ impl LocalStorage {
             .optional()?;
 
         if let Some(id) = existing_id {
-            self.repair_entry_blob(&tx, &id, blob_data)?;
+            self.repair_entry_blob(tx, &id, blob_data)?;
             let now = Utc::now();
             tx.execute(
                 "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
                 params![now.to_rfc3339(), id],
             )?;
-            replication::recover_blocked_capture(&tx, &id, content_hash)?;
-            tx.commit()?;
+            replication::recover_blocked_capture(tx, &id, content_hash)?;
             return Ok(None); // Duplicate, moved to top
         }
 
@@ -299,8 +320,7 @@ impl LocalStorage {
                 now.to_rfc3339(),
             ],
         )?;
-        replication::record_capture(&tx, &id, content_hash)?;
-        tx.commit()?;
+        replication::record_capture(tx, &id, content_hash)?;
 
         let entry_flavors = flavors.clone().merge_legacy(content_type, None);
         let entry_text_content = entry_flavors.to_legacy_text_content(content_type);
@@ -910,6 +930,67 @@ mod tests {
             text_plain: Some(text.to_string()),
             ..ClipboardFlavors::default()
         }
+    }
+
+    #[test]
+    fn local_insertion_and_provenance_use_the_callers_transaction() {
+        let (dir, storage) = temp_storage();
+        let flavors = text_flavors("transactional capture");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let mut db = storage.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO sync_links (server_id, remote_id, content_hash) VALUES ('server', 'prior', ?1)",
+            [&hash],
+        )
+        .unwrap();
+        let observer = Connection::open(dir.path().join("copywraith.db")).unwrap();
+        let counts = |db: &Connection| -> (i64, i64) {
+            db.query_row(
+                "SELECT (SELECT COUNT(*) FROM entries), (SELECT COUNT(*) FROM sync_capture_heads)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+
+        let tx = db.transaction().unwrap();
+        storage
+            .insert_entry_in(&tx, ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(counts(&tx), (1, 1));
+        assert_eq!(counts(&observer), (0, 0));
+        tx.rollback().unwrap();
+        assert_eq!(counts(&observer), (0, 0));
+
+        let tx = db.transaction().unwrap();
+        let entry = storage
+            .insert_entry_in(&tx, ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        // Caller work remains in the transaction after insertion and provenance.
+        tx.execute("UPDATE entries SET starred = 1 WHERE id = ?1", [&entry.id])
+            .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(counts(&observer), (1, 1));
+
+        let tx = db.transaction().unwrap();
+        // A duplicate must not commit the caller's preceding work either.
+        tx.execute("UPDATE entries SET starred = 0 WHERE id = ?1", [&entry.id])
+            .unwrap();
+        assert!(storage
+            .insert_entry_in(&tx, ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .is_none());
+        tx.rollback().unwrap();
+        let starred: bool = observer
+            .query_row(
+                "SELECT starred FROM entries WHERE id = ?1",
+                [&entry.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(starred);
     }
 
     #[test]
