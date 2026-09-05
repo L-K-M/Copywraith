@@ -18,14 +18,20 @@ fn plasma_runtime_native_guidance_keeps_target_focus() {
         Ok("1")
     );
     let _notifications = Process(Command::new("dunst").spawn().unwrap());
-    let _target = Process(
+    // Ubuntu's interactive bash prompt emits OSC 0 and replaces -title.
+    // Run cat directly so the target title cannot depend on shell startup files.
+    let mut target_process = Process(
         Command::new("xterm")
-            .args(["-title", "Copywraith paste target"])
+            .args(["-title", "Copywraith paste target", "-e", "cat"])
             .spawn()
             .unwrap(),
     );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let target = loop {
+        assert!(
+            target_process.0.try_wait().unwrap().is_none(),
+            "paste target exited before mapping"
+        );
         let output = Command::new("xdotool")
             .args([
                 "search",
@@ -75,6 +81,10 @@ fn plasma_runtime_native_guidance_keeps_target_focus() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    assert!(
+        target_process.0.try_wait().unwrap().is_none(),
+        "paste target exited while showing guidance"
+    );
     let focus = Command::new("xdotool")
         .arg("getwindowfocus")
         .output()
