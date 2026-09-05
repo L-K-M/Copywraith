@@ -928,6 +928,8 @@ mod migration_tests {
         let row = storage.get_entry(&legacy.id, None).unwrap().unwrap();
         assert_eq!(row.id, legacy.id);
         assert_eq!(row.flavors.text_plain.as_deref(), Some("legacy row"));
+        assert_eq!(row.starred, legacy.starred);
+        assert!(!row.sensitive);
         let id: Ulid = row.id.parse().unwrap();
         assert_eq!(
             serde_json::from_str::<Ulid>(&serde_json::to_string(&id).unwrap()).unwrap(),

@@ -51,7 +51,9 @@ fn native_clipboard_roundtrip_events_and_cleanup() {
     expect_flavors(&receiver, "app plain", None, None);
     assert_eq!(peer.get_text().unwrap(), "app plain");
 
-    let html = "<b>rich text</b>";
+    // Windows CF_HTML adds context around fragments; a full document roundtrips
+    // unchanged on every backend without discarding that valid native context.
+    let html = "<html><body><b>rich text</b></body></html>";
     let rtf = "{\\rtf1 rich text}";
     peer.set(vec![
         ClipboardContent::Text("rich text".into()),

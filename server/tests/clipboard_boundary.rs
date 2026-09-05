@@ -1,11 +1,16 @@
 #[test]
 fn desktop_clipboard_uses_one_private_adapter() {
-    let manifest = include_str!("../../src-tauri/Cargo.toml");
+    const BACKEND: &str = "name = \"clipboard-rs\"";
+    const REMOVED_PLUGIN: &str = "name = \"tauri-plugin-clipboard\"";
+
+    // Resolved package names cover aliases without rejecting compatible bumps
+    // or Android's distinct clipboard-manager plugin.
+    let lockfile = include_str!("../../Cargo.lock");
+    assert_eq!(lockfile.lines().filter(|line| *line == BACKEND).count(), 1);
     assert!(
-        !manifest.contains("tauri-plugin-clipboard ="),
+        !lockfile.lines().any(|line| line == REMOVED_PLUGIN),
         "the plugin exposes an incompatible 0.2 context"
     );
-    assert!(manifest.contains("clipboard-rs = \"0.3.5\""));
     let paste = include_str!("../../src-tauri/src/paste.rs");
     assert!(!paste.contains("ClipboardContent"));
     assert!(!paste.contains("clipboard_rs"));

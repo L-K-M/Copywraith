@@ -46,3 +46,4 @@ server/copywraith-data/
 
 # Native Svelte checker cache
 .svelte-check/
+.tooling-test-*/
