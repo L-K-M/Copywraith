@@ -10,7 +10,8 @@
 		TextFileIcon,
 		TrashIcon
 	} from '@lkmc/system7-ui';
-	import * as api from './api';
+	import { createEntryImage } from './entryImage.svelte';
+	import { htmlToPlainText, rtfToPlainText } from './text';
 	import type { EntryResponse } from './types';
 
 	let {
@@ -27,43 +28,9 @@
 		ondelete: (id: string) => void;
 	} = $props();
 
-	let imageObjectUrl = $state<string | null>(null);
-	let imagePreviewFailed = $state(false);
-
-	$effect(() => {
-		let disposed = false;
-		let localObjectUrl: string | null = null;
-
-		imageObjectUrl = null;
-		imagePreviewFailed = false;
-
-		if (entry.content_type !== 'image' || !entry.blob_url) {
-			return;
-		}
-
-		api
-			.fetchBlobObjectUrl(entry.blob_url)
-			.then((objectUrl) => {
-				if (disposed) {
-					URL.revokeObjectURL(objectUrl);
-					return;
-				}
-				localObjectUrl = objectUrl;
-				imageObjectUrl = objectUrl;
-			})
-			.catch(() => {
-				if (!disposed) {
-					imagePreviewFailed = true;
-				}
-			});
-
-		return () => {
-			disposed = true;
-			if (localObjectUrl) {
-				URL.revokeObjectURL(localObjectUrl);
-			}
-		};
-	});
+	const image = createEntryImage(() =>
+		entry.content_type === 'image' ? (entry.blob_url ?? null) : null
+	);
 
 	function formatDate(iso: string | null): string {
 		if (!iso) return '--';
@@ -96,37 +63,6 @@
 		if (entry.content_type === 'file') return '[File]';
 		if (entry.content_type === 'image') return '[Image]';
 		return '[Empty]';
-	}
-
-	function htmlToPlainText(html: string): string {
-		return html
-			.replace(/<style[\s\S]*?<\/style>/gi, ' ')
-			.replace(/<script[\s\S]*?<\/script>/gi, ' ')
-			.replace(/<[^>]+>/g, ' ')
-			.replace(/&nbsp;/gi, ' ')
-			.replace(/&amp;/gi, '&')
-			.replace(/&lt;/gi, '<')
-			.replace(/&gt;/gi, '>')
-			.replace(/&quot;/gi, '"')
-			.replace(/&#39;/gi, "'")
-			.replace(/\s+/g, ' ')
-			.trim();
-	}
-
-	function rtfToPlainText(rtf: string): string {
-		if (!rtf.trimStart().startsWith('{\\rtf')) return rtf;
-		return rtf
-			// Remove RTF header groups: {\fonttbl...}, {\colortbl...}, etc.
-			.replace(/\{\\(?:fonttbl|colortbl|stylesheet|info|\*\\)[^}]*(?:\{[^}]*\}[^}]*)*\}/g, '')
-			// Remove control words with optional numeric param
-			.replace(/\\[a-z]+[-]?\d*\s?/gi, '')
-			// Remove hex-encoded chars \'xx
-			.replace(/\\'[0-9a-f]{2}/gi, '')
-			// Remove remaining braces
-			.replace(/[{}]/g, '')
-			// Collapse whitespace
-			.replace(/\s+/g, ' ')
-			.trim();
 	}
 
 	function handleStarClick(e: MouseEvent) {
@@ -165,10 +101,10 @@
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="preview" onclick={() => onview(entry.id)}>
-			{#if entry.content_type === 'image' && imageObjectUrl}
-				<img class="img-preview" src={imageObjectUrl} alt="Clipboard preview" />
+			{#if entry.content_type === 'image' && image.objectUrl}
+				<img class="img-preview" src={image.objectUrl} alt="Clipboard preview" />
 			{:else if entry.content_type === 'image'}
-				<span>{imagePreviewFailed ? '[Image unavailable]' : '[Image]'}</span>
+				<span>{image.failed ? '[Image unavailable]' : '[Image]'}</span>
 			{:else}
 				<span class:sensitive-content={entry.sensitive}>{getPreview(entry)}</span>
 			{/if}
