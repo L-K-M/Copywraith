@@ -9,6 +9,9 @@ use ulid::Ulid;
 
 use crate::models::Settings;
 
+#[path = "storage/replication.rs"]
+mod replication;
+
 const ENTRY_SELECT_COLUMNS: &str =
     "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
 
@@ -160,7 +163,7 @@ impl LocalStorage {
         let blob_dir = data_dir.join("blobs");
         std::fs::create_dir_all(&blob_dir)?;
 
-        let conn = Connection::open(&db_path)?;
+        let mut conn = Connection::open(&db_path)?;
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
@@ -215,6 +218,7 @@ impl LocalStorage {
         ensure_entries_column(&conn, "search_text", "TEXT")?;
 
         backfill_flavor_columns(&conn)?;
+        replication::initialize(&mut conn)?;
 
         Ok(Self {
             db: Mutex::new(conn),
@@ -265,8 +269,8 @@ impl LocalStorage {
             .unwrap_or(false);
 
         db.execute(
-            "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, 0, ?13, ?14)",
+            "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at, sync_origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, 0, ?13, ?14, 'capture')",
             params![
                 id,
                 content_type.as_str(),
@@ -326,6 +330,34 @@ impl LocalStorage {
         source_app: Option<&str>,
         starred: bool,
     ) -> anyhow::Result<bool> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let result = self.insert_remote_entry_in(
+            &tx,
+            remote,
+            content_type,
+            flavors,
+            blob_data,
+            content_hash,
+            source_app,
+            starred,
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_remote_entry_in(
+        &self,
+        tx: &Connection,
+        remote: RemoteEntryIdentity<'_>,
+        content_type: ContentType,
+        flavors: &ClipboardFlavors,
+        blob_data: Option<&[u8]>,
+        content_hash: &str,
+        source_app: Option<&str>,
+        starred: bool,
+    ) -> anyhow::Result<bool> {
         let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
         let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
         let search_text = resolved_flavors.best_plain_text();
@@ -333,9 +365,6 @@ impl LocalStorage {
             .as_ref()
             .map(|t| contains_sensitive_data(t))
             .unwrap_or(false);
-
-        let mut db = self.db.lock().unwrap();
-        let tx = db.transaction()?;
 
         let existing_id: Option<String> = tx
             .query_row(
@@ -349,7 +378,6 @@ impl LocalStorage {
             // Already present locally, either by payload or because this exact
             // server row was pulled before. The caller applies remote starred
             // state separately so unpushed local changes are not clobbered.
-            tx.commit()?;
             return Ok(false);
         }
 
@@ -358,8 +386,8 @@ impl LocalStorage {
         let (blob_hash, blob_size) = self.write_blob(blob_data)?;
 
         tx.execute(
-            "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?15)",
+            "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at, sync_origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?15, 'remote')",
             params![
                 remote.id,
                 content_type.as_str(),
@@ -379,7 +407,6 @@ impl LocalStorage {
             ],
         )?;
 
-        tx.commit()?;
         Ok(true)
     }
 
@@ -507,7 +534,7 @@ impl LocalStorage {
         let new_value = if current == 0 { 1 } else { 0 };
         let now = Utc::now();
         db.execute(
-            "UPDATE entries SET starred = ?1, synced = 0, updated_at = ?2 WHERE id = ?3",
+            "UPDATE entries SET starred = ?1, synced = 0, updated_at = ?2, sync_revision = sync_revision + 1 WHERE id = ?3",
             params![new_value, now.to_rfc3339(), id],
         )?;
         Ok(new_value == 1)
@@ -548,10 +575,12 @@ impl LocalStorage {
     }
 
     pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        replication::queue_deletion(&tx, id)?;
 
-        // Read blob_hash before deleting so we can clean up the file
-        let blob_hash: Option<String> = db
+        // Capture the file reference before committing the deletion and its outbox.
+        let blob_hash: Option<String> = tx
             .query_row(
                 "SELECT blob_hash FROM entries WHERE id = ?1",
                 params![id],
@@ -560,24 +589,26 @@ impl LocalStorage {
             .optional()?
             .flatten();
 
-        let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+        let rows = tx.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        self.remove_unreferenced_blob(&db, blob_hash.as_deref())?;
+        Ok(rows > 0)
+    }
 
-        // Remove blob file if no other entry references the same hash
-        if rows > 0 {
-            if let Some(ref hash) = blob_hash {
-                let count: i64 = db.query_row(
-                    "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
-                    params![hash],
-                    |row| row.get(0),
-                )?;
-                if count == 0 {
-                    let blob_path = self.blob_dir.join(hash);
-                    let _ = std::fs::remove_file(blob_path);
-                }
+    fn remove_unreferenced_blob(&self, db: &Connection, hash: Option<&str>) -> anyhow::Result<()> {
+        // The database commit precedes garbage collection; creation shares this lock.
+        if let Some(hash) = hash {
+            let count: i64 = db.query_row(
+                "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
+                params![hash],
+                |row| row.get(0),
+            )?;
+            if count == 0 {
+                let blob_path = self.blob_dir.join(hash);
+                let _ = std::fs::remove_file(blob_path);
             }
         }
-
-        Ok(rows > 0)
+        Ok(())
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {

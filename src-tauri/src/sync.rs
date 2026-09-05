@@ -9,6 +9,9 @@ use serde::Serialize;
 
 use crate::{models::Settings, storage::LocalStorage};
 
+#[path = "sync/protocol.rs"]
+mod protocol;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncEndpointStatus {
     pub state: String,
@@ -129,6 +132,7 @@ struct EndpointHeartbeat {
 
 pub struct SyncClient {
     http: reqwest::Client,
+    protocol_lock: tokio::sync::Mutex<()>,
     pull_state: Mutex<PullState>,
     last_responding_endpoint: Mutex<Option<EndpointHeartbeat>>,
 }
@@ -150,6 +154,7 @@ impl SyncClient {
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             http,
+            protocol_lock: tokio::sync::Mutex::new(()),
             pull_state: Mutex::new(PullState {
                 initialized: watermark.is_some(),
                 watermark,
@@ -167,6 +172,9 @@ impl SyncClient {
     }
 
     pub fn reset_pull_cursor(&self, storage: &LocalStorage) {
+        if let Err(error) = storage.clear_protocol_cursors() {
+            log::warn!("Failed to clear protocol cursors: {error}");
+        }
         {
             let mut state = self.pull_state.lock().unwrap();
             state.initialized = false;
@@ -190,7 +198,7 @@ impl SyncClient {
         Some(SyncEndpointStatus::online(&heartbeat.endpoint))
     }
 
-    pub async fn sync_unsynced_entries(&self, storage: &LocalStorage) {
+    async fn legacy_sync_unsynced_entries(&self, storage: &LocalStorage) {
         let entries = match storage.get_unsynced_entries() {
             Ok(entries) => entries,
             Err(e) => {
@@ -216,17 +224,6 @@ impl SyncClient {
             self.push_entry(&entry, storage, &server_urls, &settings.api_key)
                 .await;
         }
-    }
-
-    pub async fn sync_entry(&self, entry: &ClipboardEntry, storage: &LocalStorage) {
-        let settings = storage.get_settings();
-        let server_urls = configured_server_urls(&settings);
-        if server_urls.is_empty() {
-            return; // No server configured, skip sync
-        }
-
-        self.push_entry(entry, storage, &server_urls, &settings.api_key)
-            .await;
     }
 
     async fn push_entry(
@@ -275,7 +272,10 @@ impl SyncClient {
         }
     }
 
-    pub async fn pull_new_entries(&self, storage: &LocalStorage) -> anyhow::Result<PullSyncResult> {
+    async fn legacy_pull_new_entries(
+        &self,
+        storage: &LocalStorage,
+    ) -> anyhow::Result<PullSyncResult> {
         const PAGE_SIZE: u32 = 100;
 
         let settings = storage.get_settings();

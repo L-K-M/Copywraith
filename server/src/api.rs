@@ -10,6 +10,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
 
 use copywraith_core::api_types::*;
 use copywraith_core::models::{ClipboardFlavors, ContentType};
+use copywraith_core::sync_protocol::*;
 
 use crate::crypto;
 use crate::AppState;
@@ -33,6 +34,11 @@ pub fn router() -> AppRouter {
         .route("/auth/lock", post(auth_lock))
         // Data endpoints
         .route("/health", get(health))
+        .route("/sync", get(sync_info))
+        .route("/sync/{server_id}/heads/{hash}", get(sync_head))
+        .route("/sync/{server_id}/changes", get(sync_changes))
+        .route("/sync/{server_id}/operations", post(sync_mutation))
+        .route("/sync/{server_id}/entries/{id}/blob", get(sync_blob))
         .route("/entries", post(create_entry))
         .route("/entries", get(list_entries))
         .route("/entries/{id}", get(get_entry))
@@ -350,6 +356,17 @@ async fn create_entry(
         .unwrap_or_else(ClipboardFlavors::default)
         .merge_legacy(req.content_type, req.text_content.as_deref());
 
+    if state
+        .storage
+        .sync_head(&req.content_hash)?
+        .generation
+        .is_some_and(|g| g.state == GenerationState::Deleted)
+    {
+        return Err(AppError::Conflict(
+            "Upgrade the client to re-copy deleted content".into(),
+        ));
+    }
+
     let (entry, created) = state.storage.create_entry(
         req.content_type,
         &flavors,
@@ -645,6 +662,145 @@ async fn get_blob(
         .into_response())
 }
 
+// Native replication is separate from presentation CRUD: tombstones have no payload.
+async fn sync_info(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<SyncInfo>, AppError> {
+    ensure_authorized(&state, &headers)?;
+    Ok(Json(state.storage.sync_info()?))
+}
+
+fn ensure_sync_server(state: &AppState, expected: &str) -> Result<(), AppError> {
+    if state.storage.sync_info()?.server_id != expected {
+        return Err(AppError::Conflict(
+            "Sync endpoints belong to different servers".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn sync_head(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((server_id, hash)): Path<(String, String)>,
+) -> Result<Json<SyncHead>, AppError> {
+    ensure_authorized(&state, &headers)?;
+    ensure_sync_server(&state, &server_id)?;
+    if !copywraith_core::content::is_valid_hash(&hash) {
+        return Err(AppError::BadRequest("Invalid content hash".into()));
+    }
+    Ok(Json(state.storage.sync_head(&hash)?))
+}
+
+#[derive(Deserialize)]
+struct ChangesQuery {
+    #[serde(default)]
+    cursor: u64,
+    #[serde(default = "sync_page_size")]
+    limit: u32,
+}
+
+fn sync_page_size() -> u32 {
+    SYNC_PAGE_SIZE
+}
+
+async fn sync_changes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(server_id): Path<String>,
+    Query(query): Query<ChangesQuery>,
+) -> Result<Json<SyncChanges>, AppError> {
+    ensure_authorized(&state, &headers)?;
+    ensure_sync_server(&state, &server_id)?;
+    let dek = get_dek(&state).ok_or(AppError::Unauthorized)?;
+    Ok(Json(state.storage.sync_changes(
+        &server_id,
+        query.cursor,
+        query.limit,
+        &dek,
+    )?))
+}
+
+fn validate_operation_id(id: &str) -> Result<(), AppError> {
+    const MAX_OPERATION_ID_BYTES: usize = 128;
+    if id.is_empty()
+        || id.len() > MAX_OPERATION_ID_BYTES
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b))
+    {
+        return Err(AppError::BadRequest("Invalid operation ID".into()));
+    }
+    Ok(())
+}
+
+async fn sync_mutation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(server_id): Path<String>,
+    Json(request): Json<SyncMutation>,
+) -> Result<Json<SyncReceipt>, AppError> {
+    ensure_authorized(&state, &headers)?;
+    ensure_sync_server(&state, &server_id)?;
+    if request.server_id != server_id {
+        return Err(AppError::Conflict("Sync server identity mismatch".into()));
+    }
+    validate_operation_id(&request.operation_id)?;
+    match &request.action {
+        SyncAction::Create { expected, payload } => {
+            if let Some(expected) = expected {
+                validate_entry_id(&expected.id)?;
+            }
+            check_text_field_len("text_content", payload.text_content.as_deref())?;
+            let flavors = payload
+                .flavors
+                .clone()
+                .unwrap_or_default()
+                .merge_legacy(payload.content_type, payload.text_content.as_deref());
+            check_text_field_len("text_plain", flavors.text_plain.as_deref())?;
+            check_text_field_len("text_html", flavors.text_html.as_deref())?;
+            check_text_field_len("text_rtf", flavors.text_rtf.as_deref())?;
+            let blob = payload
+                .blob_base64
+                .as_deref()
+                .map(copywraith_core::content::base64_to_bytes)
+                .transpose()
+                .map_err(|_| AppError::BadRequest("Invalid blob encoding".into()))?;
+            let blob_hash = blob.as_deref().map(copywraith_core::content::hash_bytes);
+            if flavors.payload_hash(payload.content_type, blob_hash.as_deref())
+                != payload.content_hash
+            {
+                return Err(AppError::BadRequest(
+                    "Content hash does not match its payload".into(),
+                ));
+            }
+            if payload.content_type == ContentType::Image && blob.is_none() {
+                return Err(AppError::BadRequest("Image payload is required".into()));
+            }
+        }
+        SyncAction::Star { generation_id, .. } => validate_entry_id(generation_id)?,
+        SyncAction::Delete {
+            target: DeleteTarget::Generation { id },
+        } => validate_entry_id(id)?,
+        SyncAction::Delete {
+            target: DeleteTarget::Create { operation_id },
+        } => validate_operation_id(operation_id)?,
+    }
+    let dek = get_dek(&state).ok_or(AppError::Unauthorized)?;
+    Ok(Json(state.storage.apply_sync_mutation(&request, &dek)?))
+}
+
+async fn sync_blob(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((server_id, id)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    ensure_authorized(&state, &headers)?;
+    ensure_sync_server(&state, &server_id)?;
+    get_blob(State(state), headers, Path(id)).await
+}
+
 // ---------------------------------------------------------------------------
 // Error handling
 // ---------------------------------------------------------------------------
@@ -654,6 +810,7 @@ enum AppError {
     Unauthorized,
     NotFound,
     BadRequest(String),
+    Conflict(String),
     SetupRequired,
     Internal(anyhow::Error),
 }
@@ -670,6 +827,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             AppError::SetupRequired => (
                 StatusCode::FORBIDDEN,
                 "Password not configured. Set up a password first.".to_string(),
