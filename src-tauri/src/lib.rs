@@ -194,8 +194,14 @@ pub fn run() {
             commands::get_platform,
             commands::hide_popup,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running copywraith");
+        .build(tauri::generate_context!())
+        .expect("error while building copywraith")
+        .run(|_app, _event| {
+            #[cfg(target_os = "linux")]
+            if matches!(_event, tauri::RunEvent::Exit) {
+                linux::shortcuts::shutdown();
+            }
+        });
 }
 
 #[cfg(desktop)]
@@ -210,7 +216,14 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
     // shortcuts to the desktop environment instead and stop here.
     #[cfg(target_os = "linux")]
     {
-        let outcome = linux::shortcuts::sync(settings);
+        let shortcut_app = app.clone();
+        let outcome = linux::shortcuts::sync(settings, move |action| {
+            let dispatch_app = shortcut_app.clone();
+            let argv = vec![String::new(), action.cli_flag().to_string()];
+            let _ = shortcut_app.run_on_main_thread(move || {
+                dispatch_cli_command(&dispatch_app, &argv);
+            });
+        });
         log::info!(
             "Global shortcuts bound via `{}`: {}",
             outcome.status.mechanism,

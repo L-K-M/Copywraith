@@ -76,30 +76,48 @@ copied and you press **Ctrl+V** yourself.
 
 ## Global shortcuts (KDE-native)
 
-Wayland doesn't let apps grab global hotkeys, and KDE's shortcut store isn't
-scriptable the way GNOME's is, so on Plasma you bind the shortcuts yourself.
-Copywraith exposes its actions on the command line and uses a single-instance
-guard: running the binary again forwards the command to the instance already in
-the tray. The Settings dialog lists these same commands under the shortcut
-fields. Bind KDE shortcuts to them:
+Copywraith registers three native KGlobalAccel actions on Plasma X11 and
+Wayland. While Copywraith runs, open **System Settings → Keyboard → Shortcuts →
+Copywraith** to assign or disable them:
+
+- Toggle popup
+- Starred popup
+- Paste as plain text
+
+New actions start unbound to avoid desktop conflicts. Existing KDE assignments,
+including disabled actions, survive registration and daemon restarts. KDE owns
+these bindings; Copywraith's accelerator fields apply to other desktops.
+Copywraith Settings shows connection status and a **Refresh status** button.
+It retries automatically if the service disconnects.
+
+Command shortcuts remain available as a fallback:
 
 | Command | Action |
 | --- | --- |
 | `copywraith --toggle` | Toggle the popup |
-| `copywraith --starred` | Toggle the popup filtered to starred entries |
+| `copywraith --starred` | Toggle the starred popup |
 | `copywraith --paste-plaintext` | Paste the most recent entry as plain text |
 
-To bind them in Plasma 6:
+Bind commands using **Add New → Command or Script…**. Avoid assigning the same
+key to both a command shortcut and a native action. Copywraith must be running
+for native actions to work; enable **Start at login** if needed.
 
-1. **System Settings → Keyboard → Shortcuts → Add New → Command or Script…**
-2. Enter the command (e.g. `copywraith --toggle`).
-3. Assign a key combination (e.g. `Meta+V`).
-4. Repeat for the other commands.
+When automatic paste fails, Copywraith sends native desktop guidance to press
+**Ctrl+V** without reopening or focusing the popup. This uses the desktop's
+notification service directly; `notify-send` is only a fallback. Notification
+visibility still follows the desktop's notification policy (including Do Not
+Disturb).
 
-These live in KDE's own shortcut configuration and survive reboots. (On an X11
-session the shortcuts you set in Copywraith's own Settings dialog work too —
-the app grabs them directly — but the command approach above is the reliable
-cross-session option.)
+### Isolated validation
+
+`scripts/test-kde.sh` runs the production D-Bus adapters against mock services on
+an isolated bus. `scripts/test-kde-runtime.sh` additionally requires KGlobalAccel,
+Xvfb, xdotool, dunst and xterm. It creates a disposable display, session bus and
+XDG directories, tests actual key delivery and saved assignments after restart,
+and checks visible native guidance without moving focus from a target window.
+It never connects to the host display or session bus. The notification runtime
+check uses dunst; visual verification in Plasma's notification shell remains a
+separate check.
 
 ## Autostart
 

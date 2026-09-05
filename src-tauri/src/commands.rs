@@ -981,6 +981,9 @@ pub async fn get_shortcut_status(
         commands: Vec::new(),
     };
 
+    #[cfg(target_os = "linux")]
+    let status = crate::linux::shortcuts::current_status(status);
+
     Ok(status)
 }
 
