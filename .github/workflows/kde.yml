@@ -1,0 +1,50 @@
+name: KDE shortcuts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kde-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plasma5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install isolated Plasma runtime tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libkf5globalaccel-bin libdbus-1-dev dbus-x11 xvfb xauth xdotool dunst xterm xfonts-base
+      - name: Mock bus security, cleanup and held-key regressions
+        run: scripts/test-kde.sh
+      - name: Native keys, restart and visible guidance
+        run: scripts/test-kde-runtime.sh
+
+  plasma6:
+    runs-on: ubuntu-24.04
+    container: fedora:43
+    timeout-minutes: 20
+    steps:
+      - name: Install Plasma 6 and isolated runtime tools
+        run: >-
+          dnf install -y git gcc curl dbus-devel dbus-daemon
+          kglobalacceld xorg-x11-server-Xvfb xdotool dunst xterm
+          dejavu-sans-fonts xorg-x11-fonts-misc
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Record runtime versions
+        run: rpm -q kglobalacceld kf6-kglobalaccel
+      - name: Mock bus security, cleanup and held-key regressions
+        run: scripts/test-kde.sh
+      - name: Native keys, restart and visible guidance
+        run: scripts/test-kde-runtime.sh

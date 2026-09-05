@@ -209,6 +209,10 @@ pub fn run() {
                     }
                 }
             }
+            #[cfg(target_os = "linux")]
+            if matches!(event, tauri::RunEvent::Exit) {
+                linux::shortcuts::shutdown();
+            }
             #[cfg(not(desktop))]
             let _ = (app, event);
         });
@@ -226,7 +230,14 @@ pub fn register_shortcuts(app: &tauri::AppHandle, settings: &models::Settings) {
     // shortcuts to the desktop environment instead and stop here.
     #[cfg(target_os = "linux")]
     {
-        let outcome = linux::shortcuts::sync(settings);
+        let shortcut_app = app.clone();
+        let outcome = linux::shortcuts::sync(settings, move |action| {
+            let dispatch_app = shortcut_app.clone();
+            let argv = vec![String::new(), action.cli_flag().to_string()];
+            let _ = shortcut_app.run_on_main_thread(move || {
+                dispatch_cli_command(&dispatch_app, &argv);
+            });
+        });
         log::info!(
             "Global shortcuts bound via `{}`: {}",
             outcome.status.mechanism,

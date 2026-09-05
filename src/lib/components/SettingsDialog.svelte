@@ -84,7 +84,7 @@
 				// shortcuts actually ended up before the dialog closes.
 				if (shortcutStatus && shortcutStatus.mechanism !== 'in_process') {
 					notify(
-						shortcutStatus.mechanism === 'gnome' ? 'info' : 'error',
+						['gnome', 'kde', 'kde_connecting'].includes(shortcutStatus.mechanism) ? 'info' : 'error',
 						shortcutStatus.message,
 						6000
 					);
@@ -281,47 +281,59 @@
 			<div class="section-divider"></div>
 			<div class="section-label">Keyboard Shortcuts</div>
 
-			<div class="s7-form-group">
-				<label for="shortcut-toggle">Toggle Popup</label>
-				<input
-					id="shortcut-toggle"
-					type="text"
-					class="s7-input"
-					placeholder="CmdOrCtrl+Shift+V"
-					bind:value={shortcutTogglePopup}
-				/>
-			</div>
+			{#if !shortcutStatus?.mechanism.startsWith('kde')}
+				<div class="s7-form-group">
+					<label for="shortcut-toggle">Toggle Popup</label>
+					<input
+						id="shortcut-toggle"
+						type="text"
+						class="s7-input"
+						placeholder="CmdOrCtrl+Shift+V"
+						bind:value={shortcutTogglePopup}
+					/>
+				</div>
 
-			<div class="s7-form-group">
-				<label for="shortcut-starred">Starred Popup</label>
-				<input
-					id="shortcut-starred"
-					type="text"
-					class="s7-input"
-					placeholder="CmdOrCtrl+Shift+B"
-					bind:value={shortcutStarredPopup}
-				/>
-			</div>
+				<div class="s7-form-group">
+					<label for="shortcut-starred">Starred Popup</label>
+					<input
+						id="shortcut-starred"
+						type="text"
+						class="s7-input"
+						placeholder="CmdOrCtrl+Shift+B"
+						bind:value={shortcutStarredPopup}
+					/>
+				</div>
 
-			<div class="s7-form-group">
-				<label for="shortcut-plaintext">Paste as Plaintext</label>
-				<input
-					id="shortcut-plaintext"
-					type="text"
-					class="s7-input"
-					placeholder="CmdOrCtrl+Shift+Alt+V"
-					bind:value={shortcutPastePlaintext}
-				/>
-			</div>
+				<div class="s7-form-group">
+					<label for="shortcut-plaintext">Paste as Plaintext</label>
+					<input
+						id="shortcut-plaintext"
+						type="text"
+						class="s7-input"
+						placeholder="CmdOrCtrl+Shift+Alt+V"
+						bind:value={shortcutPastePlaintext}
+					/>
+				</div>
+
+			{/if}
 
 			<div class="shortcut-hint">
-				Use format: CmdOrCtrl+Shift+Key. Leave empty to disable.
+				{#if shortcutStatus?.mechanism.startsWith('kde')}
+					{#if shortcutStatus.mechanism === 'kde_unavailable'}
+						KDE shortcuts are unavailable. Use the commands below and check the status for recovery steps.
+					{:else}
+						KDE manages these shortcuts. Assign or disable them in System Settings.
+					{/if}
+					<button class="s7-button" type="button" onclick={refreshShortcutStatus}>Refresh status</button>
+				{:else}
+					Use format: CmdOrCtrl+Shift+Key. Leave empty to disable.
+				{/if}
 			</div>
 
 			{#if shortcutStatus && shortcutStatus.mechanism !== 'in_process'}
 				<div
 					class="shortcut-status"
-					class:shortcut-status-warning={shortcutStatus.mechanism !== 'gnome'}
+					class:shortcut-status-warning={!['gnome', 'kde', 'kde_connecting'].includes(shortcutStatus.mechanism)}
 					role="status"
 				>
 					{shortcutStatus.message}

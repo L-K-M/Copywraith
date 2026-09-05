@@ -786,6 +786,7 @@ dependencies = [
  "clipboard-rs",
  "copywraith-core",
  "copywraith-share-target",
+ "dbus",
  "env_logger",
  "gtk",
  "image",

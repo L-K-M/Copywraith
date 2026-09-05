@@ -36,7 +36,7 @@ export interface ShortcutCommand {
 
 /** How the global shortcuts ended up bound (Linux has more than one answer). */
 export interface ShortcutStatus {
-	/** `in_process`, `gnome`, `manual`, or `unsupported`. */
+	/** `in_process`, `gnome`, `kde`, `kde_connecting`, `kde_unavailable`, `manual`, or `unsupported`. */
 	mechanism: string;
 	message: string;
 	commands: ShortcutCommand[];
