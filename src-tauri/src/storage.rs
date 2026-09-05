@@ -257,7 +257,7 @@ impl LocalStorage {
         let (blob_hash, blob_size) = self.write_blob(blob_data)?;
 
         let now = Utc::now();
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
 
         let sensitive = search_text
             .as_ref()

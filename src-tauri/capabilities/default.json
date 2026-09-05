@@ -21,12 +21,6 @@
 		"global-shortcut:allow-register",
 		"global-shortcut:allow-unregister",
 		"global-shortcut:allow-unregister-all",
-		"global-shortcut:allow-is-registered",
-		"clipboard:read-all",
-		"clipboard:write-all",
-		"clipboard:monitor-all",
-		"clipboard:allow-start-monitor",
-		"clipboard:allow-stop-monitor",
-		"clipboard:allow-is-monitor-running"
+		"global-shortcut:allow-is-registered"
 	]
 }

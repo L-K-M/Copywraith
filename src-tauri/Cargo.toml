@@ -37,8 +37,9 @@ env_logger = "0.11"
 # Desktop-only: clipboard monitoring, global shortcuts, paste simulation
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tauri-plugin-global-shortcut = "2"
-tauri-plugin-clipboard = "2"
-clipboard-rs = "0.2.4"
+clipboard-rs = "0.3.5"
+# Preserve the image decoders previously enabled by the desktop plugin.
+image = "0.25.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"

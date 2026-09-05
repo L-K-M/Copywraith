@@ -8,6 +8,7 @@ Copywraith is a cross-platform Tauri app (Rust backend + Svelte frontend) with a
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | Pull requests, pushes to `main`, and manual `workflow_dispatch` | Type-check & build the frontends; format, lint, and test the Rust workspace. |
 | `.github/workflows/release.yml` | Pushing a `v*.*.*` tag | Build desktop/Android/server artifacts and publish them in a GitHub Release. |
+| `.github/workflows/clipboard.yml` | Pull requests, pushes to `main`, and manual dispatch | Run native clipboard tests on Linux, macOS and Windows. |
 
 ## Continuous integration (`ci.yml`)
 
@@ -15,12 +16,13 @@ Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Inst
 
 **Frontend (check & build)** — uses Node 20 with npm caching:
 
-- `npm ci` for the popup frontend (repo root).
-- `npm run check` — Svelte type-check (`svelte-check`).
-- `npm run build` — build the popup frontend.
-- `npm ci` then `npm run build` in `server/ui` — build the server UI.
+- `npm ci`, `npm run check` (TS7), and `npm run check:ts6` in both frontends.
+- `npm run test:frontend` at the root and `npm test` in `server/ui`.
+- `npm run build` in both frontends.
 
-**Rust (fmt, clippy, test)** — runs on the Rust `1.85.0` toolchain (with `rustfmt` and `clippy`), cargo build cache enabled:
+**Native clipboard (`clipboard.yml`)** — runs the display-dependent `native_clipboard` tests in `copywraith-server` with `--ignored`. Linux uses `xvfb-run`; macOS and Windows use the disposable runner's native clipboard. These tests cover the adapter, not the full desktop application.
+
+**Rust (fmt, clippy, test)** — runs on the Rust `1.98.0` toolchain (with `rustfmt` and `clippy`), cargo build cache enabled:
 
 - Installs Tauri's Linux system dependencies (`libwebkit2gtk-4.1-dev`, `build-essential`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, and others) — the desktop backend in `src-tauri` links against the system webview and GTK.
 - Builds the frontend first (`npm ci && npm run build`) because `src-tauri` embeds it via `tauri::generate_context!`, so `build/` must exist before any cargo command.

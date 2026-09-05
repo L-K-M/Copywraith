@@ -32,11 +32,13 @@ jobs:
       - name: Install dependencies (popup frontend)
         run: npm ci
 
-      - name: Type-check (svelte-check)
-        run: npm run check
+      - name: Type-check (TS7 and compiler API compatibility)
+        run: |
+          npm run check
+          npm run check:ts6
 
       - name: Test popup actions and sync status
-        run: node --test scripts/tests/*.test.mjs
+        run: npm run test:frontend
 
       - name: Test storage durability and Linux smoke harness
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
@@ -48,8 +50,10 @@ jobs:
         run: npm ci
         working-directory: server/ui
 
-      - name: Type-check server UI (svelte-check)
-        run: npm run check
+      - name: Type-check server UI (TS7 and compiler API compatibility)
+        run: |
+          npm run check
+          npm run check:ts6
         working-directory: server/ui
 
       - name: Test server UI
@@ -96,7 +100,7 @@ jobs:
           npm run build
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
 
@@ -171,7 +175,7 @@ jobs:
           cache: npm
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

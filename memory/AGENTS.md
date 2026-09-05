@@ -38,7 +38,7 @@ Planned later:
 ## Architecture at a glance
 
 1. **Clipboard change happens on desktop**
-2. Tauri Rust backend receives `plugin:clipboard://clipboard-monitor/update`
+2. The app-owned `NativeClipboard` watcher invokes the Rust capture callback
 3. Backend reads clipboard content (files/image/html/rtf/text in priority order)
 4. Entry is normalized and deduplicated by hash
 5. Entry is stored in local SQLite + blob store
@@ -65,10 +65,10 @@ Planned later:
 
 Source: `src-tauri/src/clipboard.rs`
 
-- Starts native monitor via `tauri_plugin_clipboard::Clipboard::start_monitor(...)`
-- Listens for single event: `plugin:clipboard://clipboard-monitor/update`
-- Reads content through Rust API (`has_*`/`read_*`)
-- Priority order: `Image > File > Html > Rtf > Text`
+- `native_clipboard.rs` owns the clipboard-rs 0.3 context, watcher and locks
+- Registers the capture callback before starting the watcher; stops/joins on exit
+- Reads typed image/file/flavor payloads; paste writes through the same adapter
+- Priority order: `Image > File > Text/HTML/RTF bundle`
 
 Do not re-introduce frontend `startListening()` dependency unless intentionally redesigning.
 
@@ -120,7 +120,7 @@ Settings are persisted in local SQLite and shortcuts are re-registered on app st
 
 ### Tauri capability naming gotcha
 
-Desktop uses `clipboard:*` permissions in `src-tauri/capabilities/default.json`; mobile uses `clipboard-manager:*` permissions in `src-tauri/capabilities/mobile.json`.
+Desktop clipboard access is Rust-only and needs no plugin capabilities; mobile uses `clipboard-manager:*` permissions in `src-tauri/capabilities/mobile.json`.
 
 ## Key files to read first
 
@@ -196,8 +196,8 @@ Server defaults:
 
 ## Environment and dependency gotchas
 
-- Rust toolchain is pinned at the repo root via `rust-toolchain.toml` (`1.85.0`).
-- Do not downgrade the server Docker builder image below Rust 1.85; Cargo 1.83 fails on the current lockfile with `base64ct` due to missing `edition2024` support (`feature \`edition2024\` is required`).
+- Rust toolchain is pinned at the repo root via `rust-toolchain.toml` (`1.98.0`).
+- Keep the server Docker builder aligned with `rust-toolchain.toml` (1.98.0), CI and release builds. Revalidate dependency MSRVs before changing this pin; edition2024 support alone is insufficient.
 - Server binds `127.0.0.1` by default; Docker deployments must set `COPYWRAITH_HOST=0.0.0.0` (set in compose + Dockerfile env) so published port `3742` is reachable.
 - Compose supports explicit image tagging via `COPYWRAITH_SERVER_IMAGE_REPO` + `COPYWRAITH_SERVER_IMAGE_TAG`; `scripts/redeploy-server-docker.sh` defaults tag to the server crate version to reduce stale-image confusion.
 - Do not expose the server publicly; it is intended for a local network or secure VPN and does not add rate limiting / brute-force protection.
@@ -279,7 +279,7 @@ Notes:
 
 ## Platform notes
 
-- Clipboard monitoring works via `tauri-plugin-clipboard`
+- Desktop clipboard monitoring uses the private `NativeClipboard` adapter over clipboard-rs 0.3
 - Paste simulation is currently implemented for macOS (via `osascript`)
 - On non-macOS platforms, writing to clipboard works, but simulated keystroke paste is not fully implemented yet
 - Mobile builds use `tauri-plugin-clipboard-manager`; tapping an entry copies it, and `capture_clipboard` persists the current clipboard when the app opens or resumes.

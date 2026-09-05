@@ -49,8 +49,10 @@ drift when rows are inserted/updated concurrently.
 
 - `lib.rs` — app setup, the Tauri command registry, the background sync loop,
   and (desktop) global-shortcut registration + the macOS NSPanel popup plumbing.
-- `clipboard.rs` *(desktop)* — Rust-owned native clipboard monitor. Reads in
-  priority order `Image > File > Html > Rtf > Text` and suppresses the monitor
+- `native_clipboard.rs` *(desktop)* — owns the clipboard-rs 0.3 context, locks
+  and watcher lifecycle. Exposes typed payloads and atomic multi-flavor writes.
+- `clipboard.rs` *(desktop)* — Rust-owned clipboard capture callback. Reads in
+  priority order `Image > File > Text/HTML/RTF bundle` and suppresses the monitor
   briefly around our own paste writes so we don't re-capture them.
 - `paste.rs` *(desktop)* — writes the chosen entry to the clipboard and
   simulates Cmd+V via `osascript` on a spawned thread, tracking and restoring

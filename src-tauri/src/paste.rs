@@ -1,5 +1,5 @@
 #[cfg(desktop)]
-use clipboard_rs::{Clipboard as ClipboardRs, ClipboardContent};
+use crate::native_clipboard::NativeClipboard;
 use copywraith_core::models::ClipboardFlavors;
 use tauri::Manager;
 
@@ -98,58 +98,8 @@ pub fn write_and_paste_flavors(app: &tauri::AppHandle, flavors: &ClipboardFlavor
         *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
     }
 
-    let mut contents: Vec<ClipboardContent> = Vec::new();
-
-    let plain = flavors
-        .text_plain
-        .clone()
-        .or_else(|| {
-            flavors
-                .text_html
-                .as_ref()
-                .map(|html| copywraith_core::content::strip_html(html))
-        })
-        .or_else(|| {
-            flavors
-                .text_rtf
-                .as_ref()
-                .map(|rtf| copywraith_core::content::strip_rtf(rtf))
-        })
-        .filter(|text| !text.trim().is_empty());
-
-    if let Some(text) = plain {
-        contents.push(ClipboardContent::Text(text));
-    }
-
-    if let Some(html) = flavors
-        .text_html
-        .as_ref()
-        .filter(|html| !html.trim().is_empty())
-    {
-        contents.push(ClipboardContent::Html(html.clone()));
-    }
-
-    if let Some(rtf) = flavors
-        .text_rtf
-        .as_ref()
-        .filter(|rtf| !rtf.trim().is_empty())
-    {
-        contents.push(ClipboardContent::Rtf(rtf.clone()));
-    }
-
-    if contents.is_empty() {
-        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-            *guard = None;
-        }
-        return;
-    }
-
-    let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
-    let write_result = clipboard
-        .clipboard
-        .lock()
-        .map_err(|err| err.to_string())
-        .and_then(|ctx| ctx.set(contents).map_err(|err| err.to_string()));
+    let clipboard = app.state::<NativeClipboard>();
+    let write_result = clipboard.write_flavors(flavors);
 
     if let Err(e) = write_result {
         if let Ok(mut guard) = state.suppress_monitor_until.lock() {
@@ -176,13 +126,8 @@ pub fn write_and_paste_files(app: &tauri::AppHandle, files: &[String]) {
         *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
     }
 
-    let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
-    let files_for_clipboard = files
-        .iter()
-        .map(|path| normalize_file_uri_for_write(path))
-        .collect::<Vec<_>>();
-
-    if let Err(e) = clipboard.write_files_uris(files_for_clipboard) {
+    let clipboard = app.state::<NativeClipboard>();
+    if let Err(e) = clipboard.write_files(files) {
         if let Ok(mut guard) = state.suppress_monitor_until.lock() {
             *guard = None;
         }
@@ -192,24 +137,6 @@ pub fn write_and_paste_files(app: &tauri::AppHandle, files: &[String]) {
 
     crate::hide_popup_window_for_paste(app);
     simulate_paste(app.clone(), target_app);
-}
-
-fn normalize_file_uri_for_write(path: &str) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        return path.trim_start_matches("file://").to_string();
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        if path.starts_with("file://") {
-            return path.to_string();
-        }
-        return format!("file://{}", path);
-    }
-
-    #[allow(unreachable_code)]
-    path.to_string()
 }
 
 /// Write text to clipboard and simulate Cmd+V / Ctrl+V
@@ -226,8 +153,8 @@ pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
         *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
     }
 
-    let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
-    if let Err(e) = clipboard.write_text(text.to_string()) {
+    let clipboard = app.state::<NativeClipboard>();
+    if let Err(e) = clipboard.write_text(text) {
         if let Ok(mut guard) = state.suppress_monitor_until.lock() {
             *guard = None;
         }
@@ -250,9 +177,8 @@ pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
         *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
     }
 
-    let clipboard = app.state::<tauri_plugin_clipboard::Clipboard>();
-    let b64 = copywraith_core::content::bytes_to_base64(image_data);
-    if let Err(e) = clipboard.write_image_base64(b64) {
+    let clipboard = app.state::<NativeClipboard>();
+    if let Err(e) = clipboard.write_image(image_data) {
         if let Ok(mut guard) = state.suppress_monitor_until.lock() {
             *guard = None;
         }

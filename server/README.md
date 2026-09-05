@@ -19,7 +19,7 @@ If the password is forgotten, deleting `auth.json` from the data directory reset
 
 ## Prerequisites
 
-- Rust 1.85 or newer; this repository pins the toolchain in `rust-toolchain.toml`.
+- Rust 1.98 or newer; this repository pins the toolchain in `rust-toolchain.toml`.
 - Node.js and npm if you need to build the bundled admin UI.
 - Docker if you run the containerized server.
 
@@ -131,7 +131,7 @@ Entries are deduplicated by SHA-256 `content_hash`.
 
 ## Docker Notes
 
-The server Docker builder image must use Rust 1.85 or newer. If a build fails with ``feature `edition2024` is required``, rebuild with the current Dockerfile:
+The server Docker builder image must use Rust 1.98 or newer. If a build fails with ``feature `edition2024` is required``, rebuild with the current Dockerfile:
 
 ```bash
 docker compose build --no-cache --pull copywraith-server
@@ -150,6 +150,6 @@ After bumping the server crate version, run:
 ## Troubleshooting
 
 - `npm install` fails in `server/ui`: verify network access and npm registry settings.
-- Docker build fails with `edition2024`: rebuild with `docker compose build --no-cache --pull copywraith-server` and confirm `server/Dockerfile` uses Rust 1.85 or newer.
+- Docker build fails with `edition2024`: rebuild with `docker compose build --no-cache --pull copywraith-server` and confirm `server/Dockerfile` uses Rust 1.98 or newer.
 - `/api/health` fails after container start: confirm `COPYWRAITH_HOST=0.0.0.0` and redeploy with `./scripts/redeploy-server-docker.sh`.
 - Server reports an old version after deploy: redeploy with the helper script and verify the running image tag in script output.
