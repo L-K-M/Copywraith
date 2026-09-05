@@ -3,6 +3,26 @@
 Reviewer: Claude Opus 5. Date: 2026-07-25. Reviewed tree: `main` @ `9ca8179`
 (working branch `claude/pasteboard-manager-review-w03m9z`).
 
+> **Historical record — read as a snapshot, not as current state.**
+>
+> This document describes `9ca8179` and is kept as the evidence trail for that
+> review. Current `main` is 0.3.1 and has since taken Ubuntu/Linux paste, popup
+> and release-gating work (PRs #104, #105, #106, #109) that this review predates,
+> so file:line citations here have drifted and some findings may already be moot.
+>
+> The companion implementation PRs from this review — #88, #89, #90, #91, #92,
+> #94, #95 — are **open and under review. None of them has merged.** Nothing
+> below has shipped.
+>
+> **Withdrawn on maintainer direction.** The popup's varied and large type sizes,
+> its several accent colours, and the absence of dark mode are how System 7
+> worked, not defects. VIS-01 and §6 items 1, 3, 4 and 7 rest on the opposite
+> premise and are withdrawn; they are marked in place. §6's framing question came
+> from a "high-value iOS app" brief that was included in the original request by
+> accident. Do not act on the withdrawn items. Everything else in §4 and §6 —
+> `hue-rotate()` as a colour, the narrow status bar, the absent admin mobile
+> layout, the missing first-run state — stands on its own terms.
+
 This is a fresh, code-first review of the whole repository: server, macOS/Linux
 desktop client, Android client, shared core crate, and admin UI. It is written to
 stand on its own — every finding cites the file and the mechanism, so it can be
@@ -27,10 +47,12 @@ Run at review time on this tree, before any change:
 | Rust tests (server) | `cargo test -p copywraith-server` | Pass, 9 tests |
 | Rust tests (workspace) | `cargo test --workspace` | Pass (needs GTK dev libs installed first) |
 
-Open PRs on the repo are **Dependabot-only** (21 of them, #17–#86). Every
-implementation PR referenced in the `ANALYSIS.md` ledger (#32–#36, #41–#49) has
-been merged or closed. That ledger is now stale and should be dropped when
-`ANALYSIS.md` is rebuilt.
+At review time the open PRs on the repo were **Dependabot-only** (21 of them,
+#17–#86). Every implementation PR referenced in the `ANALYSIS.md` ledger
+(#32–#36, #41–#49) had been merged or closed, so that ledger was stale and was
+dropped when `ANALYSIS.md` was rebuilt. That is no longer the repo's state: the
+seven implementation PRs opened from this review (#88–#92, #94, #95) and #97
+(KDE follow-ups) are open and are not Dependabot's.
 
 `ANALYSIS.md` also claims GitHub Actions "creates jobs with zero steps and no
 assigned runner for every new PR". That is **no longer true** — the PRs opened
@@ -42,11 +64,11 @@ be read as real results again.
 ## 1. Headline: why the Android client takes a huge amount of time to sync
 
 This was the user's specific complaint, so it gets its own section. There is no
-single cause — there are **seven compounding ones**, and they multiply. The
-per-entry cost of a pull is roughly `4 fsyncs + 1 sensitive scan + N HTTP round
-trips`, and the whole thing is serial.
+single cause — there are **eight compounding ones** (SYNC-A1 … SYNC-A8), and
+they multiply. The per-entry cost of a pull is roughly `1 read + 2–3 fsynced
+writes + 1 sensitive scan + N HTTP round trips`, and the whole thing is serial.
 
-### SYNC-A1 — Every ingested entry costs four separate SQLite transactions (dominant cost)
+### SYNC-A1 — Every ingested entry costs up to four separate SQLite transactions (dominant cost)
 
 `src-tauri/src/sync.rs:571` `ingest_remote_entry` calls, in sequence:
 
@@ -58,16 +80,21 @@ trips`, and the whole thing is serial.
 Each of these takes `self.db.lock()` and issues a standalone statement, i.e. an
 **implicit transaction each**. `LocalStorage::new` (`storage.rs:146`) sets
 `journal_mode=WAL` but **never sets `synchronous`**, so SQLite defaults to
-`FULL`: every one of those implicit transactions fsyncs the WAL.
+`FULL`: every implicit *write* transaction fsyncs the WAL.
 
-On Android's flash an fsync is commonly 5–40 ms. Pulling 500 entries is
-~2,000 fsyncs — **10 to 80 seconds of pure disk-flush time**, before any
-network. This alone accounts for most of the reported latency.
+Only writes fsync, and only three of the four calls write. `has_content_hash` is
+a `SELECT`, and `set_starred` runs only when the remote entry is starred — so a
+typical unstarred new entry costs **two** fsyncs and a starred one **three**. On
+Android's flash an fsync is commonly 5–40 ms, so pulling 500 unstarred entries is
+~1,000 fsyncs — **5 to 40 seconds of pure disk-flush time**, before any network.
+That is still the largest single component of the reported latency.
 
-Fix: set `PRAGMA synchronous = NORMAL` (safe under WAL — it survives process
-crash, only a full OS/power loss can lose the last commit, which for a clipboard
-cache that re-syncs is an acceptable trade), add `busy_timeout`, and collapse the
-four calls into one transaction-wrapped storage method.
+Fix: set `PRAGMA synchronous = NORMAL` (under WAL this keeps the database
+consistent and keeps commits durable across an *application* crash; what it gives
+up is durability across an OS crash or power loss, which can roll back any
+transaction committed since the last checkpoint — not just the last one. For a
+clipboard cache that re-syncs, that is an acceptable trade), add `busy_timeout`,
+and collapse the four calls into one transaction-wrapped storage method.
 
 ### SYNC-A2 — Push is one sequential HTTP POST per entry, and re-reads settings every time
 
@@ -393,7 +420,13 @@ connection pool is the standard fix.
 
 ## 4. Visual and layout issues
 
-### VIS-01 — Wildly inconsistent type scale *(high — this is the "mid Android app" tell)*
+### VIS-01 — Wildly inconsistent type scale *(WITHDRAWN)*
+
+> **Withdrawn.** Per the maintainer, small and varied type sizes are System 7's
+> idiom, not leftover debugging, and the large popup preview is deliberate. This
+> finding and the priority it carried are void; the table below is retained only
+> as a record of the values as they stood at `9ca8179`. VIS-02 (column widths
+> declared twice and disagreeing) is a separate, still-valid finding.
 
 The popup and the admin UI both contain oversized values that read as
 leftover debugging:
@@ -412,8 +445,8 @@ The popup content column renders at 24 px while its own type badge is 9 px — a
 desktop. `!important` on the admin table cells means nothing downstream can
 correct it.
 
-Nothing else in the app will look considered until this is normalised to a real
-scale.
+~~Nothing else in the app will look considered until this is normalised to a real
+scale.~~ (Withdrawn — see above.)
 
 ### VIS-02 — Column widths declared twice and disagreeing
 
@@ -548,6 +581,13 @@ slowness (§SYNC-A4). It also resurrects deleted entries (BUG-10).
 
 ## 6. Aesthetics: the "high-value app" question
 
+> **Partly withdrawn.** The "high-value iOS app" brief this section answers was
+> included in the original request by accident, and the maintainer has since
+> ruled that varied/large type, multiple accents, and the absence of dark mode
+> are intentional System 7 fidelity. **Items 1, 3, 4 and 7 below are withdrawn.**
+> Items 2, 5, 6 and 8 do not depend on that premise and still stand. The
+> section's own conclusion — *do not re-skin* — was and remains correct.
+
 The user asked for aesthetics closer to a high-value iOS app than a mid Android
 app. There is a real tension worth naming before acting on it.
 
@@ -562,19 +602,22 @@ consistency**, not a particular visual language. A meticulously executed System 
 app reads as expensive. The current build does not, for reasons that are all
 fixable without touching the identity:
 
-1. **A real type scale.** Today: 9, 10, 11, 12, 13, 14, 16, 18, 22, 24 px, several
-   with `!important`, several contradicting each other in the same component
-   (VIS-01). Premium software uses 4–5 sizes with deliberate ratios. This is the
-   single biggest change in perceived quality.
+1. ~~**A real type scale.**~~ **(Withdrawn — the varied scale is intentional.)**
+   Today: 9, 10, 11, 12, 13, 14, 16, 18, 22, 24 px, several with `!important`,
+   several contradicting each other in the same component (VIS-01). Premium
+   software uses 4–5 sizes with deliberate ratios. This is the single biggest
+   change in perceived quality.
 2. **A spacing grid.** Padding values in the popup alone: `2px 2px`, `2px 4px`,
    `3px 6px`, `4px 8px`, `5px 6px`, `6px 8px`, `8px`. Snap to a 4 px grid.
-3. **One accent, used consistently.** Currently `#f5a623` for stars, `#ffd700` on
-   hover, `#2f6d35`/`#e7f4e7` for online, `#b35a00`/`#fff3e6` for unreachable,
-   `#c44` for sensitive, `#a01717` for field errors — six unrelated hues chosen
-   ad hoc. Define tokens.
-4. **Deliberate density and rhythm.** Rows should have one consistent height, and
-   the type/time/actions columns should align to a shared baseline. Right now the
-   24 px preview forces the row taller than its own metadata.
+3. ~~**One accent, used consistently.**~~ **(Withdrawn — the several accents are
+   intentional.)** Currently `#f5a623` for stars, `#ffd700` on hover,
+   `#2f6d35`/`#e7f4e7` for online, `#b35a00`/`#fff3e6` for unreachable, `#c44`
+   for sensitive, `#a01717` for field errors — six unrelated hues chosen ad hoc.
+   Define tokens.
+4. ~~**Deliberate density and rhythm.**~~ **(Withdrawn — rests on VIS-01.)** Rows
+   should have one consistent height, and the type/time/actions columns should
+   align to a shared baseline. Right now the 24 px preview forces the row taller
+   than its own metadata.
 5. **Motion with intent.** There is essentially none, except a 0.1 s opacity
    transition on the delete button. A 120–160 ms ease on selection change, row
    insertion, and dialog entry — honouring `prefers-reduced-motion` — is what
@@ -583,14 +626,16 @@ fixable without touching the identity:
    differently on every platform and at every weight. The admin UI already uses
    proper `@lkmc/system7-ui` icons (`server/ui/src/lib/EntryRow.svelte:2-12`);
    the popup should too.
-7. **Dark mode.** Every colour in the popup is a hardcoded light-mode hex.
-   `prefers-color-scheme` is not referenced anywhere in `src/`. On a phone in the
-   evening this is the most obviously "not a premium app" signal there is.
+7. ~~**Dark mode.**~~ **(Withdrawn — System 7 had no dark mode; its absence is
+   intentional.)** Every colour in the popup is a hardcoded light-mode hex.
+   `prefers-color-scheme` is not referenced anywhere in `src/`. On a phone in
+   the evening this is the most obviously "not a premium app" signal there is.
 8. **First-run polish.** No onboarding, no empty-state illustration, no sense that
    anyone considered the moment the app is opened for the first time.
 
-The recommendation is therefore: **do not re-skin. Systematise.** Land 1–3 first;
-they cost little and change the impression most.
+The recommendation is therefore: **do not re-skin.** The "systematise 1–3 first"
+advice that followed is withdrawn with items 1 and 3; what is left worth doing is
+2, 5, 6 and 8.
 
 ---
 
@@ -757,13 +802,15 @@ Worth recording so it survives refactoring:
 ## 11. Implementation plan
 
 Items I have high confidence in, scoped as independent low-conflict branches.
+All of these were opened as PRs #88–#92, #94 and #95; **all are still open and
+none has merged**, so treat the table as proposed work, not delivered work.
 
 | # | Branch | Scope | Findings |
 |---|---|---|---|
 | 1 | `claude/sync-throughput-…` | SQLite pragmas (`synchronous=NORMAL`, `busy_timeout`), single-transaction remote ingest, hoist settings out of the push loop | SYNC-A1, SYNC-A2 |
 | 2 | `claude/entry-projection-…` | Compute preview + plain text once; bound list `full_text`; on-demand full text for the preview dialog | PERF-01, PERF-02 |
 | 3 | `claude/list-image-loading-…` | Viewport-gated, cancellable image loading; correct MIME in data URLs | PERF-03, BUG-07 |
-| 4 | `claude/viewport-typography-…` | `viewport-fit=cover`; normalise the type scale; reconcile column widths | BUG-05, VIS-01, VIS-02 |
+| 4 | `claude/viewport-typography-…` | `viewport-fit=cover`; ~~normalise the type scale~~ (withdrawn); reconcile column widths | BUG-05, ~~VIS-01~~, VIS-02 |
 | 5 | `claude/interaction-fixes-…` | Fix double-click double-paste; make Sync Details passive + add explicit Sync Now | BUG-02, BUG-04, UX-03 |
 | 6 | `claude/admin-ui-fixes-…` | Replace the incorrect RTF regex; stop re-fetching blobs on every reload | BUG-03, BUG-06 |
 | 7 | `claude/live-timestamps-…` | Shared relative-time clock so rows age correctly | BUG-11 |
