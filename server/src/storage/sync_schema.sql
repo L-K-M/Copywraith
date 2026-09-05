@@ -10,6 +10,7 @@ CREATE TABLE sync_heads (content_hash TEXT PRIMARY KEY, generation_id TEXT NOT N
 CREATE TABLE sync_receipts (
     operation_id TEXT PRIMARY KEY,
     fingerprint TEXT,
+    kind TEXT NOT NULL,
     receipt TEXT NOT NULL
 );
 

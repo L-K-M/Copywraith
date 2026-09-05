@@ -152,6 +152,14 @@ pub(super) fn queue_deletion(db: &Connection, id: &str) -> anyhow::Result<()> {
 }
 
 impl LocalStorage {
+    pub(crate) fn has_generation_sync_state(&self) -> anyhow::Result<bool> {
+        Ok(self.db.lock().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_peers)",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     pub(crate) fn bind_sync_server(&self, profile: &str, server_id: &str) -> anyhow::Result<()> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;

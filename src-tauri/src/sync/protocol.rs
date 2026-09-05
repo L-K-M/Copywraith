@@ -77,6 +77,7 @@ impl SyncClient {
             }));
         }
         if legacy {
+            anyhow::ensure!(!storage.has_generation_sync_state()?, "Generation-aware sync state exists; refusing an unsafe legacy downgrade. Upgrade or restore the server.");
             return Ok(Backend::Legacy);
         }
         anyhow::bail!(last_error)

@@ -18,6 +18,8 @@ mod storage;
 #[path = "../../src-tauri/src/sync.rs"]
 mod sync;
 
+use axum::response::IntoResponse;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use copywraith_core::api_types::{CreateEntryRequest, ListEntriesResponse};
@@ -38,6 +40,7 @@ struct Server {
     _dir: tempfile::TempDir,
     url: String,
     task: tokio::task::JoinHandle<()>,
+    discovery_hidden: Arc<AtomicBool>,
 }
 
 impl Server {
@@ -52,9 +55,22 @@ impl Server {
             storage: server_storage::Storage::new(dir.path()).unwrap(),
             crypto: Mutex::new(crypto::CryptoState::load(dir.path()).unwrap()),
         });
+        let discovery_hidden = Arc::new(AtomicBool::new(false));
+        let hidden = discovery_hidden.clone();
         let app = axum::Router::new()
             .nest("/api", api::router())
-            .with_state(state);
+            .with_state(state)
+            .layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| {
+                    let hidden = hidden.clone();
+                    async move {
+                        if request.uri().path() == "/api/sync" && hidden.load(Ordering::Relaxed) {
+                            return StatusCode::NOT_FOUND.into_response();
+                        }
+                        next.run(request).await
+                    }
+                },
+            ));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -62,6 +78,7 @@ impl Server {
             _dir: dir,
             url,
             task,
+            discovery_hidden,
         }
     }
 }
@@ -468,4 +485,58 @@ async fn tombstone_before_create_receipt_is_not_forgotten() {
         device.storage.get_entry(&local.id).unwrap().is_none(),
         "the earlier tombstone must apply when the delayed receipt reveals its identity"
     );
+}
+
+#[tokio::test]
+async fn established_protocol_never_downgrades_to_unfenced_legacy_posts() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    device.capture("first");
+    device.exchange().await;
+    server.discovery_hidden.store(true, Ordering::Relaxed);
+    device.capture("must remain pending");
+    device.sync.sync_unsynced_entries(&device.storage).await;
+    assert_eq!(
+        server.entries().await.total,
+        1,
+        "a discovery 404 must not enable unfenced legacy POSTs"
+    );
+    assert!(device.sync.pull_new_entries(&device.storage).await.is_err());
+}
+
+#[tokio::test]
+async fn cancelling_a_star_operation_cannot_delete_its_generation() {
+    let server = Server::start().await;
+    let create = server.create_request("not a create receipt").await;
+    let id = server.apply(&create).await.generation.unwrap().id;
+    let star = SyncMutation {
+        server_id: create.server_id.clone(),
+        operation_id: ulid::Ulid::generate().to_string(),
+        action: SyncAction::Star {
+            generation_id: id,
+            starred: true,
+        },
+    };
+    server.apply(&star).await;
+    let cancel = SyncMutation {
+        server_id: create.server_id,
+        operation_id: ulid::Ulid::generate().to_string(),
+        action: SyncAction::Delete {
+            target: DeleteTarget::Create {
+                operation_id: star.operation_id,
+            },
+        },
+    };
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/sync/{}/operations",
+            server.url, cancel.server_id
+        ))
+        .bearer_auth(PASSWORD)
+        .json(&cancel)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(server.entries().await.total, 1);
 }

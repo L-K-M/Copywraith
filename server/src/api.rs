@@ -356,17 +356,6 @@ async fn create_entry(
         .unwrap_or_else(ClipboardFlavors::default)
         .merge_legacy(req.content_type, req.text_content.as_deref());
 
-    if state
-        .storage
-        .sync_head(&req.content_hash)?
-        .generation
-        .is_some_and(|g| g.state == GenerationState::Deleted)
-    {
-        return Err(AppError::Conflict(
-            "Upgrade the client to re-copy deleted content".into(),
-        ));
-    }
-
     let (entry, created) = state.storage.create_entry(
         req.content_type,
         &flavors,
@@ -817,6 +806,12 @@ enum AppError {
 
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
+        if let Some(protocol) = err.downcast_ref::<SyncProtocolError>() {
+            return match protocol {
+                SyncProtocolError::WrongOperationKind => AppError::BadRequest(protocol.to_string()),
+                _ => AppError::Conflict(protocol.to_string()),
+            };
+        }
         AppError::Internal(err)
     }
 }

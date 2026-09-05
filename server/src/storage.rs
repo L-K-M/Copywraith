@@ -388,7 +388,7 @@ impl Storage {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
         if sync::legacy_create_is_retired(&tx, content_hash)? {
-            return Err(sync::LegacyRecreation.into());
+            return Err(copywraith_core::sync_protocol::SyncProtocolError::LegacyRecreation.into());
         }
         let result = self.create_entry_in(
             &tx,
@@ -779,7 +779,7 @@ impl Storage {
                 |row| row.get(0),
             )?;
             if count == 0 {
-                let blob_path = self.blob_dir.join(&hash);
+                let blob_path = self.blob_dir.join(hash);
                 let _ = std::fs::remove_file(blob_path);
             }
         }

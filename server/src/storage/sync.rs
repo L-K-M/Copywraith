@@ -6,10 +6,6 @@ const SERVER_ID_KEY: &str = "sync_server_id";
 const SCHEMA_VERSION_KEY: &str = "sync_schema_version";
 const SCHEMA_VERSION: &str = "1";
 
-#[derive(Debug, thiserror::Error)]
-#[error("Upgrade the client to re-copy deleted content")]
-pub(super) struct LegacyRecreation;
-
 pub(super) fn legacy_create_is_retired(db: &Connection, hash: &str) -> anyhow::Result<bool> {
     Ok(head(db, hash)?.is_some_and(|g| g.state == GenerationState::Deleted))
 }
@@ -91,31 +87,42 @@ fn generation(db: &Connection, id: &str) -> anyhow::Result<Option<GenerationHead
         .optional()?)
 }
 
-fn receipt(
-    db: &Connection,
-    operation_id: &str,
-) -> anyhow::Result<Option<(Option<String>, SyncReceipt)>> {
-    let row: Option<(Option<String>, String)> = db
+struct StoredReceipt {
+    fingerprint: Option<String>,
+    kind: OperationKind,
+    value: SyncReceipt,
+}
+
+fn receipt(db: &Connection, operation_id: &str) -> anyhow::Result<Option<StoredReceipt>> {
+    let row: Option<(Option<String>, String, String)> = db
         .query_row(
-            "SELECT fingerprint, receipt FROM sync_receipts WHERE operation_id = ?1",
+            "SELECT fingerprint, kind, receipt FROM sync_receipts WHERE operation_id = ?1",
             [operation_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    row.map(|(fingerprint, json)| Ok((fingerprint, serde_json::from_str(&json)?)))
-        .transpose()
+    row.map(|(fingerprint, kind, json)| {
+        Ok(StoredReceipt {
+            fingerprint,
+            kind: serde_json::from_str(&kind)?,
+            value: serde_json::from_str(&json)?,
+        })
+    })
+    .transpose()
 }
 
 fn save_receipt(
     db: &Connection,
     fingerprint: Option<&str>,
+    kind: OperationKind,
     value: &SyncReceipt,
 ) -> anyhow::Result<()> {
     db.execute(
-        "INSERT INTO sync_receipts VALUES (?1, ?2, ?3)",
+        "INSERT INTO sync_receipts VALUES (?1, ?2, ?3, ?4)",
         params![
             value.operation_id,
             fingerprint,
+            serde_json::to_string(&kind)?,
             serde_json::to_string(value)?
         ],
     )?;
@@ -150,15 +157,12 @@ impl Storage {
         let server_id = server_id(&db)?;
         anyhow::ensure!(
             expected_server == server_id,
-            "Sync server identity mismatch"
+            SyncProtocolError::ServerMismatch
         );
         let current = u64::try_from(db.query_row("SELECT sequence FROM sync_clock", [], |r| {
             r.get::<_, i64>(0)
         })?)?;
-        anyhow::ensure!(
-            cursor <= current,
-            "Sync cursor is ahead of this server; restore requires a new server identity"
-        );
+        anyhow::ensure!(cursor <= current, SyncProtocolError::InvalidCursor);
         let limit = copywraith_core::api_types::clamp_limit(limit) as usize;
         let rows = db.prepare("SELECT id, content_hash, deleted, sequence FROM sync_generations WHERE sequence > ?1 ORDER BY sequence LIMIT ?2")?
             .query_map(params![i64::try_from(cursor)?, (limit + 1) as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?, r.get::<_, i64>(3)?)))?
@@ -210,18 +214,19 @@ impl Storage {
         let server_id = server_id(&tx)?;
         anyhow::ensure!(
             request.server_id == server_id,
-            "Sync server identity mismatch"
+            SyncProtocolError::ServerMismatch
         );
         let fingerprint = hash_bytes(&serde_json::to_vec(request)?);
-        if let Some((stored, result)) = receipt(&tx, &request.operation_id)? {
-            // A cancellation reservation fences a create that has not arrived yet.
-            let cancelled_create =
-                stored.is_none() && matches!(request.action, SyncAction::Create { .. });
+        if let Some(stored) = receipt(&tx, &request.operation_id)? {
+            // Only a typed cancellation reservation may accept an unseen create body.
+            let cancelled_create = stored.kind == OperationKind::Create
+                && stored.value.outcome == SyncOutcome::Cancelled
+                && request.action.kind() == OperationKind::Create;
             anyhow::ensure!(
-                cancelled_create || stored.as_deref() == Some(&fingerprint),
-                "Operation ID reused with different contents"
+                cancelled_create || stored.fingerprint.as_deref() == Some(&fingerprint),
+                SyncProtocolError::OperationReuse
             );
-            return Ok(result);
+            return Ok(stored.value);
         }
 
         let mut retired_blob = None;
@@ -279,17 +284,24 @@ impl Storage {
                     DeleteTarget::Create { operation_id } => {
                         anyhow::ensure!(
                             operation_id != &request.operation_id,
-                            "Cannot cancel this operation itself"
+                            SyncProtocolError::WrongOperationKind
                         );
                         match receipt(&tx, operation_id)? {
-                            Some((_, prior)) if prior.outcome == SyncOutcome::Applied => {
-                                prior.generation
+                            Some(prior) => {
+                                anyhow::ensure!(
+                                    prior.kind == OperationKind::Create,
+                                    SyncProtocolError::WrongOperationKind
+                                );
+                                match prior.value.outcome {
+                                    SyncOutcome::Applied => prior.value.generation,
+                                    _ => None,
+                                }
                             }
-                            Some(_) => None,
                             None => {
                                 save_receipt(
                                     &tx,
                                     None,
+                                    OperationKind::Create,
                                     &SyncReceipt {
                                         server_id: server_id.clone(),
                                         sequence: sequence(&tx)?,
@@ -326,7 +338,7 @@ impl Storage {
             outcome,
             generation,
         };
-        save_receipt(&tx, Some(&fingerprint), &result)?;
+        save_receipt(&tx, Some(&fingerprint), request.action.kind(), &result)?;
         tx.commit()?;
         self.remove_unreferenced_blob(&db, retired_blob.as_deref())?;
         Ok(result)

@@ -7,6 +7,28 @@ use crate::api_types::{CreateEntryRequest, EntryResponse};
 pub const SYNC_PROTOCOL_VERSION: u32 = 2;
 pub const SYNC_PAGE_SIZE: u32 = 100;
 
+#[derive(Debug, thiserror::Error)]
+pub enum SyncProtocolError {
+    #[error("Sync server identity mismatch")]
+    ServerMismatch,
+    #[error("Operation ID reused with different contents")]
+    OperationReuse,
+    #[error("Cancellation target is not a create operation")]
+    WrongOperationKind,
+    #[error("Upgrade the client to re-copy deleted content")]
+    LegacyRecreation,
+    #[error("Sync cursor is ahead of this server; restore requires a new server identity")]
+    InvalidCursor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    Create,
+    Star,
+    Delete,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SyncInfo {
     pub version: u32,
@@ -54,6 +76,16 @@ pub enum SyncAction {
     Delete {
         target: DeleteTarget,
     },
+}
+
+impl SyncAction {
+    pub fn kind(&self) -> OperationKind {
+        match self {
+            Self::Create { .. } => OperationKind::Create,
+            Self::Star { .. } => OperationKind::Star,
+            Self::Delete { .. } => OperationKind::Delete,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
