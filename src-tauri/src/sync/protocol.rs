@@ -220,14 +220,17 @@ impl SyncClient {
                     head.server_id == session.server_id && head.content_hash == content_hash,
                     "Head identity mismatch"
                 );
-                if candidate.origin != "capture"
-                    && head
-                        .generation
-                        .as_ref()
-                        .is_some_and(|g| g.state == GenerationState::Deleted)
-                {
-                    storage.block_sync_candidate(&session.server_id, &entry.id, "A legacy entry has no known live server generation; it will not recreate deleted content.")?;
-                    continue;
+                if let Some(generation) = &head.generation {
+                    if generation.state == GenerationState::Deleted
+                        && !storage.capture_can_restore(
+                            &session.server_id,
+                            &candidate,
+                            &generation.id,
+                        )?
+                    {
+                        storage.block_sync_candidate(&session.server_id, &candidate, "This capture predates knowledge of the deletion; copy again after synchronization to restore it.")?;
+                        continue;
+                    }
                 }
                 let blob_base64 = match entry.blob_hash.as_deref() {
                     Some(hash) => {

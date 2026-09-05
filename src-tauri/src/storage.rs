@@ -234,14 +234,15 @@ impl LocalStorage {
         content_hash: &str,
         source_app: Option<&str>,
     ) -> anyhow::Result<Option<ClipboardEntry>> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
 
         let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
         let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
         let search_text = resolved_flavors.best_plain_text();
 
         // Check for duplicate
-        let existing_id: Option<String> = db
+        let existing_id: Option<String> = tx
             .query_row(
                 "SELECT id FROM entries WHERE content_hash = ?1",
                 params![content_hash],
@@ -251,10 +252,12 @@ impl LocalStorage {
 
         if let Some(id) = existing_id {
             let now = Utc::now();
-            db.execute(
+            tx.execute(
                 "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
                 params![now.to_rfc3339(), id],
             )?;
+            replication::recover_blocked_capture(&tx, &id, content_hash)?;
+            tx.commit()?;
             return Ok(None); // Duplicate, moved to top
         }
 
@@ -268,7 +271,7 @@ impl LocalStorage {
             .map(|t| contains_sensitive_data(t))
             .unwrap_or(false);
 
-        db.execute(
+        tx.execute(
             "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at, sync_origin)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, 0, ?13, ?14, 'capture')",
             params![
@@ -288,6 +291,8 @@ impl LocalStorage {
                 now.to_rfc3339(),
             ],
         )?;
+        replication::record_capture(&tx, &id, content_hash)?;
+        tx.commit()?;
 
         let entry_flavors = flavors.clone().merge_legacy(content_type, None);
         let entry_text_content = entry_flavors.to_legacy_text_content(content_type);

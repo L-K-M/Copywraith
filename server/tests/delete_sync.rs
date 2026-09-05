@@ -96,6 +96,38 @@ struct Device {
 }
 
 impl Device {
+    fn restart(self) -> Self {
+        let Self {
+            _dir,
+            storage,
+            sync,
+        } = self;
+        drop(sync);
+        drop(storage);
+        let storage = LocalStorage::new(_dir.path()).unwrap();
+        let sync = SyncClient::new(&storage);
+        Self {
+            _dir,
+            storage,
+            sync,
+        }
+    }
+
+    async fn freeze_create(&self, server: &Server, text: &str) -> SyncMutation {
+        let create = server.create_request(text).await;
+        let server_id = create.server_id;
+        self.storage.bind_sync_server("test", &server_id).unwrap();
+        let candidate = self.storage.sync_candidates(&server_id).unwrap().remove(0);
+        self.storage
+            .enqueue_sync_candidate(&server_id, &candidate, create.action)
+            .unwrap();
+        self.storage
+            .pending_mutations(&server_id)
+            .unwrap()
+            .remove(0)
+            .request
+    }
+
     fn new(url: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path()).unwrap();
@@ -539,4 +571,247 @@ async fn cancelling_a_star_operation_cannot_delete_its_generation() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(server.entries().await.total, 1);
+}
+
+#[tokio::test]
+async fn provenance_cancelled_create_cannot_delete_a_recopy_pulled_before_cancellation() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let first = device.capture("receiptless predecessor");
+    let create = device
+        .freeze_create(&server, "receiptless predecessor")
+        .await;
+    let receipt = server.apply(&create).await;
+    // The server committed, but the client never received the create receipt.
+    device.storage.delete_entry(&first.id).unwrap();
+    let replacement = device.capture("receiptless predecessor");
+    let device = device.restart();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    assert_eq!(device.entries()[0].id, replacement.id);
+    device.exchange().await;
+    assert_eq!(
+        device.entries().len(),
+        1,
+        "cancelling the predecessor must preserve the re-copy"
+    );
+    assert_eq!(device.entries()[0].id, replacement.id);
+    assert_ne!(
+        server.entries().await.entries[0].entry.id,
+        receipt.generation.unwrap().id
+    );
+}
+
+#[tokio::test]
+async fn provenance_never_prepared_capture_cannot_restore_a_later_deletion() {
+    let server = Server::start().await;
+    let offline = Device::new(&server.url);
+    let stale = offline.capture("offline before deletion");
+    let online = Device::new(&server.url);
+    let original = online.capture("offline before deletion");
+    online.exchange().await;
+    online.storage.delete_entry(&original.id).unwrap();
+    online.exchange().await;
+    let offline = offline.restart();
+    offline.exchange().await;
+    assert_eq!(
+        server.entries().await.total,
+        0,
+        "sync-time discovery must not authorize restoration"
+    );
+    assert_eq!(offline.entries()[0].id, stale.id);
+    assert!(offline
+        .storage
+        .sync_warning(&server.info().await.server_id)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn provenance_fresh_duplicate_capture_recovers_a_conflict_without_replacing_its_key() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let local = device.capture("blocked duplicate");
+    let frozen = device.freeze_create(&server, "blocked duplicate").await;
+    let competing = server.create_request("blocked duplicate").await;
+    let generation = server.apply(&competing).await.generation.unwrap();
+    server.delete_generation(&generation.id).await;
+    let conflict = server.apply(&frozen).await;
+    assert_eq!(conflict.outcome, SyncOutcome::Conflict);
+    let pending = device
+        .storage
+        .pending_mutations(&frozen.server_id)
+        .unwrap()
+        .remove(0);
+    device
+        .storage
+        .acknowledge_mutation(&pending, &conflict)
+        .unwrap();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_some());
+    // A new explicit capture follows observation of the tombstone; it is not a retry.
+    let flavors = ClipboardFlavors {
+        text_plain: Some("blocked duplicate".into()),
+        ..Default::default()
+    };
+    device
+        .storage
+        .insert_entry(
+            ContentType::Text,
+            &flavors,
+            None,
+            &flavors.payload_hash(ContentType::Text, None),
+            None,
+        )
+        .unwrap();
+    let device = device.restart();
+    device.exchange().await;
+    assert_eq!(
+        server.entries().await.total,
+        1,
+        "a fresh duplicate must recover blocked capture intent"
+    );
+    assert_eq!(device.entries()[0].id, local.id);
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn provenance_recopy_survives_cancellation_before_the_original_post_arrives() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let original = device.capture("cancel before delivery");
+    let frozen = device
+        .freeze_create(&server, "cancel before delivery")
+        .await;
+    let device = device.restart();
+    let retried = device
+        .storage
+        .pending_mutations(&frozen.server_id)
+        .unwrap()
+        .remove(0)
+        .request;
+    assert_eq!(
+        serde_json::to_value(&frozen).unwrap(),
+        serde_json::to_value(&retried).unwrap()
+    );
+    device.storage.delete_entry(&original.id).unwrap();
+    let replacement = device.capture("cancel before delivery");
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    device.exchange().await;
+    assert_eq!(server.apply(&frozen).await.outcome, SyncOutcome::Cancelled);
+    assert_eq!(device.entries()[0].id, replacement.id);
+    assert_eq!(server.entries().await.total, 1);
+}
+
+#[tokio::test]
+async fn provenance_deferred_new_generation_is_replayed_after_predecessor_resolution() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let original = device.capture("deferred newer generation");
+    let frozen = device
+        .freeze_create(&server, "deferred newer generation")
+        .await;
+    let first = server.apply(&frozen).await.generation.unwrap();
+    device.storage.delete_entry(&original.id).unwrap();
+    let replacement = device.capture("deferred newer generation");
+    server.delete_generation(&first.id).await;
+    let competing = server.create_request("deferred newer generation").await;
+    let second = server.apply(&competing).await.generation.unwrap();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let device = device.restart();
+    device.exchange().await;
+    assert_eq!(device.entries()[0].id, replacement.id);
+    assert_eq!(server.entries().await.total, 1);
+    assert_eq!(server.entries().await.entries[0].entry.id, second.id);
+    assert!(device
+        .storage
+        .pending_mutations(&frozen.server_id)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn provenance_observed_tombstone_does_not_authorize_a_newer_generation() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let first = server.create_request("generation-scoped authority").await;
+    let first_id = server.apply(&first).await.generation.unwrap().id;
+    server.delete_generation(&first_id).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let local = device.capture("generation-scoped authority");
+    let second = server.create_request("generation-scoped authority").await;
+    let second_id = server.apply(&second).await.generation.unwrap().id;
+    server.delete_generation(&second_id).await;
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 0);
+    assert_eq!(device.entries()[0].id, local.id);
+    assert!(device
+        .storage
+        .sync_warning(&first.server_id)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn provenance_upgrade_with_a_discarded_create_hash_keeps_the_recopy_unresolved() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let original = device.capture("old build discarded provenance");
+    let frozen = device
+        .freeze_create(&server, "old build discarded provenance")
+        .await;
+    server.apply(&frozen).await;
+    device.storage.delete_entry(&original.id).unwrap();
+    let replacement = device.capture("old build discarded provenance");
+    // The previous build retained only cancel-create's operation ID, not its hash.
+    let db = rusqlite::Connection::open(device._dir.path().join("copywraith.db")).unwrap();
+    db.execute_batch("DROP TABLE sync_capture_predecessors; DROP TABLE sync_capture_heads; DROP TABLE sync_operation_provenance;").unwrap();
+    drop(db);
+    let device = device.restart();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    device.exchange().await;
+    assert_eq!(
+        device.entries().len(),
+        1,
+        "missing historical provenance must not delete the new local copy"
+    );
+    assert_eq!(device.entries()[0].id, replacement.id);
+    assert_eq!(server.entries().await.total, 0);
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn provenance_old_delete_receipt_cannot_replace_the_capture_time_known_head() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let original = device.capture("latest observed head");
+    device.exchange().await;
+    let first_id = server.entries().await.entries[0].entry.id.clone();
+    device.storage.delete_entry(&original.id).unwrap();
+    server.delete_generation(&first_id).await;
+    let second = server.create_request("latest observed head").await;
+    let second_id = server.apply(&second).await.generation.unwrap().id;
+    server.delete_generation(&second_id).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    // A no-op delete receipt carries the server clock, not a new change to the old generation.
+    device.exchange().await;
+    let replacement = device.capture("latest observed head");
+    device.exchange().await;
+    assert_eq!(
+        server.entries().await.total,
+        1,
+        "the new capture observed the newer tombstone"
+    );
+    assert_eq!(device.entries()[0].id, replacement.id);
 }
