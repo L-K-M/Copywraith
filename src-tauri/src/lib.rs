@@ -3,6 +3,8 @@ mod clipboard;
 mod commands;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "android")]
+mod mobile_core;
 mod models;
 #[cfg(desktop)]
 mod native_clipboard;
@@ -90,10 +92,20 @@ pub fn run() {
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
 
-            let storage =
-                Arc::new(storage::LocalStorage::new(&data_dir).expect("failed to init storage"));
+            #[cfg(target_os = "android")]
+            let (storage, sync_client) = {
+                let core = mobile_core::shared_core(&data_dir)?;
+                (core.storage(), core.sync_client())
+            };
 
-            let sync_client = Arc::new(sync::SyncClient::new(&storage));
+            #[cfg(not(target_os = "android"))]
+            let (storage, sync_client) = {
+                let storage = Arc::new(
+                    storage::LocalStorage::new(&data_dir).expect("failed to init storage"),
+                );
+                let sync_client = Arc::new(sync::SyncClient::new(&storage));
+                (storage, sync_client)
+            };
 
             let state = AppState {
                 storage: storage.clone(),
