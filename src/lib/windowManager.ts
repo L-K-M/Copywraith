@@ -13,6 +13,11 @@ type ResizeDirection =
 	| 'SouthWest'
 	| 'West';
 
+export enum WindowActivitySource {
+	Snapshot = 'snapshot',
+	Event = 'event'
+}
+
 const TITLE_BAR_HEIGHT = 36;
 const ACTIVITY_CHANGED = 'window-activity-changed';
 
@@ -21,7 +26,7 @@ export class WindowManager {
 	private savedWindowSize: { width: number; height: number } | null = null;
 	private isShaded = false;
 
-	subscribeActivity(onChange: (active: boolean) => void): UnlistenFn {
+	subscribeActivity(onChange: (active: boolean, source: WindowActivitySource) => void): UnlistenFn {
 		let disposed = false;
 		let receivedEvent = false;
 		let unlisten: UnlistenFn | undefined;
@@ -31,7 +36,7 @@ export class WindowManager {
 			if (disposed) return;
 
 			receivedEvent = true;
-			onChange(payload);
+			onChange(payload, WindowActivitySource.Event);
 		}).then(async stop => {
 			if (disposed) {
 				stop();
@@ -40,7 +45,7 @@ export class WindowManager {
 
 			unlisten = stop;
 			const active = await invoke<boolean>('is_window_active');
-			if (!disposed && !receivedEvent) onChange(active);
+			if (!disposed && !receivedEvent) onChange(active, WindowActivitySource.Snapshot);
 		}).catch(error => {
 			console.error('Failed to track window activity:', error);
 		});

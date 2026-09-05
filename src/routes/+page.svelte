@@ -3,7 +3,7 @@
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { TitleBar, Notification, ErrorBanner, ModalDialog, ProgressBar } from '@lkmc/system7-ui';
-	import { WindowManager } from '$lib/windowManager';
+	import { WindowManager, WindowActivitySource } from '$lib/windowManager';
 	import { windowFocused } from '$lib/util/windowState';
 	import { notifications } from '$lib/util/notifications';
 	import { platform, isMobile } from '$lib/util/platform';
@@ -82,9 +82,10 @@
 		const mobile = detectedPlatform === 'android' || detectedPlatform === 'ios';
 
 		// Native move grabs must neither dim nor dismiss the desktop popup.
-		unlistenActivity = windowManager.subscribeActivity((active) => {
+		unlistenActivity = windowManager.subscribeActivity((active, source) => {
 			windowFocused.set(active);
-			if (mobile) return;
+			// Startup initializes styling; only deactivation events dismiss the popup.
+			if (mobile || source === WindowActivitySource.Snapshot) return;
 
 			if (autoHideTimer) {
 				clearTimeout(autoHideTimer);

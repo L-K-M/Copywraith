@@ -32,7 +32,7 @@ function popup(t, platformName = 'linux') {
 	const listeners = new Map();
 	const mounts = [];
 	const destroys = [];
-	const state = { active: true, hidden: 0, captured: 0 };
+	const state = { active: true, nativeActive: true, hidden: 0, captured: 0 };
 	const listen = async (event, callback) => {
 		listeners.set(event, callback);
 		return () => { listeners.delete(event); };
@@ -61,7 +61,7 @@ function popup(t, platformName = 'linux') {
 		'@tauri-apps/api/event': { listen },
 		'@tauri-apps/api/core': { invoke: async (command) => {
 			assert.equal(command, 'is_window_active');
-			return true;
+			return state.nativeActive;
 		} },
 		'$lib/tauri': { TauriService },
 		'$lib/util/windowState': { windowFocused: { set: (active) => { state.active = active; } } },
@@ -91,6 +91,16 @@ function popup(t, platformName = 'linux') {
 		}
 	};
 }
+
+test('inactive startup initializes decorations without auto-hiding', async (t) => {
+	const app = popup(t);
+	app.state.nativeActive = false;
+	await app.mount();
+
+	assert.equal(app.state.active, false);
+	t.mock.timers.tick(AUTO_HIDE_WAIT_MS);
+	assert.equal(app.state.hidden, 0, 'startup must not dismiss an already-hidden popup');
+});
 
 test('Linux move grabs leave title-bar decorations active', async (t) => {
 	const app = popup(t);
