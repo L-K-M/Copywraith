@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use chrono::Utc;
@@ -10,12 +10,15 @@ use ulid::Ulid;
 
 use crate::crypto;
 
+#[path = "storage/blobs.rs"]
+mod blobs;
 #[path = "storage/sync.rs"]
 mod sync;
+use blobs::ServerBlobs;
 
 pub struct Storage {
     db: Mutex<Connection>,
-    blob_dir: PathBuf,
+    blobs: ServerBlobs,
 }
 
 const ENTRY_SELECT_COLUMNS: &str =
@@ -283,8 +286,7 @@ fn decrypt_entry_text_fields(entry: &mut ClipboardEntry, dek: &[u8; 32]) -> anyh
 impl Storage {
     pub fn new(data_dir: &Path) -> anyhow::Result<Self> {
         let db_path = data_dir.join("copywraith.db");
-        let blob_dir = data_dir.join("blobs");
-        std::fs::create_dir_all(&blob_dir)?;
+        let blobs = ServerBlobs::open(&data_dir.join("blobs"))?;
 
         let mut conn = Connection::open(&db_path)?;
         conn.execute_batch(
@@ -370,7 +372,7 @@ impl Storage {
 
         Ok(Self {
             db: Mutex::new(conn),
-            blob_dir,
+            blobs,
         })
     }
 
@@ -429,9 +431,15 @@ impl Storage {
             .optional()?;
 
         if let Some(mut entry) = existing {
+            self.repair_entry_blob(&entry, blob_base64, dek)?;
             // Update timestamp to bring to top
             let now = Utc::now();
-            let next_starred = starred.unwrap_or(entry.starred);
+            // Blob retransmission preserves canonical star intent.
+            let next_starred = if entry.blob_hash.is_some() {
+                entry.starred
+            } else {
+                starred.unwrap_or(entry.starred)
+            };
             entry.starred = next_starred;
             entry.updated_at = now;
             db.execute(
@@ -455,19 +463,11 @@ impl Storage {
             let hash = hash_bytes(&bytes);
             let size = bytes.len() as u64;
 
-            // Encrypt blob if DEK is available, then write to disk
-            if !copywraith_core::content::is_valid_hash(&hash) {
-                anyhow::bail!("Generated invalid blob hash");
-            }
-            let blob_path = self.blob_dir.join(&hash);
-            if !blob_path.exists() {
-                let to_write = if let Some(dek) = dek {
-                    crypto::encrypt_blob(dek, &bytes)?
-                } else {
-                    bytes
-                };
-                std::fs::write(&blob_path, &to_write)?;
-            }
+            anyhow::ensure!(
+                resolved_flavors.payload_hash(content_type, Some(&hash)) == content_hash,
+                "Blob payload hash mismatch"
+            );
+            self.blobs.put(&bytes, dek)?;
 
             (Some(hash), Some(size))
         } else {
@@ -779,8 +779,7 @@ impl Storage {
                 |row| row.get(0),
             )?;
             if count == 0 {
-                let blob_path = self.blob_dir.join(hash);
-                let _ = std::fs::remove_file(blob_path);
+                self.blobs.remove(hash);
             }
         }
 
@@ -788,15 +787,8 @@ impl Storage {
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        if !copywraith_core::content::is_valid_hash(hash) {
-            anyhow::bail!("Invalid blob hash: {}", hash);
-        }
-        let blob_path = self.blob_dir.join(hash);
-        if blob_path.exists() {
-            Ok(Some(std::fs::read(&blob_path)?))
-        } else {
-            Ok(None)
-        }
+        let _db = self.db.lock().unwrap();
+        self.blobs.read(hash)
     }
 
     pub fn count_entries(&self) -> anyhow::Result<u64> {
@@ -897,22 +889,28 @@ impl Storage {
         Ok(())
     }
 
-    /// Encrypt all existing unencrypted blob files in place.
+    /// Replace plaintext blobs only after complete encrypted copies are ready.
     pub fn encrypt_all_blobs(&self, dek: &[u8; 32]) -> anyhow::Result<()> {
-        let entries = std::fs::read_dir(&self.blob_dir)?;
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let data = std::fs::read(&path)?;
-            if crypto::is_encrypted_blob(&data) {
-                continue; // already encrypted
-            }
-            let encrypted = crypto::encrypt_blob(dek, &data)?;
-            std::fs::write(&path, &encrypted)?;
-        }
+        let _db = self.db.lock().unwrap();
+        self.blobs.encrypt_all(dek)
+    }
+
+    fn repair_entry_blob(
+        &self,
+        entry: &ClipboardEntry,
+        supplied: Option<&str>,
+        dek: Option<&[u8; 32]>,
+    ) -> anyhow::Result<()> {
+        let Some(hash) = &entry.blob_hash else {
+            anyhow::ensure!(supplied.is_none(), "Duplicate has no blob identity");
+            return Ok(());
+        };
+        let Some(encoded) = supplied else {
+            return self.blobs.ensure_existing(hash, dek);
+        };
+        let bytes = base64_to_bytes(encoded)?;
+        anyhow::ensure!(hash_bytes(&bytes) == *hash, "Duplicate blob hash mismatch");
+        self.blobs.put(&bytes, dek)?;
         Ok(())
     }
 }

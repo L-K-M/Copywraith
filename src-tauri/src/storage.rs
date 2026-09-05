@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use chrono::Utc;
+use copywraith_core::blob_store::BlobStore;
 use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
 use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -17,7 +18,7 @@ const ENTRY_SELECT_COLUMNS: &str =
 
 pub struct LocalStorage {
     db: Mutex<Connection>,
-    blob_dir: std::path::PathBuf,
+    blobs: BlobStore,
 }
 
 /// The server's identity for an entry being pulled into local storage.
@@ -160,8 +161,7 @@ fn backfill_flavor_columns(conn: &Connection) -> anyhow::Result<()> {
 impl LocalStorage {
     pub fn new(data_dir: &Path) -> anyhow::Result<Self> {
         let db_path = data_dir.join("copywraith.db");
-        let blob_dir = data_dir.join("blobs");
-        std::fs::create_dir_all(&blob_dir)?;
+        let blobs = BlobStore::open(&data_dir.join("blobs"))?;
 
         let mut conn = Connection::open(&db_path)?;
         conn.execute_batch(
@@ -222,7 +222,7 @@ impl LocalStorage {
 
         Ok(Self {
             db: Mutex::new(conn),
-            blob_dir,
+            blobs,
         })
     }
 
@@ -251,6 +251,7 @@ impl LocalStorage {
             .optional()?;
 
         if let Some(id) = existing_id {
+            self.repair_entry_blob(&tx, &id, blob_data)?;
             let now = Utc::now();
             tx.execute(
                 "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
@@ -261,6 +262,13 @@ impl LocalStorage {
             return Ok(None); // Duplicate, moved to top
         }
 
+        if let Some(bytes) = blob_data {
+            let hash = copywraith_core::content::hash_bytes(bytes);
+            anyhow::ensure!(
+                resolved_flavors.payload_hash(content_type, Some(&hash)) == content_hash,
+                "Blob payload hash mismatch"
+            );
+        }
         let (blob_hash, blob_size) = self.write_blob(blob_data)?;
 
         let now = Utc::now();
@@ -379,7 +387,15 @@ impl LocalStorage {
             )
             .optional()?;
 
-        if existing_id.is_some() {
+        if let Some(id) = existing_id {
+            let stored_hash: String = tx.query_row(
+                "SELECT content_hash FROM entries WHERE id = ?1",
+                [&id],
+                |row| row.get(0),
+            )?;
+            if stored_hash == content_hash {
+                self.repair_entry_blob(tx, &id, blob_data)?;
+            }
             // Already present locally, either by payload or because this exact
             // server row was pulled before. The caller applies remote starred
             // state separately so unpushed local changes are not clobbered.
@@ -388,6 +404,13 @@ impl LocalStorage {
 
         // Serialize blob creation with deletion and skip rejected payloads.
         // The file must exist before committing its row.
+        if let Some(bytes) = blob_data {
+            let hash = copywraith_core::content::hash_bytes(bytes);
+            anyhow::ensure!(
+                resolved_flavors.payload_hash(content_type, Some(&hash)) == content_hash,
+                "Blob payload hash mismatch"
+            );
+        }
         let (blob_hash, blob_size) = self.write_blob(blob_data)?;
 
         tx.execute(
@@ -433,12 +456,47 @@ impl LocalStorage {
             anyhow::bail!("Generated invalid blob hash");
         }
 
-        let blob_path = self.blob_dir.join(&hash);
-        if !blob_path.exists() {
-            std::fs::write(&blob_path, data)?;
-        }
+        self.blobs.ensure(&hash, data, |stored| {
+            copywraith_core::content::hash_bytes(stored) == hash
+        })?;
 
         Ok((Some(hash), Some(data.len() as u64)))
+    }
+
+    // Duplicate rows must repair payloads before timestamp/cursor acknowledgement.
+    fn repair_entry_blob(
+        &self,
+        db: &Connection,
+        id: &str,
+        supplied: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
+        let expected: Option<String> =
+            db.query_row("SELECT blob_hash FROM entries WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })?;
+        let Some(hash) = expected else {
+            anyhow::ensure!(supplied.is_none(), "Duplicate has no blob identity");
+            return Ok(());
+        };
+        let cached;
+        let bytes = match supplied {
+            Some(bytes) => bytes,
+            None => {
+                cached = self
+                    .blobs
+                    .read(&hash)?
+                    .ok_or_else(|| anyhow::anyhow!("Missing blob {hash}"))?;
+                &cached
+            }
+        };
+        anyhow::ensure!(
+            copywraith_core::content::hash_bytes(bytes) == hash,
+            "Duplicate blob hash mismatch"
+        );
+        self.blobs.ensure(&hash, bytes, |stored| {
+            copywraith_core::content::hash_bytes(stored) == hash
+        })?;
+        Ok(())
     }
 
     pub fn has_content_hash(&self, content_hash: &str) -> anyhow::Result<bool> {
@@ -609,23 +667,18 @@ impl LocalStorage {
                 |row| row.get(0),
             )?;
             if count == 0 {
-                let blob_path = self.blob_dir.join(hash);
-                let _ = std::fs::remove_file(blob_path);
+                let _ = self.blobs.remove(hash);
             }
         }
         Ok(())
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        if !copywraith_core::content::is_valid_hash(hash) {
-            anyhow::bail!("Invalid blob hash: {}", hash);
-        }
-        let blob_path = self.blob_dir.join(hash);
-        if blob_path.exists() {
-            Ok(Some(std::fs::read(&blob_path)?))
-        } else {
-            Ok(None)
-        }
+        // Read and deletion share the store lock; readers see a complete snapshot.
+        let _db = self.db.lock().unwrap();
+        let bytes = self.blobs.read(hash)?;
+        // A damaged cache is a miss, allowing the sync layer to fetch a repair.
+        Ok(bytes.filter(|bytes| copywraith_core::content::hash_bytes(bytes) == hash))
     }
 
     pub fn get_most_recent_entry(&self) -> anyhow::Result<Option<ClipboardEntry>> {
