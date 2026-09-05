@@ -59,6 +59,17 @@ export class TauriService {
 		return await invoke('get_entry_image', { id });
 	}
 
+	/**
+	 * Fetch one entry's complete plain text.
+	 *
+	 * The list projection bounds `full_text` so that loading 100 rows does not
+	 * push every entry's full contents through the IPC bridge. Call this when a
+	 * row reports `full_text_truncated`.
+	 */
+	static async getEntryText(id: string): Promise<string | null> {
+		return await invoke('get_entry_text', { id });
+	}
+
 	static async pasteEntry(id: string): Promise<void> {
 		await invoke('paste_entry', { id });
 	}

@@ -4,7 +4,10 @@ export interface ClipboardEntry {
 	id: string;
 	content_type: ContentType;
 	preview: string;
+	/** Bounded plain text for the preview dialog. A prefix when `full_text_truncated`. */
 	full_text: string | null;
+	/** True when `full_text` is only a prefix; call `getEntryText` for the rest. */
+	full_text_truncated: boolean;
 	has_image: boolean;
 	image_base64?: string | null;
 	starred: boolean;

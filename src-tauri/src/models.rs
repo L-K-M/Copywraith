@@ -7,7 +7,12 @@ pub struct EntryForFrontend {
     pub id: String,
     pub content_type: ContentType,
     pub preview: String,
+    /// Plain text for the preview dialog, bounded so the list stays cheap to
+    /// send over IPC. When `full_text_truncated` is set this is only a prefix.
     pub full_text: Option<String>,
+    /// True when `full_text` was cut short and the complete text must be
+    /// fetched with `get_entry_text`.
+    pub full_text_truncated: bool,
     pub has_image: bool,
     pub starred: bool,
     pub sensitive: bool,

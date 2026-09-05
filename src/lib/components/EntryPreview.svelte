@@ -3,18 +3,70 @@
 	import { pasteEntry, pasteEntryPlaintext, toggleStar, deleteEntry } from '$lib/util/clipboardStore';
 	import { MovableDialog, Button } from '@lkmc/system7-ui';
 	import { TauriService } from '$lib/tauri';
-	import { onMount } from 'svelte';
 
 	let { entry, onclose }: { entry: ClipboardEntry; onclose: () => void } = $props();
 
 	let imageData: string | null = $state(null);
+	// Filled in only when the list projection had to truncate. Until then the
+	// dialog renders the prefix the list already carries, so there is no blank
+	// frame while the fetch is in flight.
+	let fetchedText: string | null = $state(null);
+	let isLoadingFullText = $state(false);
+	let fullTextFailed = $state(false);
+	let imageFailed = $state(false);
 
-	onMount(() => {
-		if (entry.has_image) {
-			TauriService.getEntryImage(entry.id).then((data) => {
-				imageData = data;
-			}).catch(() => {});
+	let fullText = $derived(fetchedText ?? entry.full_text);
+
+	$effect(() => {
+		const id = entry.id;
+		const hasImage = entry.has_image;
+		const needsFullText = entry.full_text_truncated;
+		let disposed = false;
+
+		imageData = null;
+		fetchedText = null;
+		isLoadingFullText = false;
+		fullTextFailed = false;
+		imageFailed = false;
+
+		if (hasImage) {
+			TauriService.getEntryImage(id)
+				.then((data) => {
+					if (disposed) return;
+					imageData = data;
+					// A null payload means the blob is gone, not that it is
+					// still arriving — otherwise the dialog would sit on
+					// "Loading image..." forever.
+					imageFailed = data === null;
+				})
+				.catch((e) => {
+					console.error('Failed to load entry image:', e);
+					if (!disposed) imageFailed = true;
+				});
 		}
+
+		if (needsFullText) {
+			isLoadingFullText = true;
+			TauriService.getEntryText(id)
+				.then((text) => {
+					// `!= null` rather than a truthiness check: an empty string is
+					// a successful fetch, not a missing one.
+					if (!disposed && text != null) fetchedText = text;
+				})
+				.catch((e) => {
+					// The truncated prefix stays on screen, so this is not fatal
+					// — but the user must be told that what they see is partial.
+					console.error('Failed to load full entry text:', e);
+					if (!disposed) fullTextFailed = true;
+				})
+				.finally(() => {
+					if (!disposed) isLoadingFullText = false;
+				});
+		}
+
+		return () => {
+			disposed = true;
+		};
 	});
 
 	function formatDateTime(dateStr: string): string {
@@ -91,10 +143,21 @@
 				<div class="image-container">
 					<img src="data:image/png;base64,{imageData}" alt="Clipboard preview" />
 				</div>
+			{:else if entry.has_image && imageFailed}
+				<div class="empty-content failed" role="alert">
+					This image could not be loaded. The stored file may be missing.
+				</div>
 			{:else if entry.has_image}
 				<div class="empty-content">Loading image...</div>
-			{:else if entry.full_text}
-				<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.full_text}</pre>
+			{:else if fullText}
+				<pre class="text-content" class:sensitive-content={entry.sensitive}>{fullText}</pre>
+				{#if isLoadingFullText}
+					<div class="loading-more" role="status">Loading the rest of this entry...</div>
+				{:else if fullTextFailed}
+					<div class="loading-more failed" role="alert">
+						Showing a shortened version — the rest of this entry could not be loaded.
+					</div>
+				{/if}
 			{:else if entry.preview}
 				<pre class="text-content" class:sensitive-content={entry.sensitive}>{entry.preview}</pre>
 			{:else}
@@ -171,6 +234,23 @@
 		text-align: center;
 		color: #888;
 		font-size: 11px;
+	}
+
+	.loading-more {
+		padding: 4px 6px;
+		border-top: 1px solid #ddd;
+		color: #888;
+		font-size: 10px;
+		font-style: italic;
+	}
+
+	.loading-more.failed {
+		color: #a01717;
+		font-style: normal;
+	}
+
+	.empty-content.failed {
+		color: #a01717;
 	}
 
 	.sensitive-content {

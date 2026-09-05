@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { MovableDialog, Button } from '@lkmc/system7-ui';
-	import * as api from './api';
+	import { createEntryImage } from './entryImage.svelte';
 	import type { EntryResponse } from './types';
 
 	let {
@@ -13,43 +13,9 @@
 		ondownload: (entry: EntryResponse) => void;
 	} = $props();
 
-	let imageObjectUrl = $state<string | null>(null);
-	let imageLoadFailed = $state(false);
-
-	$effect(() => {
-		let disposed = false;
-		let localObjectUrl: string | null = null;
-
-		imageObjectUrl = null;
-		imageLoadFailed = false;
-
-		if (entry.content_type !== 'image' || !entry.blob_url) {
-			return;
-		}
-
-		api
-			.fetchBlobObjectUrl(entry.blob_url)
-			.then((objectUrl) => {
-				if (disposed) {
-					URL.revokeObjectURL(objectUrl);
-					return;
-				}
-				localObjectUrl = objectUrl;
-				imageObjectUrl = objectUrl;
-			})
-			.catch(() => {
-				if (!disposed) {
-					imageLoadFailed = true;
-				}
-			});
-
-		return () => {
-			disposed = true;
-			if (localObjectUrl) {
-				URL.revokeObjectURL(localObjectUrl);
-			}
-		};
-	});
+	const image = createEntryImage(() =>
+		entry.content_type === 'image' ? (entry.blob_url ?? null) : null
+	);
 
 	function formatDate(iso: string | null): string {
 		if (!iso) return '--';
@@ -87,14 +53,14 @@
 			</div>
 		{/if}
 
-		{#if entry.content_type === 'image' && imageObjectUrl}
-			<img class="img-full" src={imageObjectUrl} alt="Clipboard content preview" />
+		{#if entry.content_type === 'image' && image.objectUrl}
+			<img class="img-full" src={image.objectUrl} alt="Clipboard content preview" />
 			{#if entry.blob_size}
 				<div class="meta size-meta">
 					<span>Size: {formatSize(entry.blob_size)}</span>
 				</div>
 			{/if}
-		{:else if entry.content_type === 'image' && imageLoadFailed}
+		{:else if entry.content_type === 'image' && image.failed}
 			<div class="empty-state">Image unavailable (authentication failed or blob missing).</div>
 		{:else if entry.content_type === 'image'}
 			<div class="empty-state">Loading image...</div>

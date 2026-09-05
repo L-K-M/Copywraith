@@ -14,12 +14,21 @@
 
 	let { onpreview }: { onpreview?: (entry: ClipboardEntry) => void } = $props();
 
+	/*
+	 * These widths are the single source of truth: DataTable renders them as a
+	 * colgroup, which wins over any width set on the cells themselves. EntryRow
+	 * used to declare a second, contradictory set (star 24px, type 40px, time
+	 * 36px, actions 20px) that had no effect but read as if it did.
+	 *
+	 * The actions column now holds two buttons (preview and delete), so it is
+	 * wider than before.
+	 */
 	const columns = [
 		{ key: 'star', label: '', width: '32px', className: 'col-star-header' },
 		{ key: 'content', label: 'Content' },
 		{ key: 'type', label: 'Type', width: '78px' },
 		{ key: 'time', label: 'Time', width: '72px' },
-		{ key: 'actions', label: '', width: '36px' }
+		{ key: 'actions', label: '', width: '58px' }
 	];
 
 	const BOTTOM_LOAD_THRESHOLD_PX = 48;

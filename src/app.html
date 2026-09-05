@@ -3,7 +3,18 @@
 	<head>
 		<meta charset="utf-8" />
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!--
+			viewport-fit=cover is required for env(safe-area-inset-*) to report
+			real values. Without it those insets resolve to 0px, which silently
+			disabled the mobile safe-area padding in +page.svelte and the dialog
+			viewport clamp in app.css — dialogs could render under the Android
+			navigation bar.
+		-->
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, viewport-fit=cover"
+		/>
+		<meta name="color-scheme" content="light" />
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
