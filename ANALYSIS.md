@@ -702,8 +702,9 @@ the target focused.
 
 Isolated Plasma 5/6 CI exercises real keys, assignments, restart and notification
 focus. Mock-bus tests cover hostile signals, partial registration, repeated keys
-and cleanup failures. Worker panics become unavailable status and retry; shutdown
-wakes retries and bounds individual cleanup calls. This is not a universal
+and cleanup failures. Worker panics report unavailable status and retry;
+spawn failure asks for restart. Shutdown wakes retries and bounds individual
+cleanup calls. This is not a universal
 one-second exit guarantee or physical Wayland-session validation.
 
 Declined speculative callback replacement, extra polling sleeps and notification
