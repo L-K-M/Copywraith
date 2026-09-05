@@ -288,6 +288,10 @@ impl Storage {
             "
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
+            -- Synced rows are not retried after acknowledgment; retain durability.
+            PRAGMA synchronous=FULL;
+            -- Wait rather than fail when concurrent requests contend.
+            PRAGMA busy_timeout=5000;
 
             CREATE TABLE IF NOT EXISTS entries (
                 id TEXT PRIMARY KEY,

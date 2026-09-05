@@ -35,7 +35,10 @@ jobs:
       - name: Type-check (svelte-check)
         run: npm run check
 
-      - name: Test Linux smoke harness
+      - name: Test popup actions and sync status
+        run: node --test scripts/tests/*.test.mjs
+
+      - name: Test storage durability and Linux smoke harness
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Build popup frontend
@@ -43,6 +46,14 @@ jobs:
 
       - name: Install dependencies (server UI)
         run: npm ci
+        working-directory: server/ui
+
+      - name: Type-check server UI (svelte-check)
+        run: npm run check
+        working-directory: server/ui
+
+      - name: Test server UI
+        run: npm run test
         working-directory: server/ui
 
       - name: Build server UI

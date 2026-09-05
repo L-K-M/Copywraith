@@ -199,8 +199,22 @@ impl SyncClient {
             }
         };
 
+        if entries.is_empty() {
+            return;
+        }
+
+        // Resolve the endpoint configuration once for the whole batch. Reading
+        // it per entry costs a database lock and seven queries each time, which
+        // is significant when a first-run push has hundreds of entries queued.
+        let settings = storage.get_settings();
+        let server_urls = configured_server_urls(&settings);
+        if server_urls.is_empty() {
+            return; // No server configured, skip sync
+        }
+
         for entry in entries {
-            self.sync_entry(&entry, storage).await;
+            self.push_entry(&entry, storage, &server_urls, &settings.api_key)
+                .await;
         }
     }
 
@@ -211,6 +225,17 @@ impl SyncClient {
             return; // No server configured, skip sync
         }
 
+        self.push_entry(entry, storage, &server_urls, &settings.api_key)
+            .await;
+    }
+
+    async fn push_entry(
+        &self,
+        entry: &ClipboardEntry,
+        storage: &LocalStorage,
+        server_urls: &[ServerEndpoint],
+        api_key: &str,
+    ) {
         let flavors = entry.resolved_flavors();
 
         let content_hash = flavors.payload_hash(entry.content_type, entry.blob_hash.as_deref());
@@ -240,7 +265,7 @@ impl SyncClient {
         };
 
         let synced = self
-            .push_entry_with_fallback(&server_urls, &settings.api_key, &req, &entry.id)
+            .push_entry_with_fallback(server_urls, api_key, &req, &entry.id)
             .await;
 
         if synced {
@@ -628,37 +653,26 @@ impl SyncClient {
             blob_data = Some(data);
         }
 
-        let inserted = storage.insert_entry(
+        // One transaction for the row, its starred flag, and its synced flag.
+        // Doing these as three separate statements costs three fsyncs per
+        // entry, which is the dominant cost of a bulk pull on mobile.
+        //
+        // The server's id and timestamps are carried through rather than
+        // regenerated, so an entry is the same entry on every device and the
+        // local list stays in true chronological order.
+        storage.insert_remote_entry(
+            crate::storage::RemoteEntryIdentity {
+                id: &remote.entry.id,
+                created_at: remote.entry.created_at,
+                updated_at: remote.entry.updated_at,
+            },
             remote.entry.content_type,
             &remote_flavors,
             blob_data.as_deref(),
             &content_hash,
             remote.entry.source_app.as_deref(),
-        )?;
-
-        let Some(local_entry) = inserted else {
-            return Ok(false);
-        };
-
-        if remote.entry.starred {
-            if let Err(e) = storage.set_starred(&local_entry.id, true) {
-                log::warn!(
-                    "Failed to apply starred flag for pulled entry {}: {}",
-                    local_entry.id,
-                    e
-                );
-            }
-        }
-
-        if let Err(e) = storage.mark_synced(&local_entry.id) {
-            log::warn!(
-                "Failed to mark pulled entry {} as synced: {}",
-                local_entry.id,
-                e
-            );
-        }
-
-        Ok(true)
+            remote.entry.starred,
+        )
     }
 
     /// Download a remote entry's blob.

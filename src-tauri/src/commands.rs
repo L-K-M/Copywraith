@@ -15,6 +15,96 @@ use copywraith_core::models::ClipboardFlavors;
 #[cfg(desktop)]
 use crate::paste;
 
+/// Characters shown in a list row's one-line preview.
+const LIST_PREVIEW_CHARS: usize = 200;
+
+/// Upper bound on the text carried by each list row.
+///
+/// Only the preview dialog ever reads `full_text`, and it shows one entry at a
+/// time. Shipping every entry's complete text with the list means serialising it
+/// through the WebView IPC bridge for 100 rows the user will not open — which on
+/// mobile is the most expensive part of loading the list. Rows longer than this
+/// are truncated and flagged; the dialog fetches the rest via `get_entry_text`.
+const LIST_FULL_TEXT_CHARS: usize = 4_000;
+
+/// Upper bound on the text `get_entry_text` will return.
+///
+/// Generous — this is a deliberate, one-entry-at-a-time request, so the cost is
+/// paid once rather than per row. It exists only so that a pathological entry
+/// (someone copies a multi-megabyte log) cannot push an unbounded string across
+/// the IPC bridge and into a single `<pre>` element, which on mobile is enough
+/// to stall the WebView.
+const ENTRY_TEXT_CHARS: usize = 500_000;
+
+// The on-demand command exists to give the dialog *more* than the list already
+// carries. Inverting these would make the extra round trip pointless, so it is
+// a compile error rather than a runtime surprise.
+const _: () = assert!(ENTRY_TEXT_CHARS > LIST_FULL_TEXT_CHARS);
+// Likewise, a row's dialog text must never be shorter than its own one-line
+// preview — that projection would read as backwards.
+const _: () = assert!(LIST_FULL_TEXT_CHARS > LIST_PREVIEW_CHARS);
+
+/// Truncate to `max_chars` characters (not bytes), appending an ellipsis.
+///
+/// Returns `None` when the text already fits.
+fn truncate_chars(text: &str, max_chars: usize) -> Option<String> {
+    let byte_end = match text.char_indices().nth(max_chars) {
+        Some((index, _)) => index,
+        None => return None,
+    };
+    Some(format!("{}...", &text[..byte_end]))
+}
+
+/// Build the frontend projection of an entry.
+///
+/// `ClipboardEntry::resolved_flavors` clones every flavor string and
+/// `best_plain_text` runs the HTML/RTF stripper across the whole document, so
+/// both are done exactly once here. Computing `preview` and `full_text`
+/// separately used to do all of that work twice per row.
+fn project_entry(entry: copywraith_core::models::ClipboardEntry) -> EntryForFrontend {
+    let plain_text = entry.best_plain_text();
+
+    let (preview, full_text, full_text_truncated) = match plain_text {
+        // Sensitive entries are masked before they reach the JS context, and a
+        // mask is already bounded, so there is never more to fetch.
+        Some(plain) if entry.sensitive => {
+            let masked = copywraith_core::content::mask_sensitive(&plain, LIST_PREVIEW_CHARS);
+            (masked.clone(), Some(masked), false)
+        }
+        Some(plain) => {
+            let preview =
+                truncate_chars(&plain, LIST_PREVIEW_CHARS).unwrap_or_else(|| plain.clone());
+            match truncate_chars(&plain, LIST_FULL_TEXT_CHARS) {
+                Some(bounded) => (preview, Some(bounded), true),
+                None => (preview, Some(plain), false),
+            }
+        }
+        None if entry.sensitive => ("[Sensitive]".to_string(), None, false),
+        None => {
+            let label = match entry.content_type {
+                ContentType::Image => "[Image]",
+                ContentType::File => "[File]",
+                _ => "[Empty]",
+            };
+            (label.to_string(), None, false)
+        }
+    };
+
+    EntryForFrontend {
+        id: entry.id,
+        content_type: entry.content_type,
+        preview,
+        full_text,
+        full_text_truncated,
+        has_image: entry.content_type == ContentType::Image && entry.blob_hash.is_some(),
+        starred: entry.starred,
+        sensitive: entry.sensitive,
+        created_at: entry.created_at.to_rfc3339(),
+        updated_at: entry.updated_at.to_rfc3339(),
+        source_app: entry.source_app,
+    }
+}
+
 #[tauri::command]
 pub async fn get_entries(
     state: State<'_, AppState>,
@@ -33,38 +123,36 @@ pub async fn get_entries(
         )
         .map_err(|e| e.to_string())?;
 
-    let result: Vec<EntryForFrontend> = entries
-        .into_iter()
-        .map(|e| {
-            let preview = e.preview(200);
-            let plain_text = e.best_plain_text();
+    Ok(entries.into_iter().map(project_entry).collect())
+}
 
-            // For sensitive entries, mask the full text so we never send
-            // secrets to the frontend JS context.
-            let full_text = if e.sensitive {
-                plain_text
-                    .as_ref()
-                    .map(|plain| copywraith_core::content::mask_sensitive(plain, 200))
-            } else {
-                plain_text
-            };
+/// Return one entry's complete plain text.
+///
+/// Used by the preview dialog when the list projection had to truncate. Keeping
+/// this on demand is what lets `get_entries` stay small.
+#[tauri::command]
+pub async fn get_entry_text(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, String> {
+    let entry = state
+        .storage
+        .get_entry(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Entry not found")?;
 
-            EntryForFrontend {
-                id: e.id,
-                content_type: e.content_type,
-                preview,
-                full_text,
-                has_image: e.content_type == ContentType::Image && e.blob_hash.is_some(),
-                starred: e.starred,
-                sensitive: e.sensitive,
-                created_at: e.created_at.to_rfc3339(),
-                updated_at: e.updated_at.to_rfc3339(),
-                source_app: e.source_app,
-            }
-        })
-        .collect();
+    let plain_text = entry.best_plain_text();
 
-    Ok(result)
+    // Sensitive payloads stay masked here too — this command must not become a
+    // way around the masking applied to the list.
+    Ok(match plain_text {
+        Some(plain) if entry.sensitive => Some(copywraith_core::content::mask_sensitive(
+            &plain,
+            LIST_PREVIEW_CHARS,
+        )),
+        Some(plain) => Some(truncate_chars(&plain, ENTRY_TEXT_CHARS).unwrap_or(plain)),
+        None => None,
+    })
 }
 
 #[tauri::command]
@@ -909,4 +997,97 @@ pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{project_entry, truncate_chars, LIST_FULL_TEXT_CHARS, LIST_PREVIEW_CHARS};
+    use copywraith_core::models::ClipboardEntry;
+
+    fn char_len(text: &str) -> usize {
+        text.chars().count()
+    }
+
+    #[test]
+    fn short_text_is_sent_whole_and_not_flagged_truncated() {
+        let projected = project_entry(ClipboardEntry::new_text("a short note".to_string()));
+
+        assert_eq!(projected.preview, "a short note");
+        assert_eq!(projected.full_text.as_deref(), Some("a short note"));
+        assert!(!projected.full_text_truncated);
+    }
+
+    #[test]
+    fn long_text_is_bounded_in_both_preview_and_full_text() {
+        let long = "x".repeat(LIST_FULL_TEXT_CHARS * 2);
+        let projected = project_entry(ClipboardEntry::new_text(long));
+
+        // The preview stays one line's worth, and full_text stays bounded so a
+        // 100-row page cannot balloon the IPC payload.
+        assert_eq!(char_len(&projected.preview), LIST_PREVIEW_CHARS + 3);
+        let full_text = projected.full_text.expect("bounded text is still sent");
+        assert_eq!(char_len(&full_text), LIST_FULL_TEXT_CHARS + 3);
+        assert!(projected.full_text_truncated);
+    }
+
+    #[test]
+    fn text_exactly_at_the_bound_is_not_truncated() {
+        let exact = "y".repeat(LIST_FULL_TEXT_CHARS);
+        let projected = project_entry(ClipboardEntry::new_text(exact.clone()));
+
+        assert_eq!(projected.full_text.as_deref(), Some(exact.as_str()));
+        assert!(!projected.full_text_truncated);
+    }
+
+    #[test]
+    fn truncation_respects_character_boundaries() {
+        // Multi-byte characters must not be split; slicing by byte would panic.
+        let text = "é".repeat(LIST_FULL_TEXT_CHARS + 50);
+        let projected = project_entry(ClipboardEntry::new_text(text));
+
+        let full_text = projected.full_text.expect("bounded text is still sent");
+        assert!(full_text.ends_with("..."));
+        assert_eq!(char_len(&full_text), LIST_FULL_TEXT_CHARS + 3);
+    }
+
+    #[test]
+    fn sensitive_entries_are_masked_and_never_marked_truncated() {
+        let secret = "sk-".to_string() + &"9".repeat(LIST_FULL_TEXT_CHARS * 2);
+        let mut entry = ClipboardEntry::new_text(secret.clone());
+        entry.sensitive = true;
+
+        let projected = project_entry(entry);
+
+        assert!(!projected.preview.contains(&"9".repeat(10)));
+        let full_text = projected.full_text.expect("a mask is still shown");
+        assert!(!full_text.contains(&"9".repeat(10)));
+        // A mask is already bounded, so there is nothing more to fetch — the
+        // dialog must not call get_entry_text and expect the real value.
+        assert!(!projected.full_text_truncated);
+    }
+
+    #[test]
+    fn html_is_stripped_for_the_preview() {
+        let projected = project_entry(ClipboardEntry::new_html(
+            "<p>Hello <b>world</b></p>".to_string(),
+        ));
+
+        assert_eq!(projected.preview, "Hello world");
+    }
+
+    #[test]
+    fn truncate_chars_returns_none_when_the_text_already_fits() {
+        assert_eq!(truncate_chars("short", 100), None);
+        assert_eq!(truncate_chars("exact", 5), None);
+        assert_eq!(truncate_chars("abcdef", 3).as_deref(), Some("abc..."));
+    }
+
+    #[test]
+    fn entries_without_text_get_a_type_label() {
+        let projected = project_entry(ClipboardEntry::new_image("a".repeat(64), 12));
+
+        assert_eq!(projected.preview, "[Image]");
+        assert!(projected.full_text.is_none());
+        assert!(!projected.full_text_truncated);
+    }
 }
