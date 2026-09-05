@@ -40,14 +40,39 @@ three places:
    remainder of SYNC-A5 are untouched, and each needs a protocol or product
    decision. **SYNC-A3 is the one that matters**: a timed-out `sync_now` discards
    all pull-watermark progress, so a large history never converges at all.
-2. **Test coverage of the sync protocol.** Still the single highest-leverage
-   piece of missing engineering work. The storage layer now has unit tests on
-   both sides, but nothing exercises the protocol end to end.
+2. **Sync regression coverage.** The unmerged #113 foundation now exercises
+   actual client/server sources over HTTP. Error isolation, conflict ordering,
+   filesystem durability and Android coverage remain incomplete.
 3. **Delete propagation.** Remote identity/chronology (#94) shipped in #114.
    Delete propagation did not: **#95 was rejected** — see the Outcome ledger —
    so there are still no tombstones anywhere in the product, and a local delete
    can be undone by a cursor reset or a later server update. Tracked in
    **#113**; delete propagation remains Priority 0.
+
+### #113 development checkpoint — not release-ready
+
+Local `fix/delete-sync` includes merged #117/#118. The v2 foundation preserves
+local keys and FULL, with immutable operations/generations, retained receipts
+and tombstones, durable cursors/outbox, capture-time provenance and revision-aware
+acknowledgments. Missing generation deletes complete; missing cancellation
+receipts cannot discard replay fences. No metadata expiry is supported.
+
+Validation at `0949594`: 46 harness tests (22 HTTP regressions), core/server
+tests, full workspace check/strict Clippy, 21 frontend tests, both checker paths
+and popup build pass. This does not establish release readiness.
+
+Remaining source-audit findings need regression tests before fixes:
+- Isolate rejected operations and missing blobs without losing frozen intent or
+  predecessor fences; expose durable failure/retry status.
+- Reconcile live create conflicts after canonical feed consumption, without
+  turning rejected capture state into a new star write.
+- Publish/replace blobs durably before DB acknowledgment; repair valid duplicate
+  payloads and corrupt caches. FULL alone does not synchronize blob files.
+- Resolve Android foreground-service versus restricted legacy-upload behavior,
+  then validate one durable producer. No Android runtime evidence exists yet.
+
+Transport/restart, pagination, server-identity and blob fault coverage, recovery
+UI and protocol/compatibility documentation remain. #113 stays open and unmerged.
 
 ### Verification baseline
 
@@ -160,9 +185,8 @@ erase starred state.
 
 ### Add end-to-end sync tests before protocol growth
 
-**Still the highest-leverage missing work in the repo.** The sync protocol has
-no automated coverage at all; everything in *Android sync latency* and BUG-01
-would have been caught by a mocked-server test. Cover:
+The unmerged #113 harness covers generation replay, deletion/cancellation,
+receipt ordering, provenance and legacy downgrade. Extend coverage to:
 
 - Cursor item moved, deleted, and tied on timestamp.
 - Empty, missing, corrupt, and hash-mismatched blobs.
@@ -175,8 +199,7 @@ would have been caught by a mocked-server test. Cover:
 
 `sol.md` OPS-04.
 
-> Client storage and list projection have unit tests; the HTTP sync protocol
-> still lacks integration coverage.
+> Passing HTTP cases do not establish crash durability or Android convergence.
 
 ### Bound and stream large payloads
 
@@ -291,12 +314,10 @@ can intervene and produce plaintext writes or ciphertext responses.
 
 ### Deletion, retention, backup, and storage visibility
 
-- Implement synchronized tombstones and conflict-safe eventual purge. **Still
-  entirely unbuilt.** #95 attempted it and was rejected (upgrade ordering, local
-  vs. server ids, recopy suppression, and an in-flight-POST acknowledgment race);
-  the replacement is tracked in **#113**. Nothing in the product deletes across
-  devices today; a cursor reset or later server update can restore a local
-  deletion. The replacement must define tombstone expiry too.
+- Complete synchronized deletion in **#113**. #95 was rejected for upgrade,
+  identity, recopy and in-flight acknowledgment faults. The replacement remains
+  unmerged; released clients still lack delete propagation. Retain generation,
+  receipt and tombstone metadata indefinitely; no safe expiry is established.
 - Add Undo/Graveyard behaviour before permanent deletion.
 - Add configurable age/count/byte retention with starred exclusions. **Nothing
   bounds growth today** — the DB and blob directory grow forever on every device.
