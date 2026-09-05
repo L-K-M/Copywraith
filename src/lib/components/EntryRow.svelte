@@ -45,6 +45,9 @@
 	let imageFailed = $state(false);
 	let imageVisible = $state(false);
 
+	// Metadata refreshes replace entry objects without changing their image.
+	let imageEntryId = $derived(entry.has_image ? entry.id : null);
+
 	let relativeTime = $derived(formatRelativeTime(entry.updated_at, $now));
 	let imageSrc = $derived(
 		imageData ? `data:${imageMimeFromBase64(imageData)};base64,${imageData}` : null
@@ -76,9 +79,9 @@
 	});
 
 	$effect(() => {
-		if (!entry.has_image || !imageVisible) return;
+		const id = imageEntryId;
+		if (!id || !imageVisible) return;
 
-		const id = entry.id;
 		let disposed = false;
 
 		imageLoading = true;
@@ -113,6 +116,11 @@
 	});
 
 	function handleClick(e: MouseEvent) {
+		const SINGLE_CLICK_COUNT = 1;
+
+		// Later clicks in a double-click must not paste the same entry again.
+		if (e.detail > SINGLE_CLICK_COUNT) return;
+
 		onselect?.(entry.id);
 		// On mobile, alt-click is not available; always do a standard paste/copy
 		if (!$isMobile && e.altKey) {
