@@ -319,7 +319,11 @@
 
 			<div class="shortcut-hint">
 				{#if shortcutStatus?.mechanism.startsWith('kde')}
-					KDE manages these shortcuts. Assign or disable them in System Settings.
+					{#if shortcutStatus.mechanism === 'kde_unavailable'}
+						KDE shortcuts are unavailable. Use the commands below while reconnection is retried.
+					{:else}
+						KDE manages these shortcuts. Assign or disable them in System Settings.
+					{/if}
 					<button class="s7-button" type="button" onclick={refreshShortcutStatus}>Refresh status</button>
 				{:else}
 					Use format: CmdOrCtrl+Shift+Key. Leave empty to disable.

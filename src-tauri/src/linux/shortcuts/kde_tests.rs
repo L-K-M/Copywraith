@@ -335,3 +335,28 @@ fn held_kf5_press_dispatches_once_until_authenticated_release() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires isolated dbus-run-session"]
+fn hung_daemon_cleanup_and_drop_finish_within_one_second() {
+    let mock = Mock::start();
+    let mut session = Session::connect().unwrap();
+    session.poll().unwrap();
+    for _ in 0..2 {
+        for action in Activation::ALL {
+            mock.faults.lock().unwrap().push((
+                "setInactive".into(),
+                action.id().into(),
+                Fault::Timeout,
+            ));
+        }
+    }
+    let start = std::time::Instant::now();
+    assert!(session.deactivate().is_err());
+    drop(session);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "hung cleanup took {elapsed:?}"
+    );
+}

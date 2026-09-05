@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex, Once,
+    Condvar, Mutex, Once,
 };
 use std::time::Duration;
 
@@ -225,6 +225,8 @@ static KDE_STARTED: Once = Once::new();
 static KDE_STOP: AtomicBool = AtomicBool::new(false);
 static KDE_WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static KDE_HEALTH: Mutex<Option<Result<(), String>>> = Mutex::new(None);
+static KDE_RETRY_WAKE: Condvar = Condvar::new();
+static KDE_RETRY_LOCK: Mutex<()> = Mutex::new(());
 const KDE_RETRY: Duration = Duration::from_secs(2);
 
 fn is_kde_session() -> bool {
@@ -240,6 +242,19 @@ fn desktop_is_kde(desktop: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case("kde") || part.eq_ignore_ascii_case("plasma"))
 }
 
+fn run_kde_attempt(attempt: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    // Keep panics inside the managed worker so status and reconnect still run.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt))
+        .unwrap_or_else(|_| Err("KDE shortcut session panicked; reconnecting".into()))
+}
+
+fn wait_kde_retry() {
+    let guard = KDE_RETRY_LOCK.lock().unwrap();
+    let _wait = KDE_RETRY_WAKE
+        .wait_timeout_while(guard, KDE_RETRY, |_| !KDE_STOP.load(Ordering::Acquire))
+        .unwrap();
+}
+
 fn start_kde(on_activate: impl Fn(Action) + Send + 'static) {
     KDE_STARTED.call_once(|| {
         let result = std::thread::Builder::new()
@@ -250,25 +265,27 @@ fn start_kde(on_activate: impl Fn(Action) + Send + 'static) {
                 }
                 // Reconnect after bus failure; each new connection restores presence
                 // without changing assignments saved by System Settings.
-                let result = kde::Session::connect().and_then(|mut session| loop {
-                    if KDE_STOP.load(Ordering::Acquire) {
-                        return session.deactivate();
-                    }
-                    let activations = session.poll()?;
-                    *KDE_HEALTH.lock().unwrap() = Some(Ok(()));
-                    for activation in activations {
-                        on_activate(match activation {
-                            kde::Activation::Toggle => Action::TogglePopup,
-                            kde::Activation::Starred => Action::StarredPopup,
-                            kde::Activation::Plaintext => Action::PastePlaintext,
-                        });
-                    }
+                let result = run_kde_attempt(|| {
+                    kde::Session::connect().and_then(|mut session| loop {
+                        if KDE_STOP.load(Ordering::Acquire) {
+                            return session.deactivate();
+                        }
+                        let activations = session.poll()?;
+                        *KDE_HEALTH.lock().unwrap() = Some(Ok(()));
+                        for activation in activations {
+                            on_activate(match activation {
+                                kde::Activation::Toggle => Action::TogglePopup,
+                                kde::Activation::Starred => Action::StarredPopup,
+                                kde::Activation::Plaintext => Action::PastePlaintext,
+                            });
+                        }
+                    })
                 });
                 *KDE_HEALTH.lock().unwrap() = Some(result);
                 if KDE_STOP.load(Ordering::Acquire) {
                     break;
                 }
-                std::thread::sleep(KDE_RETRY);
+                wait_kde_retry();
             });
         match result {
             Ok(worker) => *KDE_WORKER.lock().unwrap() = Some(worker),
@@ -277,9 +294,15 @@ fn start_kde(on_activate: impl Fn(Action) + Send + 'static) {
     });
 }
 
+fn wake_kde_retry() {
+    let _guard = KDE_RETRY_LOCK.lock().unwrap();
+    KDE_STOP.store(true, Ordering::Release);
+    KDE_RETRY_WAKE.notify_all();
+}
+
 /// Stop the worker before exit so KDE releases our keys but keeps assignments.
 pub(crate) fn shutdown() {
-    KDE_STOP.store(true, Ordering::Release);
+    wake_kde_retry();
     if let Some(worker) = KDE_WORKER.lock().unwrap().take() {
         if worker.join().is_err() {
             log::warn!("KDE shortcut worker failed during shutdown");
@@ -293,8 +316,12 @@ fn kde_status(commands: Vec<ShortcutCommand>) -> ShortcutStatus {
 
 fn status_for_kde_health(
     health: Option<&Result<(), String>>,
-    commands: Vec<ShortcutCommand>,
+    mut commands: Vec<ShortcutCommand>,
 ) -> ShortcutStatus {
+    // KDE owns assignments; app-managed accelerators never describe these keys.
+    for command in &mut commands {
+        command.accelerator.clear();
+    }
     let (mechanism, message) = match health {
         Some(Ok(())) => ("kde", "Registered with KDE. Assign or disable keys in System Settings → Keyboard → Shortcuts → Copywraith. Existing KDE assignments are preserved; new actions start unbound.".to_string()),
         Some(Err(error)) => ("kde_unavailable", format!("KDE shortcuts unavailable ({error}). Retrying automatically. You can bind these commands in System Settings instead; avoid assigning the same key to both a command and a native action.")),
@@ -317,11 +344,7 @@ pub(crate) fn current_status(status: ShortcutStatus) -> ShortcutStatus {
         return status;
     }
     // Reconstruct command fallbacks even when the initial state was connecting.
-    let mut commands = manual_commands(&Settings::default());
-    for command in &mut commands {
-        command.accelerator.clear();
-    }
-    kde_status(commands)
+    kde_status(manual_commands(&Settings::default()))
 }
 
 /// The commands to bind by hand, for sessions we cannot configure ourselves.
@@ -701,6 +724,45 @@ fn gtk_key_name(key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_wakes_retry_wait() {
+        KDE_STOP.store(false, Ordering::Release);
+        let waiter = std::thread::spawn(wait_kde_retry);
+        std::thread::sleep(Duration::from_millis(20));
+        let started = std::time::Instant::now();
+        wake_kde_retry();
+        waiter.join().unwrap();
+        KDE_STOP.store(false, Ordering::Release);
+        assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn panicking_kde_attempt_reports_failure_and_allows_retry() {
+        let outcome =
+            std::panic::catch_unwind(|| run_kde_attempt(|| panic!("injected dispatcher panic")));
+        let failure = outcome.expect("worker panic must become an unavailable status");
+        assert!(failure.is_err());
+        assert_eq!(
+            status_for_kde_health(Some(&failure), Vec::new()).mechanism,
+            "kde_unavailable"
+        );
+        assert!(run_kde_attempt(|| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn kde_failure_never_suggests_application_accelerators() {
+        let settings = Settings {
+            shortcut_toggle_popup: "Super+Q".into(),
+            ..Settings::default()
+        };
+        let status =
+            status_for_kde_health(Some(&Err("offline".into())), manual_commands(&settings));
+        assert!(status
+            .commands
+            .iter()
+            .all(|command| command.accelerator.is_empty()));
+    }
 
     #[test]
     fn kde_detection_leaves_ubuntu_and_other_desktops_alone() {
