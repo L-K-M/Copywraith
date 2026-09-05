@@ -19,6 +19,7 @@ mod storage;
 mod sync;
 
 use axum::response::IntoResponse;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +31,21 @@ use storage::LocalStorage;
 use sync::SyncClient;
 
 const PASSWORD: &str = "fixture-password";
+const SERVER_TEXT_LIMIT: usize = 10 * 1024 * 1024;
+const TEST_REQUEST_LIMIT: usize = 64 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+enum OperationFault {
+    Reject(StatusCode),
+    CommitThenReject(StatusCode),
+    CommitThenTimeout,
+}
+
+#[derive(Default)]
+struct OperationFaults {
+    faults: HashMap<String, OperationFault>,
+    attempts: HashMap<String, Vec<String>>,
+}
 
 struct AppState {
     storage: server_storage::Storage,
@@ -41,9 +57,21 @@ struct Server {
     url: String,
     task: tokio::task::JoinHandle<()>,
     discovery_hidden: Arc<AtomicBool>,
+    operation_faults: Arc<Mutex<OperationFaults>>,
 }
 
 impl Server {
+    fn fault(&self, operation_id: &str, fault: OperationFault) {
+        self.operation_faults
+            .lock()
+            .unwrap()
+            .faults
+            .insert(operation_id.into(), fault);
+    }
+
+    fn clear_faults(&self) {
+        self.operation_faults.lock().unwrap().faults.clear();
+    }
     async fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -57,15 +85,52 @@ impl Server {
         });
         let discovery_hidden = Arc::new(AtomicBool::new(false));
         let hidden = discovery_hidden.clone();
+        let operation_faults = Arc::new(Mutex::new(OperationFaults::default()));
+        let faults = operation_faults.clone();
         let app = axum::Router::new()
             .nest("/api", api::router())
             .with_state(state)
             .layer(axum::middleware::from_fn(
                 move |request: axum::extract::Request, next: axum::middleware::Next| {
                     let hidden = hidden.clone();
+                    let faults = faults.clone();
                     async move {
                         if request.uri().path() == "/api/sync" && hidden.load(Ordering::Relaxed) {
                             return StatusCode::NOT_FOUND.into_response();
+                        }
+                        if request.uri().path().ends_with("/operations") {
+                            let (parts, body) = request.into_parts();
+                            let bytes = axum::body::to_bytes(body, TEST_REQUEST_LIMIT)
+                                .await
+                                .unwrap();
+                            let mutation: SyncMutation = serde_json::from_slice(&bytes).unwrap();
+                            let fault = {
+                                let mut faults = faults.lock().unwrap();
+                                faults
+                                    .attempts
+                                    .entry(mutation.operation_id.clone())
+                                    .or_default()
+                                    .push(copywraith_core::content::hash_bytes(&bytes));
+                                faults.faults.get(&mutation.operation_id).copied()
+                            };
+                            if let Some(OperationFault::Reject(status)) = fault {
+                                return status.into_response();
+                            }
+                            let response = next
+                                .run(axum::extract::Request::from_parts(
+                                    parts,
+                                    axum::body::Body::from(bytes),
+                                ))
+                                .await;
+                            return match fault {
+                                Some(OperationFault::CommitThenReject(status)) => {
+                                    status.into_response()
+                                }
+                                Some(OperationFault::CommitThenTimeout) => {
+                                    std::future::pending().await
+                                }
+                                _ => response,
+                            };
                         }
                         next.run(request).await
                     }
@@ -79,8 +144,139 @@ impl Server {
             url,
             task,
             discovery_hidden,
+            operation_faults,
         }
     }
+}
+
+#[tokio::test]
+async fn liveness_oversized_text_does_not_wedge_ordinary_uploads() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let oversized = device.capture(&"x".repeat(SERVER_TEXT_LIMIT + 1));
+    device.capture("ordinary after oversized");
+    device.exchange().await;
+    assert_eq!(
+        server.entries().await.total,
+        1,
+        "a rejected entry must not stop unrelated uploads"
+    );
+    let server_id = server.info().await.server_id;
+    let pending = device.storage.pending_mutations(&server_id).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].local_id, oversized.id);
+    let frozen = serde_json::to_vec(&pending[0].request).unwrap();
+    let device = device.restart();
+    assert!(
+        device.storage.sync_warning(&server_id).unwrap().is_some(),
+        "rejection status must survive restart"
+    );
+    device.exchange().await;
+    let pending = device.storage.pending_mutations(&server_id).unwrap();
+    assert_eq!(serde_json::to_vec(&pending[0].request).unwrap(), frozen);
+}
+
+#[tokio::test]
+async fn liveness_rejection_backlog_cannot_starve_healthy_frozen_work() {
+    const FAILED_BACKLOG: usize = 55;
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    for index in 0..FAILED_BACKLOG {
+        let text = format!("rejected backlog {index}");
+        device.capture(&text);
+        let frozen = device.freeze_create(&server, &text).await;
+        server.fault(
+            &frozen.operation_id,
+            OperationFault::Reject(StatusCode::PAYLOAD_TOO_LARGE),
+        );
+    }
+    device.capture("healthy after rejection backlog");
+    for _ in 0..3 {
+        device.exchange().await;
+    }
+    assert_eq!(
+        server.entries().await.total,
+        1,
+        "failure selection must rotate past a full batch"
+    );
+    let server_id = server.info().await.server_id;
+    assert!(device.storage.sync_warning(&server_id).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn liveness_missing_candidate_blob_does_not_abort_ordinary_capture() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let bytes = b"candidate image";
+    let hash = copywraith_core::content::hash_bytes(bytes);
+    let local = device
+        .storage
+        .insert_entry(
+            ContentType::Image,
+            &ClipboardFlavors::default(),
+            Some(bytes),
+            &hash,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    std::fs::remove_file(device._dir.path().join("blobs").join(&hash)).unwrap();
+    device.capture("healthy after missing image");
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 1);
+    assert!(device
+        .storage
+        .get_unsynced_entries()
+        .unwrap()
+        .iter()
+        .any(|entry| entry.id == local.id));
+    assert!(device
+        .storage
+        .sync_warning(&server.info().await.server_id)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn liveness_late_live_conflict_projects_consumed_canonical_star() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let local = device.capture("late live conflict");
+    let frozen = device.freeze_create(&server, "late live conflict").await;
+    let mut competing = server.create_request("late live conflict").await;
+    if let SyncAction::Create { payload, .. } = &mut competing.action {
+        payload.starred = Some(true);
+    }
+    let canonical = server.apply(&competing).await;
+    let conflict = server.apply(&frozen).await;
+    assert_eq!(conflict.outcome, SyncOutcome::Conflict);
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let pending = device
+        .storage
+        .pending_mutations(&frozen.server_id)
+        .unwrap()
+        .remove(0);
+    device
+        .storage
+        .acknowledge_mutation(&pending, &conflict)
+        .unwrap();
+    let device = device.restart();
+    device.exchange().await;
+    assert!(
+        device.entries()[0].starred,
+        "a rejected capture default must yield to canonical stars"
+    );
+    assert_eq!(device.entries()[0].id, local.id);
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        server.entries().await.entries[0].entry.id,
+        canonical.generation.unwrap().id
+    );
+    assert!(server.entries().await.entries[0].entry.starred);
 }
 
 impl Drop for Server {
@@ -121,11 +317,15 @@ impl Device {
         self.storage
             .enqueue_sync_candidate(&server_id, &candidate, create.action)
             .unwrap();
-        self.storage
-            .pending_mutations(&server_id)
-            .unwrap()
-            .remove(0)
-            .request
+        let db = rusqlite::Connection::open(self._dir.path().join("copywraith.db")).unwrap();
+        let request: String = db
+            .query_row(
+                "SELECT request FROM sync_outbox WHERE server_id = ?1 AND local_id = ?2",
+                rusqlite::params![server_id, candidate.entry.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&request).unwrap()
     }
 
     fn new(url: &str) -> Self {
@@ -905,4 +1105,409 @@ async fn provenance_old_delete_receipt_cannot_replace_the_capture_time_known_hea
         "the new capture observed the newer tombstone"
     );
     assert_eq!(device.entries()[0].id, replacement.id);
+}
+
+#[tokio::test]
+async fn liveness_conflict_before_feed_preserves_explicit_star_intent() {
+    for explicit_edit in [false, true] {
+        let server = Server::start().await;
+        let device = Device::new(&server.url);
+        let local = device.capture("conflict before feed");
+        let frozen = device.freeze_create(&server, "conflict before feed").await;
+        let mut competing = server.create_request("conflict before feed").await;
+        if let SyncAction::Create { payload, .. } = &mut competing.action {
+            payload.starred = Some(true);
+        }
+        server.apply(&competing).await;
+        let conflict = server.apply(&frozen).await;
+        if explicit_edit {
+            device.storage.toggle_star(&local.id).unwrap();
+            device.storage.toggle_star(&local.id).unwrap();
+        }
+        let pending = device
+            .storage
+            .pending_mutations(&frozen.server_id)
+            .unwrap()
+            .remove(0);
+        device
+            .storage
+            .acknowledge_mutation(&pending, &conflict)
+            .unwrap();
+        let device = device.restart();
+        device.exchange().await;
+        assert_eq!(device.entries()[0].starred, !explicit_edit);
+        assert_eq!(device.entries()[0].id, local.id);
+        assert_eq!(
+            server.entries().await.entries[0].entry.starred,
+            !explicit_edit
+        );
+        assert!(device
+            .storage
+            .sync_warning(&frozen.server_id)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
+async fn liveness_late_conflict_obeys_later_deletion_and_recreation() {
+    for recreate in [false, true] {
+        let server = Server::start().await;
+        let device = Device::new(&server.url);
+        let local = device.capture("late conflict retired");
+        let frozen = device.freeze_create(&server, "late conflict retired").await;
+        let competing = server.create_request("late conflict retired").await;
+        let generation = server.apply(&competing).await.generation.unwrap();
+        let conflict = server.apply(&frozen).await;
+        server.delete_generation(&generation.id).await;
+        if recreate {
+            let mut replacement = server.create_request("late conflict retired").await;
+            if let SyncAction::Create { payload, .. } = &mut replacement.action {
+                payload.starred = Some(true);
+            }
+            server.apply(&replacement).await;
+        }
+        device.sync.pull_new_entries(&device.storage).await.unwrap();
+        let pending = device
+            .storage
+            .pending_mutations(&frozen.server_id)
+            .unwrap()
+            .remove(0);
+        device
+            .storage
+            .acknowledge_mutation(&pending, &conflict)
+            .unwrap();
+        let device = device.restart();
+        device.exchange().await;
+        assert_eq!(device.entries().len(), usize::from(recreate));
+        if recreate {
+            assert_eq!(device.entries()[0].id, local.id);
+            assert!(device.entries()[0].starred);
+        }
+        assert_eq!(server.entries().await.total, usize::from(recreate) as u64);
+        assert!(device
+            .storage
+            .sync_warning(&frozen.server_id)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
+async fn liveness_later_rejection_cannot_erase_ambiguous_delivery_or_cancel_fences() {
+    for rejection in [StatusCode::BAD_REQUEST, StatusCode::PAYLOAD_TOO_LARGE] {
+        let server = Server::start().await;
+        let device = Device::new(&server.url);
+        let original = device.capture("ambiguous then rejected");
+        let frozen = device
+            .freeze_create(&server, "ambiguous then rejected")
+            .await;
+        server.fault(
+            &frozen.operation_id,
+            OperationFault::CommitThenReject(StatusCode::BAD_GATEWAY),
+        );
+        device.exchange().await;
+        assert_eq!(server.entries().await.total, 1);
+        server.fault(&frozen.operation_id, OperationFault::Reject(rejection));
+        device.exchange().await;
+        let device = device.restart();
+        let pending = device
+            .storage
+            .pending_mutations(&frozen.server_id)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            serde_json::to_vec(&pending.request).unwrap(),
+            serde_json::to_vec(&frozen).unwrap()
+        );
+        assert!(device
+            .storage
+            .sync_warning(&frozen.server_id)
+            .unwrap()
+            .is_some());
+        device.storage.delete_entry(&original.id).unwrap();
+        let replacement = device.capture("ambiguous then rejected");
+        let cancellations = device.storage.pending_mutations(&frozen.server_id).unwrap();
+        for cancellation in &cancellations {
+            server.fault(
+                &cancellation.request.operation_id,
+                OperationFault::Reject(rejection),
+            );
+        }
+        device.exchange().await;
+        assert_eq!(device.entries()[0].id, replacement.id);
+        assert_eq!(server.entries().await.total, 1);
+        assert_eq!(
+            device
+                .storage
+                .pending_mutations(&frozen.server_id)
+                .unwrap()
+                .len(),
+            cancellations.len()
+        );
+        server.clear_faults();
+        device
+            .storage
+            .retry_sync_failures(&frozen.server_id)
+            .unwrap();
+        let device = device.restart();
+        device.exchange().await;
+        assert_eq!(device.entries()[0].id, replacement.id);
+        assert_eq!(server.entries().await.total, 1);
+        // Replay returns the original receipt, even after its generation was retired.
+        assert_ne!(
+            server.apply(&frozen).await.generation.unwrap().id,
+            server.entries().await.entries[0].entry.id
+        );
+        assert!(device
+            .storage
+            .sync_warning(&frozen.server_id)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
+async fn liveness_manual_retry_preserves_the_complete_request() {
+    for rejection in [StatusCode::BAD_REQUEST, StatusCode::PAYLOAD_TOO_LARGE] {
+        let server = Server::start().await;
+        let device = Device::new(&server.url);
+        device.capture("manual recovery");
+        let frozen = device.freeze_create(&server, "manual recovery").await;
+        server.fault(&frozen.operation_id, OperationFault::Reject(rejection));
+        device.exchange().await;
+        let device = device.restart();
+        device.exchange().await;
+        assert_eq!(
+            server.operation_faults.lock().unwrap().attempts[&frozen.operation_id].len(),
+            1
+        );
+        server.clear_faults();
+        device
+            .storage
+            .retry_sync_failures(&frozen.server_id)
+            .unwrap();
+        device.exchange().await;
+        assert_eq!(server.entries().await.total, 1);
+        assert!(device
+            .storage
+            .sync_warning(&frozen.server_id)
+            .unwrap()
+            .is_none());
+        let faults = server.operation_faults.lock().unwrap();
+        let attempts = &faults.attempts[&frozen.operation_id];
+        assert_eq!(attempts.len(), 2);
+        assert!(attempts
+            .iter()
+            .all(|fingerprint| fingerprint == &attempts[0]));
+    }
+}
+
+#[tokio::test]
+async fn liveness_auth_failure_stops_the_session_without_quarantining_operations() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    device.capture("authorization failure");
+    let frozen = device.freeze_create(&server, "authorization failure").await;
+    server.fault(
+        &frozen.operation_id,
+        OperationFault::Reject(StatusCode::UNAUTHORIZED),
+    );
+    device.capture("waiting for authorization");
+    device.sync.sync_unsynced_entries(&device.storage).await;
+    assert_eq!(server.entries().await.total, 0);
+    let device = device.restart();
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        device
+            .storage
+            .pending_mutations(&frozen.server_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    server.clear_faults();
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 2);
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn liveness_operation_reuse_reports_corruption_without_blocking_other_work() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    device.capture("operation reuse");
+    let frozen = device.freeze_create(&server, "operation reuse").await;
+    let mut changed: SyncMutation =
+        serde_json::from_value(serde_json::to_value(&frozen).unwrap()).unwrap();
+    if let SyncAction::Create { payload, .. } = &mut changed.action {
+        payload.starred = Some(true);
+    }
+    server.apply(&changed).await;
+    device.capture("healthy despite corruption");
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 2);
+    let device = device.restart();
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .unwrap()
+        .contains("Operation ID reused"));
+    let pending = device
+        .storage
+        .pending_mutations(&frozen.server_id)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        serde_json::to_vec(&pending.request).unwrap(),
+        serde_json::to_vec(&frozen).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn liveness_transient_backlog_rotates_without_retargeting() {
+    const FAILED_BACKLOG: usize = 55;
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    for index in 0..FAILED_BACKLOG {
+        let text = format!("transient backlog {index}");
+        device.capture(&text);
+        let frozen = device.freeze_create(&server, &text).await;
+        server.fault(
+            &frozen.operation_id,
+            OperationFault::Reject(StatusCode::INTERNAL_SERVER_ERROR),
+        );
+    }
+    device.capture("healthy after transient backlog");
+    for _ in 0..3 {
+        device.exchange().await;
+    }
+    assert_eq!(server.entries().await.total, 1);
+    server.clear_faults();
+    let device = device.restart();
+    for _ in 0..3 {
+        device.exchange().await;
+    }
+    assert_eq!(server.entries().await.total, (FAILED_BACKLOG + 1) as u64);
+    assert!(device
+        .storage
+        .sync_warning(&server.info().await.server_id)
+        .unwrap()
+        .is_none());
+    for attempts in server.operation_faults.lock().unwrap().attempts.values() {
+        assert!(attempts
+            .iter()
+            .all(|fingerprint| fingerprint == &attempts[0]));
+    }
+}
+
+#[tokio::test]
+async fn liveness_timeout_after_commit_replays_the_retained_receipt() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    device.capture("timeout after commit");
+    let frozen = device.freeze_create(&server, "timeout after commit").await;
+    server.fault(&frozen.operation_id, OperationFault::CommitThenTimeout);
+    device.exchange().await;
+    let generation = server.entries().await.entries[0].entry.id.clone();
+    let device = device.restart();
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_some());
+    server.clear_faults();
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 1);
+    assert_eq!(server.entries().await.entries[0].entry.id, generation);
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_none());
+    let faults = server.operation_faults.lock().unwrap();
+    let attempts = &faults.attempts[&frozen.operation_id];
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0], attempts[1]);
+}
+
+#[tokio::test]
+async fn liveness_late_conflict_preserves_a_newer_explicit_star_edit() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let local = device.capture("late explicit star");
+    let frozen = device.freeze_create(&server, "late explicit star").await;
+    let mut competing = server.create_request("late explicit star").await;
+    if let SyncAction::Create { payload, .. } = &mut competing.action {
+        payload.starred = Some(true);
+    }
+    server.apply(&competing).await;
+    let conflict = server.apply(&frozen).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    device.storage.toggle_star(&local.id).unwrap();
+    device.storage.toggle_star(&local.id).unwrap();
+    let device = device.restart();
+    let pending = device
+        .storage
+        .pending_mutations(&frozen.server_id)
+        .unwrap()
+        .remove(0);
+    device
+        .storage
+        .acknowledge_mutation(&pending, &conflict)
+        .unwrap();
+    device.exchange().await;
+    assert_eq!(device.entries()[0].id, local.id);
+    assert!(!device.entries()[0].starred);
+    assert!(!server.entries().await.entries[0].entry.starred);
+    assert!(device
+        .storage
+        .sync_warning(&frozen.server_id)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn liveness_missing_blob_recovery_preserves_local_identity() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let bytes = b"repair candidate";
+    let hash = copywraith_core::content::hash_bytes(bytes);
+    let local = device
+        .storage
+        .insert_entry(
+            ContentType::Image,
+            &ClipboardFlavors::default(),
+            Some(bytes),
+            &hash,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let path = device._dir.path().join("blobs").join(&hash);
+    std::fs::remove_file(&path).unwrap();
+    device.exchange().await;
+    let device = device.restart();
+    let server_id = server.info().await.server_id;
+    assert!(device.storage.sync_warning(&server_id).unwrap().is_some());
+    assert_eq!(device.storage.get_unsynced_entries().unwrap().len(), 1);
+    // A later star edit must not make the repaired candidate permanently unretryable.
+    device.storage.toggle_star(&local.id).unwrap();
+    // Fixture restores the missing source; explicit recovery prepares its first immutable request.
+    std::fs::write(path, bytes).unwrap();
+    device.storage.retry_sync_failures(&server_id).unwrap();
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 1);
+    assert_eq!(device.entries()[0].id, local.id);
+    assert!(device.storage.get_unsynced_entries().unwrap().is_empty());
+    assert!(device.storage.sync_warning(&server_id).unwrap().is_none());
 }

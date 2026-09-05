@@ -662,9 +662,7 @@ async fn sync_info(
 
 fn ensure_sync_server(state: &AppState, expected: &str) -> Result<(), AppError> {
     if state.storage.sync_info()?.server_id != expected {
-        return Err(AppError::Conflict(
-            "Sync endpoints belong to different servers".into(),
-        ));
+        return Err(AppError::Protocol(SyncProtocolError::ServerMismatch));
     }
     Ok(())
 }
@@ -733,7 +731,7 @@ async fn sync_mutation(
     ensure_authorized(&state, &headers)?;
     ensure_sync_server(&state, &server_id)?;
     if request.server_id != server_id {
-        return Err(AppError::Conflict("Sync server identity mismatch".into()));
+        return Err(AppError::Protocol(SyncProtocolError::ServerMismatch));
     }
     validate_operation_id(&request.operation_id)?;
     match &request.action {
@@ -799,44 +797,74 @@ enum AppError {
     Unauthorized,
     NotFound,
     BadRequest(String),
-    Conflict(String),
+    Protocol(SyncProtocolError),
     SetupRequired,
     Internal(anyhow::Error),
 }
 
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
-        if let Some(protocol) = err.downcast_ref::<SyncProtocolError>() {
-            return match protocol {
-                SyncProtocolError::WrongOperationKind => AppError::BadRequest(protocol.to_string()),
-                _ => AppError::Conflict(protocol.to_string()),
-            };
+        match err.downcast::<SyncProtocolError>() {
+            Ok(protocol) => AppError::Protocol(protocol),
+            Err(error) => AppError::Internal(error),
         }
-        AppError::Internal(err)
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+        let (status, code, message) = match self {
+            AppError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                SyncErrorCode::Unauthorized,
+                "Unauthorized".to_string(),
+            ),
+            AppError::NotFound => (
+                StatusCode::NOT_FOUND,
+                SyncErrorCode::NotFound,
+                "Not found".to_string(),
+            ),
+            AppError::BadRequest(msg) => {
+                (StatusCode::BAD_REQUEST, SyncErrorCode::InvalidRequest, msg)
+            }
+            AppError::Protocol(error) => {
+                let code = match error {
+                    SyncProtocolError::ServerMismatch => SyncErrorCode::ServerMismatch,
+                    SyncProtocolError::OperationReuse => SyncErrorCode::OperationReuse,
+                    SyncProtocolError::WrongOperationKind => SyncErrorCode::WrongOperationKind,
+                    SyncProtocolError::LegacyRecreation => SyncErrorCode::LegacyRecreation,
+                    SyncProtocolError::InvalidCursor => SyncErrorCode::InvalidCursor,
+                };
+                let status = if code == SyncErrorCode::WrongOperationKind {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::CONFLICT
+                };
+                (status, code, error.to_string())
+            }
             AppError::SetupRequired => (
                 StatusCode::FORBIDDEN,
+                SyncErrorCode::SetupRequired,
                 "Password not configured. Set up a password first.".to_string(),
             ),
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {:?}", err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
+                    SyncErrorCode::Internal,
                     "Internal server error".to_string(),
                 )
             }
         };
 
-        (status, Json(ErrorResponse { error: message })).into_response()
+        (
+            status,
+            Json(SyncErrorResponse {
+                code,
+                error: message,
+            }),
+        )
+            .into_response()
     }
 }
 

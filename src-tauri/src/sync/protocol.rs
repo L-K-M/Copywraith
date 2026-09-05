@@ -2,6 +2,54 @@ use super::*;
 use copywraith_core::sync_protocol::*;
 use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
+use std::collections::HashSet;
+
+#[derive(Debug)]
+enum RequestFailureKind {
+    Operation(SyncRetryPolicy),
+    Session,
+}
+
+#[derive(Debug)]
+struct RequestFailure {
+    kind: RequestFailureKind,
+    message: String,
+}
+
+impl std::fmt::Display for RequestFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RequestFailure {}
+
+fn response_failure(status: StatusCode, error: Option<SyncErrorResponse>) -> RequestFailure {
+    let code = error.as_ref().map(|error| error.code);
+    let message = error
+        .map(|error| error.error)
+        .unwrap_or_else(|| format!("HTTP {status}"));
+    let kind = if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+        || matches!(
+            code,
+            Some(SyncErrorCode::ServerMismatch | SyncErrorCode::InvalidCursor)
+        ) {
+        RequestFailureKind::Session
+    } else if matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE | StatusCode::UNPROCESSABLE_ENTITY
+    ) || matches!(
+        code,
+        Some(SyncErrorCode::OperationReuse | SyncErrorCode::WrongOperationKind)
+    ) {
+        RequestFailureKind::Operation(SyncRetryPolicy::Manual)
+    } else if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
+        RequestFailureKind::Operation(SyncRetryPolicy::Automatic)
+    } else {
+        RequestFailureKind::Session
+    };
+    RequestFailure { kind, message }
+}
 
 struct ProtocolSession {
     server_id: String,
@@ -89,7 +137,7 @@ impl SyncClient {
         method: Method,
         path: &str,
         body: Option<&SyncMutation>,
-    ) -> anyhow::Result<T> {
+    ) -> Result<T, RequestFailure> {
         let mut error = "No verified endpoint responded".to_string();
         for endpoint in &session.endpoints {
             let mut request = self
@@ -103,18 +151,35 @@ impl SyncClient {
                 request = request.json(body);
             }
             match request.send().await {
-                Ok(response) if response.status().is_success() => {
-                    return Ok(response.json().await?)
-                }
+                Ok(response) if response.status().is_success() => match response.json().await {
+                    Ok(value) => return Ok(value),
+                    Err(cause) => {
+                        error = format!(
+                            "Receipt/response unreadable; delivery remains unresolved: {cause}"
+                        )
+                    }
+                },
                 Ok(response) => {
-                    error = format!("Sync request returned {}", response.status());
+                    let status = response.status();
+                    let failure =
+                        response_failure(status, response.json::<SyncErrorResponse>().await.ok());
+                    if !matches!(
+                        failure.kind,
+                        RequestFailureKind::Operation(SyncRetryPolicy::Automatic)
+                    ) {
+                        return Err(failure);
+                    }
+                    error = failure.message;
                 }
                 Err(cause) => {
                     error = cause.to_string();
                 }
             }
         }
-        anyhow::bail!(error)
+        Err(RequestFailure {
+            kind: RequestFailureKind::Operation(SyncRetryPolicy::Automatic),
+            message: error,
+        })
     }
 
     pub async fn sync_unsynced_entries(&self, storage: &LocalStorage) {
@@ -125,8 +190,24 @@ impl SyncClient {
                 self.legacy_sync_unsynced_entries(storage).await;
                 Ok(())
             }
-            Ok(Backend::Protocol(session)) => self.push_protocol(storage, &session).await,
-            Err(error) => Err(error),
+            Ok(Backend::Protocol(session)) => {
+                let _ = storage.record_sync_session_error(None, None);
+                let result = self.push_protocol(storage, &session).await;
+                storage
+                    .record_sync_session_error(
+                        Some(&session.server_id),
+                        result
+                            .as_ref()
+                            .err()
+                            .map(|error| error.to_string())
+                            .as_deref(),
+                    )
+                    .and(result)
+            }
+            Err(error) => {
+                let _ = storage.record_sync_session_error(None, Some(&error.to_string()));
+                Err(error)
+            }
         };
         if let Err(error) = result {
             log::warn!("Push synchronization incomplete: {error}");
@@ -164,7 +245,10 @@ impl SyncClient {
                     ),
                 };
                 if let Some(warning) = storage.sync_warning(&session.server_id)? {
-                    endpoint_status.message = Some(warning);
+                    endpoint_status.message = Some(match endpoint_status.message {
+                        Some(message) => format!("{message} {warning}"),
+                        None => warning,
+                    });
                 }
                 Ok(PullSyncResult {
                     pulled,
@@ -178,11 +262,38 @@ impl SyncClient {
         &self,
         storage: &LocalStorage,
         session: &ProtocolSession,
+        attempted: &mut HashSet<String>,
     ) -> anyhow::Result<()> {
-        for pending in storage.pending_mutations(&session.server_id)? {
-            let receipt: SyncReceipt = self
+        for pending in storage.scheduled_mutations(&session.server_id)? {
+            if !attempted.insert(pending.request.operation_id.clone()) {
+                continue;
+            }
+            let result = self
                 .protocol_request(session, Method::POST, "/operations", Some(&pending.request))
-                .await?;
+                .await;
+            let receipt: SyncReceipt = match result {
+                Ok(receipt) => receipt,
+                Err(RequestFailure {
+                    kind: RequestFailureKind::Operation(policy),
+                    message,
+                }) => {
+                    let recovery = match policy {
+                        SyncRetryPolicy::Manual => {
+                            "Correct the cause, then explicitly retry or delete the local item."
+                        }
+                        SyncRetryPolicy::Automatic => {
+                            "The same operation will retry automatically."
+                        }
+                    };
+                    storage.record_mutation_failure(
+                        &pending.request.operation_id,
+                        policy,
+                        &format!("{message}. {recovery} Prior delivery may have committed."),
+                    )?;
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             let changed = storage.acknowledge_mutation(&pending, &receipt)?;
             *self.pending_protocol_changes.lock().unwrap() += usize::from(changed);
         }
@@ -195,7 +306,8 @@ impl SyncClient {
         session: &ProtocolSession,
     ) -> anyhow::Result<()> {
         // Resolve earlier deliveries and deletions before freezing a replacement create.
-        self.send_pending(storage, session).await?;
+        let mut attempted = HashSet::new();
+        self.send_pending(storage, session, &mut attempted).await?;
         self.pull_protocol(storage, session).await?;
         for candidate in storage.sync_candidates(&session.server_id)? {
             let action = if let Some(id) = &candidate.remote_id {
@@ -233,11 +345,15 @@ impl SyncClient {
                     }
                 }
                 let blob_base64 = match entry.blob_hash.as_deref() {
-                    Some(hash) => {
-                        Some(bytes_to_base64(&storage.get_blob(hash)?.ok_or_else(
-                            || anyhow::anyhow!("Pending capture blob is missing"),
-                        )?))
-                    }
+                    Some(hash) => match storage.get_blob(hash) {
+                        Ok(Some(bytes)) if hash_bytes(&bytes) == hash => {
+                            Some(bytes_to_base64(&bytes))
+                        }
+                        _ => {
+                            storage.record_candidate_failure(&session.server_id, &candidate, "Capture blob is missing or corrupt. Repair it, then retry synchronization.")?;
+                            continue;
+                        }
+                    },
                     None => None,
                 };
                 SyncAction::Create {
@@ -255,7 +371,7 @@ impl SyncClient {
             };
             storage.enqueue_sync_candidate(&session.server_id, &candidate, action)?;
         }
-        self.send_pending(storage, session).await
+        self.send_pending(storage, session, &mut attempted).await
     }
 
     async fn download_protocol_blob(

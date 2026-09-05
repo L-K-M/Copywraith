@@ -7,6 +7,42 @@ use crate::api_types::{CreateEntryRequest, EntryResponse};
 pub const SYNC_PROTOCOL_VERSION: u32 = 2;
 pub const SYNC_PAGE_SIZE: u32 = 100;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncErrorCode {
+    InvalidRequest,
+    OperationReuse,
+    WrongOperationKind,
+    ServerMismatch,
+    InvalidCursor,
+    LegacyRecreation,
+    Unauthorized,
+    SetupRequired,
+    NotFound,
+    Internal,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncErrorResponse {
+    pub code: SyncErrorCode,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SyncRetryPolicy {
+    Automatic,
+    Manual,
+}
+
+impl SyncRetryPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Manual => "manual",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SyncProtocolError {
     #[error("Sync server identity mismatch")]

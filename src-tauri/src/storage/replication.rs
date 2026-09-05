@@ -2,6 +2,7 @@ use super::*;
 use copywraith_core::sync_protocol::*;
 
 const INITIAL_INCARNATION: i64 = 1;
+const SYNC_BATCH_SIZE: u32 = 50;
 
 pub(crate) struct SyncCandidate {
     pub entry: ClipboardEntry,
@@ -53,12 +54,53 @@ fn project_remote_state(
     Ok((changed > 0, blob))
 }
 
+// A conflict settles delivery; the canonical feed supplies its star state.
+fn reconcile_create_conflict(
+    db: &Connection,
+    server: &str,
+    local_id: &str,
+) -> anyhow::Result<(bool, Option<String>)> {
+    let target: Option<(i64, String)> = db.query_row(
+        "SELECT c.incarnation, c.remote_id FROM sync_create_conflicts c JOIN entries e ON e.id = c.local_id AND e.sync_incarnation = c.incarnation WHERE c.server_id = ?1 AND c.local_id = ?2",
+        params![server, local_id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional()?;
+    let Some((incarnation, remote_id)) = target else {
+        return Ok((false, None));
+    };
+    // Explicit edits survive even when they return to the capture default.
+    db.execute("UPDATE entries SET synced = 1 WHERE id = ?1 AND NOT EXISTS(SELECT 1 FROM sync_star_intents WHERE local_id = ?1 AND incarnation = ?2)", params![local_id, incarnation])?;
+    let bound: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sync_links WHERE server_id = ?1 AND local_id = ?2 AND local_incarnation = ?3)", params![server, local_id, incarnation], |r| r.get(0))?;
+    if !bound {
+        // Resolve a consumed tombstone without retargeting the receipt by hash.
+        db.execute("UPDATE sync_links SET local_id = ?2, local_incarnation = ?3 WHERE server_id = ?1 AND remote_id = ?4 AND content_hash = (SELECT content_hash FROM sync_create_conflicts WHERE server_id = ?1 AND local_id = ?2)", params![server, local_id, incarnation, remote_id])?;
+    }
+    let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sync_links WHERE server_id = ?1 AND local_id = ?2 AND local_incarnation = ?3)", params![server, local_id, incarnation], |r| r.get(0))?;
+    if !known {
+        db.execute(
+            "UPDATE sync_peers SET reset_requested = 1 WHERE server_id = ?1",
+            [server],
+        )?;
+        return Ok((false, None));
+    }
+    db.execute(
+        "DELETE FROM sync_create_conflicts WHERE server_id = ?1 AND local_id = ?2",
+        params![server, local_id],
+    )?;
+    db.execute(
+        "DELETE FROM sync_blocked WHERE server_id = ?1 AND local_id = ?2",
+        params![server, local_id],
+    )?;
+    project_remote_state(db, server, local_id)
+}
+
 pub(super) fn initialize(conn: &mut Connection) -> anyhow::Result<()> {
     let tx = conn.transaction()?;
     ensure_entries_column(&tx, "sync_revision", "INTEGER NOT NULL DEFAULT 1")?;
     ensure_entries_column(&tx, "sync_origin", "TEXT NOT NULL DEFAULT 'legacy'")?;
     ensure_entries_column(&tx, "sync_incarnation", "INTEGER NOT NULL DEFAULT 1")?;
     tx.execute_batch(include_str!("sync_schema.sql"))?;
+    // Before intent tracking, an unrecovered first incarnation's extra revisions were star edits.
+    tx.execute("INSERT OR IGNORE INTO sync_star_intents SELECT id, sync_incarnation, sync_revision FROM entries WHERE sync_incarnation = 1 AND sync_revision > 1 AND synced = 0", [])?;
     let has_incarnation = tx
         .prepare("SELECT local_incarnation FROM sync_links LIMIT 0")
         .is_ok();
@@ -235,6 +277,95 @@ pub(super) fn queue_deletion(db: &Connection, id: &str) -> anyhow::Result<()> {
 }
 
 impl LocalStorage {
+    pub(crate) fn record_mutation_failure(
+        &self,
+        operation_id: &str,
+        policy: SyncRetryPolicy,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        self.db.lock().unwrap().execute("INSERT INTO sync_operation_failures (operation_id, retry_policy, reason)
+            SELECT operation_id, ?2, ?3 FROM sync_outbox WHERE operation_id = ?1
+            ON CONFLICT(operation_id) DO UPDATE SET retry_policy = excluded.retry_policy, reason = excluded.reason, attempts = attempts + 1",
+            params![operation_id, policy.as_str(), reason])?;
+        Ok(())
+    }
+
+    pub(crate) fn record_sync_session_error(
+        &self,
+        server: Option<&str>,
+        reason: Option<&str>,
+    ) -> anyhow::Result<()> {
+        const DISCOVERY_SCOPE: &str = "";
+        let db = self.db.lock().unwrap();
+        let scope = server.unwrap_or(DISCOVERY_SCOPE);
+        if let Some(reason) = reason {
+            db.execute(
+                "INSERT OR REPLACE INTO sync_session_errors VALUES (?1, ?2)",
+                params![scope, reason],
+            )?;
+            return Ok(());
+        }
+        db.execute("DELETE FROM sync_session_errors WHERE scope = ?1", [scope])?;
+        Ok(())
+    }
+
+    pub(crate) fn record_candidate_failure(
+        &self,
+        server: &str,
+        candidate: &SyncCandidate,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let current: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE id = ?1 AND sync_revision = ?2 AND sync_incarnation = ?3)", params![candidate.entry.id, candidate.revision, candidate.incarnation], |r| r.get(0))?;
+        if !current {
+            return Ok(());
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO sync_candidate_failures VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                server,
+                candidate.entry.id,
+                candidate.revision,
+                candidate.incarnation,
+                reason
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Retry after repairing the cause; operation bodies and cancellation fences are unchanged.
+    pub fn retry_sync_failures(&self, server: &str) -> anyhow::Result<()> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        tx.execute("UPDATE sync_operation_failures SET retry_policy = 'automatic' WHERE operation_id IN (SELECT operation_id FROM sync_outbox WHERE server_id = ?1)", [server])?;
+        tx.execute(
+            "DELETE FROM sync_candidate_failures WHERE server_id = ?1",
+            [server],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn scheduled_mutations(&self, server: &str) -> anyhow::Result<Vec<PendingMutation>> {
+        let db = self.db.lock().unwrap();
+        // Failed automatic retries rotate behind unattempted work, including beyond one batch.
+        let rows = db.prepare("SELECT o.request, o.local_id, o.revision FROM sync_outbox o
+            LEFT JOIN sync_operation_failures f ON f.operation_id = o.operation_id
+            WHERE o.server_id = ?1 AND COALESCE(f.retry_policy, 'automatic') = 'automatic'
+            ORDER BY COALESCE(f.attempts, 0), CASE o.kind WHEN 'delete' THEN 0 ELSE 1 END, o.operation_id LIMIT ?2")?
+            .query_map(params![server, SYNC_BATCH_SIZE], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?.collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(request, local_id, revision)| {
+                Ok(PendingMutation {
+                    request: serde_json::from_str(&request)?,
+                    local_id,
+                    revision,
+                })
+            })
+            .collect()
+    }
     pub(crate) fn has_generation_sync_state(&self) -> anyhow::Result<bool> {
         Ok(self.db.lock().unwrap().query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_peers)",
@@ -291,10 +422,11 @@ impl LocalStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_mutations(&self, server: &str) -> anyhow::Result<Vec<PendingMutation>> {
         let db = self.db.lock().unwrap();
-        let rows = db.prepare("SELECT request, local_id, revision FROM sync_outbox WHERE server_id = ?1 ORDER BY CASE kind WHEN 'delete' THEN 0 ELSE 1 END, operation_id LIMIT 50")?
-            .query_map([server], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?.collect::<Result<Vec<_>, _>>()?;
+        let rows = db.prepare("SELECT request, local_id, revision FROM sync_outbox WHERE server_id = ?1 ORDER BY CASE kind WHEN 'delete' THEN 0 ELSE 1 END, operation_id LIMIT ?2")?
+            .query_map(params![server, SYNC_BATCH_SIZE], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?.collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|(json, local_id, revision)| {
                 Ok(PendingMutation {
@@ -316,7 +448,9 @@ impl LocalStorage {
             AND NOT EXISTS(SELECT 1 FROM sync_outbox o WHERE o.local_id = e.id AND o.server_id = ?1)
             AND NOT EXISTS(SELECT 1 FROM sync_operation_provenance p WHERE p.server_id = ?1 AND p.content_hash = e.content_hash AND p.kind = 'delete' AND p.resolved = 0)
             AND NOT EXISTS(SELECT 1 FROM sync_blocked b WHERE b.local_id = e.id AND b.server_id = ?1)
-            ORDER BY created_at LIMIT 50"))?.query_map([server], row_to_entry)?.collect::<Result<Vec<_>, _>>()?;
+            AND NOT EXISTS(SELECT 1 FROM sync_create_conflicts c WHERE c.local_id = e.id AND c.server_id = ?1 AND c.incarnation = e.sync_incarnation)
+            AND NOT EXISTS(SELECT 1 FROM sync_candidate_failures f WHERE f.local_id = e.id AND f.server_id = ?1 AND f.incarnation = e.sync_incarnation)
+            ORDER BY created_at LIMIT ?2"))?.query_map(params![server, SYNC_BATCH_SIZE], row_to_entry)?.collect::<Result<Vec<_>, _>>()?;
         entries.into_iter().map(|entry| {
             let (revision, incarnation) = db.query_row("SELECT sync_revision, sync_incarnation FROM entries WHERE id = ?1", [&entry.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             let remote_id = db.query_row("SELECT remote_id FROM sync_links WHERE server_id = ?1 AND local_id = ?2 AND local_incarnation = ?3 AND deleted = 0 ORDER BY sequence DESC LIMIT 1", params![server, entry.id, incarnation], |r| r.get(0)).optional()?;
@@ -382,22 +516,42 @@ impl LocalStorage {
 
     pub(crate) fn sync_warning(&self, server: &str) -> anyhow::Result<Option<String>> {
         let db = self.db.lock().unwrap();
+        let mut warnings = Vec::new();
         let unresolved: i64 =
             db.query_row("SELECT COUNT(*) FROM sync_unresolved_deletes", [], |r| {
                 r.get(0)
             })?;
         if unresolved > 0 {
-            return Ok(Some(format!(
+            warnings.push(format!(
                 "{unresolved} legacy deletions have no known server identity; they were not sent."
-            )));
+            ));
         }
-        Ok(db
+        let blocked: Option<String> = db
             .query_row(
                 "SELECT reason FROM sync_blocked WHERE server_id = ?1 LIMIT 1",
                 [server],
                 |r| r.get(0),
             )
-            .optional()?)
+            .optional()?;
+        warnings.extend(blocked);
+        let candidate: Option<String> = db.query_row("SELECT f.reason FROM sync_candidate_failures f JOIN entries e ON e.id = f.local_id AND e.sync_incarnation = f.incarnation WHERE f.server_id = ?1 LIMIT 1", [server], |r| r.get(0)).optional()?;
+        warnings.extend(candidate);
+        let awaiting: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sync_create_conflicts c JOIN entries e ON e.id = c.local_id AND e.sync_incarnation = c.incarnation WHERE c.server_id = ?1)", [server], |r| r.get(0))?;
+        if awaiting {
+            warnings.push("A conflicting capture awaits canonical synchronization.".into());
+        }
+        let failure: (i64, Option<String>) = db.query_row("SELECT COUNT(*), MIN(f.reason) FROM sync_operation_failures f JOIN sync_outbox o ON o.operation_id = f.operation_id WHERE o.server_id = ?1", [server], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        if let (count, Some(reason)) = failure {
+            warnings.push(format!(
+                "{count} changes have unresolved delivery: {reason}"
+            ));
+        }
+        let sessions = db
+            .prepare("SELECT reason FROM sync_session_errors WHERE scope IN ('', ?1)")?
+            .query_map([server], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        warnings.extend(sessions);
+        Ok((!warnings.is_empty()).then(|| warnings.join(" ")))
     }
 
     pub(crate) fn acknowledge_mutation(
@@ -419,6 +573,10 @@ impl LocalStorage {
         if removed == 0 {
             return Ok(false);
         }
+        tx.execute(
+            "DELETE FROM sync_operation_failures WHERE operation_id = ?1",
+            [&receipt.operation_id],
+        )?;
         if matches!(sent.request.action, SyncAction::Delete { .. }) {
             // An absent generation completes deletion; cancelling a create still
             // requires confirmation that the server installed its replay fence.
@@ -456,6 +614,21 @@ impl LocalStorage {
             return Ok(false);
         }
         tx.execute("UPDATE sync_operation_provenance SET resolved = 1, remote_id = ?2 WHERE operation_id = ?1", params![receipt.operation_id, receipt.generation.as_ref().map(|g| &g.id)])?;
+        if receipt.outcome == SyncOutcome::Conflict
+            && matches!(sent.request.action, SyncAction::Create { .. })
+            && receipt
+                .generation
+                .as_ref()
+                .is_some_and(|g| g.state == GenerationState::Live)
+        {
+            let generation = receipt.generation.as_ref().unwrap();
+            tx.execute("INSERT OR REPLACE INTO sync_create_conflicts SELECT p.server_id, p.local_id, p.incarnation, ?2, p.content_hash FROM sync_operation_provenance p JOIN entries e ON e.id = p.local_id AND e.sync_incarnation = p.incarnation WHERE p.operation_id = ?1", params![receipt.operation_id, generation.id])?;
+            let (changed, blob) =
+                reconcile_create_conflict(&tx, &receipt.server_id, &sent.local_id)?;
+            tx.commit()?;
+            self.remove_unreferenced_blob(&db, blob.as_deref())?;
+            return Ok(changed);
+        }
         if receipt.outcome != SyncOutcome::Applied {
             tx.execute("INSERT OR REPLACE INTO sync_blocked VALUES (?1, ?2, ?3)", params![receipt.server_id, sent.local_id, "An older capture or star update targets a retired generation; copy again after synchronization."])?;
             tx.commit()?;
@@ -488,6 +661,7 @@ impl LocalStorage {
                     sequence = MAX(sequence, excluded.sequence)", params![receipt.server_id, g.id, sent.local_id, hash, i64::try_from(receipt.sequence)?, starred, incarnation])?;
             }
         }
+        tx.execute("DELETE FROM sync_star_intents WHERE local_id = ?1 AND incarnation = ?2 AND revision <= ?3", params![sent.local_id, incarnation, sent.revision])?;
         // Only the sent revision is clean. A newer star/delete remains pending.
         tx.execute(
             "UPDATE entries SET synced = 1 WHERE id = ?1 AND sync_revision = ?2 AND sync_incarnation = ?3",
@@ -537,6 +711,12 @@ impl LocalStorage {
         // The feed supplies the generation's deletion sequence; a no-op receipt may carry a later clock.
         tx.execute("INSERT INTO sync_links (server_id, remote_id, content_hash, deleted, sequence) VALUES (?1, ?2, ?3, 1, ?4)
             ON CONFLICT(server_id, remote_id) DO UPDATE SET deleted = 1, sequence = excluded.sequence", params![server, change.generation.id, change.content_hash, i64::try_from(change.sequence)?])?;
+        let conflict_id: Option<String> = tx.query_row("SELECT c.local_id FROM sync_create_conflicts c JOIN entries e ON e.id = c.local_id AND e.sync_incarnation = c.incarnation WHERE c.server_id = ?1 AND c.remote_id = ?2", params![server, change.generation.id], |r| r.get(0)).optional()?;
+        if let Some(id) = conflict_id {
+            let (projected, removed_blob) = reconcile_create_conflict(&tx, server, &id)?;
+            changed |= projected;
+            blob = removed_blob.or(blob);
+        }
         tx.execute(
             "UPDATE sync_peers SET cursor = MAX(cursor, ?1) WHERE server_id = ?2",
             params![i64::try_from(change.sequence)?, server],
@@ -617,7 +797,9 @@ impl LocalStorage {
             "UPDATE sync_peers SET cursor = MAX(cursor, ?1) WHERE server_id = ?2",
             params![i64::try_from(change.sequence)?, server],
         )?;
+        let (projected, removed_blob) = reconcile_create_conflict(&tx, server, &id)?;
         tx.commit()?;
-        Ok(inserted || updated > 0)
+        self.remove_unreferenced_blob(&db, removed_blob.as_deref())?;
+        Ok(inserted || updated > 0 || projected)
     }
 }

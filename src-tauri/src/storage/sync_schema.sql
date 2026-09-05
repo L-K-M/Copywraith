@@ -54,3 +54,36 @@ CREATE TABLE IF NOT EXISTS sync_capture_predecessors (
     operation_id TEXT NOT NULL,
     PRIMARY KEY(local_id, incarnation, operation_id)
 );
+
+-- Failure is delivery state, never evidence that the immutable operation did not commit.
+CREATE TABLE IF NOT EXISTS sync_operation_failures (
+    operation_id TEXT PRIMARY KEY,
+    retry_policy TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    reason TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_candidate_failures (
+    server_id TEXT NOT NULL,
+    local_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    incarnation INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY(server_id, local_id)
+);
+CREATE TABLE IF NOT EXISTS sync_session_errors (scope TEXT PRIMARY KEY, reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sync_create_conflicts (
+    server_id TEXT NOT NULL,
+    local_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    remote_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY(server_id, local_id)
+);
+
+-- Only explicit star edits increment the revision without changing incarnation.
+CREATE TABLE IF NOT EXISTS sync_star_intents (local_id TEXT PRIMARY KEY, incarnation INTEGER NOT NULL, revision INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS entries_sync_star_intent AFTER UPDATE OF starred ON entries
+WHEN new.sync_revision > old.sync_revision AND new.sync_incarnation = old.sync_incarnation BEGIN
+    INSERT INTO sync_star_intents VALUES (new.id, new.sync_incarnation, new.sync_revision)
+        ON CONFLICT(local_id) DO UPDATE SET incarnation = excluded.incarnation, revision = excluded.revision;
+END;
