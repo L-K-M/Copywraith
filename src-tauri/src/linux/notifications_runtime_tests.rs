@@ -1,6 +1,8 @@
 use super::*;
 use std::process::{Child, Command};
 
+const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct Process(Child);
 
 impl Drop for Process {
@@ -26,7 +28,7 @@ fn plasma_runtime_native_guidance_keeps_target_focus() {
             .spawn()
             .unwrap(),
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
     let target = loop {
         assert!(
             target_process.0.try_wait().unwrap().is_none(),
@@ -55,6 +57,7 @@ fn plasma_runtime_native_guidance_keeps_target_focus() {
         .status()
         .unwrap()
         .success());
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
     loop {
         if manual_paste().is_ok() {
             break;
@@ -65,6 +68,7 @@ fn plasma_runtime_native_guidance_keeps_target_focus() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
     loop {
         if Command::new("xdotool")
             .args(["search", "--onlyvisible", "--class", "Dunst"])

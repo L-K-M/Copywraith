@@ -12,3 +12,13 @@ for (const desktop of ['plasma5', 'plasma6']) {
         assert.match(job, /run: scripts\/test-kde-runtime\.sh\s/);
     });
 }
+
+test('Fedora uses pinned rustup rather than distro Rust', () => {
+    const job = workflow.split('  plasma6:\n')[1];
+    assert.doesNotMatch(job, /dnf install[^\n]*\b(?:cargo|rust)\b/);
+    assert.match(job, /uses: dtolnay\/rust-toolchain@1\.98\.0/);
+});
+
+test('KDE workflow grants only read access to contents', () => {
+    assert.match(workflow, /^permissions:\n  contents: read\n/m);
+});

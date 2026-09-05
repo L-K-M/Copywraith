@@ -6,6 +6,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: kde-${{ github.ref }}
   cancel-in-progress: true
@@ -34,10 +37,11 @@ jobs:
     steps:
       - name: Install Plasma 6 and isolated runtime tools
         run: >-
-          dnf install -y git gcc cargo rust dbus-devel dbus-daemon
+          dnf install -y git gcc curl dbus-devel dbus-daemon
           kglobalacceld xorg-x11-server-Xvfb xdotool dunst xterm
           dejavu-sans-fonts xorg-x11-fonts-misc
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
       - name: Record runtime versions
         run: rpm -q kglobalacceld kf6-kglobalaccel
       - name: Mock bus security, cleanup and held-key regressions
