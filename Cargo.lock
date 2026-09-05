@@ -797,6 +797,7 @@ dependencies = [
  "tauri-plugin-clipboard",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-global-shortcut",
+ "tempfile",
  "tokio",
  "ulid",
 ]

@@ -146,6 +146,14 @@ impl LocalStorage {
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
+            -- WAL + NORMAL still survives a process crash; only a full OS/power
+            -- loss can drop the most recent commit. Without this SQLite defaults
+            -- to FULL, which fsyncs on every implicit transaction — on Android
+            -- flash that is 5-40ms per statement and dominates sync wall time.
+            PRAGMA synchronous=NORMAL;
+            -- Wait instead of failing immediately when the sync loop and a UI
+            -- command reach the database at the same time.
+            PRAGMA busy_timeout=5000;
 
             CREATE TABLE IF NOT EXISTS entries (
                 id TEXT PRIMARY KEY,
@@ -231,23 +239,7 @@ impl LocalStorage {
             return Ok(None); // Duplicate, moved to top
         }
 
-        let (blob_hash, blob_size) = if let Some(data) = blob_data {
-            let hash = copywraith_core::content::hash_bytes(data);
-            let size = data.len() as u64;
-
-            // Validate hash before using as filename (defense in depth)
-            if !copywraith_core::content::is_valid_hash(&hash) {
-                anyhow::bail!("Generated invalid blob hash");
-            }
-            let blob_path = self.blob_dir.join(&hash);
-            if !blob_path.exists() {
-                std::fs::write(&blob_path, data)?;
-            }
-
-            (Some(hash), Some(size))
-        } else {
-            (None, None)
-        };
+        let (blob_hash, blob_size) = self.write_blob(blob_data)?;
 
         let now = Utc::now();
         let id = Ulid::new().to_string();
@@ -294,6 +286,107 @@ impl LocalStorage {
             created_at: now,
             updated_at: now,
         }))
+    }
+
+    /// Insert an entry pulled from the server in a single transaction.
+    ///
+    /// The naive path (`insert_entry` + `set_starred` + `mark_synced`) issues
+    /// three separate implicit transactions, each of which fsyncs. During a bulk
+    /// pull that disk time dominates everything else, so the three writes are
+    /// committed together here instead.
+    ///
+    /// Returns `Ok(true)` when a new row was created.
+    pub fn insert_remote_entry(
+        &self,
+        content_type: ContentType,
+        flavors: &ClipboardFlavors,
+        blob_data: Option<&[u8]>,
+        content_hash: &str,
+        source_app: Option<&str>,
+        starred: bool,
+    ) -> anyhow::Result<bool> {
+        let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
+        let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
+        let search_text = resolved_flavors.best_plain_text();
+        let sensitive = search_text
+            .as_ref()
+            .map(|t| contains_sensitive_data(t))
+            .unwrap_or(false);
+
+        // Write the blob before the row so a crash can never leave a row
+        // pointing at a blob that does not exist.
+        let (blob_hash, blob_size) = self.write_blob(blob_data)?;
+
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+
+        let existing_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM entries WHERE content_hash = ?1",
+                params![content_hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if existing_id.is_some() {
+            // Already present locally; the caller applies remote starred state
+            // separately so unpushed local changes are not clobbered.
+            tx.commit()?;
+            return Ok(false);
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let id = Ulid::new().to_string();
+
+        tx.execute(
+            "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?14)",
+            params![
+                id,
+                content_type.as_str(),
+                legacy_text_content,
+                resolved_flavors.text_plain,
+                resolved_flavors.text_html,
+                resolved_flavors.text_rtf,
+                search_text,
+                blob_hash,
+                blob_size.map(|s| s as i64),
+                content_hash,
+                source_app,
+                starred as i32,
+                sensitive as i32,
+                now,
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Write blob bytes into the content-addressed blob directory.
+    ///
+    /// Returns the `(hash, size)` pair to store on the entry row, or
+    /// `(None, None)` when there is no blob.
+    fn write_blob(
+        &self,
+        blob_data: Option<&[u8]>,
+    ) -> anyhow::Result<(Option<String>, Option<u64>)> {
+        let Some(data) = blob_data else {
+            return Ok((None, None));
+        };
+
+        let hash = copywraith_core::content::hash_bytes(data);
+        // Validate hash before using as filename (defense in depth)
+        if !copywraith_core::content::is_valid_hash(&hash) {
+            anyhow::bail!("Generated invalid blob hash");
+        }
+
+        let blob_path = self.blob_dir.join(&hash);
+        if !blob_path.exists() {
+            std::fs::write(&blob_path, data)?;
+        }
+
+        Ok((Some(hash), Some(data.len() as u64)))
     }
 
     pub fn has_content_hash(&self, content_hash: &str) -> anyhow::Result<bool> {
@@ -683,5 +776,121 @@ impl LocalStorage {
             [],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_storage() -> (tempfile::TempDir, LocalStorage) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        (dir, storage)
+    }
+
+    fn text_flavors(text: &str) -> ClipboardFlavors {
+        ClipboardFlavors {
+            text_plain: Some(text.to_string()),
+            ..ClipboardFlavors::default()
+        }
+    }
+
+    #[test]
+    fn insert_remote_entry_creates_a_synced_row() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("from another device");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+
+        let inserted = storage
+            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .unwrap();
+        assert!(inserted);
+
+        // A pulled entry must not be queued for push-back to the server.
+        assert!(storage.get_unsynced_entries().unwrap().is_empty());
+        assert!(storage.has_content_hash(&hash).unwrap());
+    }
+
+    #[test]
+    fn insert_remote_entry_applies_starred_in_the_same_transaction() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("starred elsewhere");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+
+        assert!(storage
+            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, true)
+            .unwrap());
+
+        let entries = storage.get_entries(10, 0, true, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].starred);
+    }
+
+    #[test]
+    fn insert_remote_entry_is_idempotent_for_known_content() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("seen before");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+
+        assert!(storage
+            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .unwrap());
+        // Re-ingesting the same payload must not create a second row, so a
+        // restarted or retried pull is safe to replay.
+        assert!(!storage
+            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .unwrap());
+
+        assert_eq!(storage.get_entries(10, 0, false, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn insert_remote_entry_does_not_clobber_unpushed_local_state() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("captured locally");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+
+        let local = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .expect("local capture inserts a row");
+        storage.toggle_star(&local.id).unwrap();
+
+        // The server still has this entry unstarred. Ingesting it must leave the
+        // pending local star alone; push reconciles it later.
+        assert!(!storage
+            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .unwrap());
+        assert!(!storage
+            .apply_remote_star_state_by_content_hash(&hash, false)
+            .unwrap());
+
+        let entry = storage.get_entry(&local.id).unwrap().unwrap();
+        assert!(entry.starred);
+    }
+
+    #[test]
+    fn insert_remote_entry_stores_blob_bytes_once() {
+        let (dir, storage) = temp_storage();
+        let bytes = b"\x89PNG\r\n\x1a\n fake image payload";
+        let hash = copywraith_core::content::hash_bytes(bytes);
+
+        assert!(storage
+            .insert_remote_entry(
+                ContentType::Image,
+                &ClipboardFlavors::default(),
+                Some(bytes),
+                &hash,
+                None,
+                false,
+            )
+            .unwrap());
+
+        assert_eq!(
+            storage.get_blob(&hash).unwrap().as_deref(),
+            Some(&bytes[..])
+        );
+        assert!(dir.path().join("blobs").join(&hash).exists());
     }
 }
