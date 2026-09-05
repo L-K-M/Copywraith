@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { MovableDialog, ProgressBar } from '@lkmc/system7-ui';
+	import { Button, MovableDialog, ProgressBar } from '@lkmc/system7-ui';
 	import { onMount } from 'svelte';
 	import { TauriService } from '$lib/tauri';
 	import { entries, starredOnly } from '$lib/util/clipboardStore';
@@ -22,7 +22,8 @@
 	let configuredLocalUrl: string | null = $state(null);
 	let configuredVpnUrl: string | null = $state(null);
 	let settingsError: string | null = $state(null);
-	let statusRefreshInFlight = false;
+	let isSyncing = $state(false);
+	let lastSyncSummary: string | null = $state(null);
 
 	function formatEndpointHost(url: string | null): string {
 		if (!url) return '';
@@ -91,12 +92,18 @@
 		void loadSyncSettings();
 	});
 
+	/**
+	 * Opening the details panel is a read-only action.
+	 *
+	 * It used to call syncNow(), so simply looking at why sync was slow started
+	 * another full push-and-pull — the most expensive operation in the app.
+	 * Syncing is now only ever triggered by the explicit button below.
+	 */
 	function toggleSyncDetails(event: MouseEvent) {
 		event.stopPropagation();
 		showSyncDetails = !showSyncDetails;
 		if (showSyncDetails) {
 			void loadSyncSettings();
-			void refreshSyncStatusFromDetails();
 		}
 	}
 
@@ -111,32 +118,38 @@
 		}
 	}
 
-	async function refreshSyncStatusFromDetails() {
-		if (statusRefreshInFlight) return;
-		statusRefreshInFlight = true;
+	async function handleSyncNow() {
+		if (isSyncing) return;
+		isSyncing = true;
+		lastSyncSummary = null;
+
+		const role = configuredLocalUrl ? 'local' : configuredVpnUrl ? 'vpn' : null;
+		const url = configuredLocalUrl ?? configuredVpnUrl;
+
+		setSyncEndpointStatus({
+			state: 'checking',
+			role,
+			url,
+			message: 'Sync started from the status bar.'
+		});
 
 		try {
-			const settings = await TauriService.getSettings();
-			const role = settings.server_url_primary ? 'local' : settings.server_url_fallback ? 'vpn' : null;
-			const url = settings.server_url_primary || settings.server_url_fallback || null;
-			setSyncEndpointStatus({
-				state: 'checking',
-				role,
-				url,
-				message: 'Sync Details requested a status refresh.'
-			});
-
 			const result = await TauriService.syncNow();
 			setSyncEndpointStatus(result.endpoint_status);
+			lastSyncSummary =
+				result.pulled > 0
+					? `Pulled ${result.pulled} entr${result.pulled === 1 ? 'y' : 'ies'}.`
+					: 'Already up to date.';
 		} catch (e) {
 			setSyncEndpointStatus({
 				state: 'unreachable',
-				role: configuredLocalUrl ? 'local' : configuredVpnUrl ? 'vpn' : null,
-				url: configuredLocalUrl ?? configuredVpnUrl,
+				role,
+				url,
 				message: String(e)
 			});
+			lastSyncSummary = 'Sync failed. See the message below.';
 		} finally {
-			statusRefreshInFlight = false;
+			isSyncing = false;
 		}
 	}
 </script>
@@ -207,6 +220,14 @@
 			{#if settingsError}
 				<p>Settings read failed: {settingsError}</p>
 			{/if}
+		</div>
+		<div class="sync-details-actions">
+			{#if lastSyncSummary}
+				<span class="sync-summary" role="status">{lastSyncSummary}</span>
+			{/if}
+			<Button onclick={handleSyncNow} disabled={isSyncing}>
+				{isSyncing ? 'Syncing...' : 'Sync Now'}
+			</Button>
 		</div>
 	</MovableDialog>
 {/if}
@@ -294,6 +315,24 @@
 	.sync-details-body p {
 		margin: 8px 0;
 		line-height: 1.35;
+	}
+
+	.sync-details-actions {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 8px;
+		margin-top: 4px;
+		padding-top: 8px;
+		border-top: 1px solid #ccc;
+	}
+
+	.sync-summary {
+		flex: 1;
+		min-width: 0;
+		font-size: 11px;
+		color: #555;
+		overflow-wrap: anywhere;
 	}
 
 	.status-hint {
