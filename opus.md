@@ -311,9 +311,9 @@ a session action but is a global server operation.
 > **Overstated.** "Until someone unlocks the server again" was wrong.
 > `verify_and_unlock` (`crypto.rs:144`) re-derives and re-caches the DEK on its
 > slow path, so the next native request carrying a valid password unlocks the
-> server automatically. The real cost is a latency spike and an Argon2id round
-> per client, not a persistent outage. The design question — session action vs.
-> global operation — still stands.
+> server automatically. The first successful request repopulates the shared
+> cache; later requests use it. This is a latency spike, not a persistent outage.
+> The session-vs-global design question remains.
 
 ### BUG-09 — Wrong password stalls the entire server *(low, but a real DoS)*
 

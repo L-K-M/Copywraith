@@ -45,8 +45,8 @@ three places:
 3. **Delete propagation.** Remote identity/chronology (#94) shipped in #114.
    Delete propagation did not: **#95 was rejected** — see the Outcome ledger —
    so there are still no tombstones anywhere in the product, and a local delete
-   is silently undone by the next pull. Tracked in **#113**, and it remains a
-   Priority 0 item under *Deletion, retention, backup, and storage visibility*.
+   can be undone by a cursor reset or a later server update. Tracked in
+   **#113**; delete propagation remains Priority 0.
 
 ### Verification baseline
 
@@ -87,10 +87,9 @@ measurements in `opus.md` §1.
 
 ### Fixed in #114
 
-- **SYNC-A1** — up to four SQLite transactions per ingested entry, collapsed
-  into one. Only the writes ever fsynced: `has_content_hash` is a `SELECT` and
-  `set_starred` runs only for starred entries, so the real cost was two fsyncs
-  per entry, three when starred. **The gain is batching, not weaker durability.**
+- **SYNC-A1** — remote insert/star/sync writes now commit together rather than
+  in two transactions (three when starred). `has_content_hash` remains a read.
+  **The gain is batching, not weaker durability.**
   #88 also proposed `synchronous=NORMAL`; that was **rejected** and both
   databases are explicitly `synchronous=FULL`, with `busy_timeout=5000` added.
 - **SYNC-A2** — sequential push re-reading settings (7 queries) per entry;
@@ -104,9 +103,9 @@ measurements in `opus.md` §1.
 `commands.rs:698` wraps `pull_new_entries` in a 35 s timeout; the watermark is
 promoted only after the whole multi-page walk finishes (`sync.rs:376`), so
 cancellation discards it entirely. Ingested rows survive, but the next pass
-re-walks from the top of the server list. **On a history large enough that one
-pass exceeds 35 s, sync can never converge** — every app open pays the full
-re-scan and reports `pulled: 0`. Needs a durable resume cursor and for a partial
+re-walks from the top of the server list. **If every rescan exceeds 35 s, sync
+cannot finish** — each attempt repeats the scan and reports `pulled: 0`.
+Needs a durable resume cursor and for a partial
 pass to stop being treated as failure.
 
 **SYNC-A4 — the first pull is unbounded.** No bootstrap limit: the client pages
@@ -175,9 +174,8 @@ would have been caught by a mocked-server test. Cover:
 
 `sol.md` OPS-04.
 
-> The client storage layer now has its first tests (ingest contract, 5 cases)
-> and the list projection has 7. Both are unit-level; the protocol itself is
-> still untested.
+> Client storage and list projection have unit tests; the HTTP sync protocol
+> still lacks integration coverage.
 
 ### Bound and stream large payloads
 
@@ -296,8 +294,8 @@ can intervene and produce plaintext writes or ciphertext responses.
   entirely unbuilt.** #95 attempted it and was rejected (upgrade ordering, local
   vs. server ids, recopy suppression, and an in-flight-POST acknowledgment race);
   the replacement is tracked in **#113**. Nothing in the product deletes across
-  devices today, so a local delete is undone by the next pull. Whatever replaces
-  it must also own expiry of *local* tombstones once they exist.
+  devices today; a cursor reset or later server update can restore a local
+  deletion. The replacement must define tombstone expiry too.
 - Add Undo/Graveyard behaviour before permanent deletion.
 - Add configurable age/count/byte retention with starred exclusions. **Nothing
   bounds growth today** — the DB and blob directory grow forever on every device.
@@ -503,7 +501,7 @@ What is left here is only what is defective on its own terms:
 **Decided.** #90 and #91 each proposed a type-scale change that contradicts the
 position above. #114 integrated their functional fixes and **dropped both
 typography changes**: the popup preview stays 24px desktop / 16px touch, the
-badges, mixed accents and admin typography are unchanged, `server/ui/App.svelte`
+badges, mixed accents and admin typography are unchanged, `server/ui/src/App.svelte`
 was not touched, and there is still no dark mode. Only the popup's action column
 widened, to fit the new preview button. Do not reopen this as a defect.
 
@@ -584,8 +582,8 @@ Full rationale in `sol.md` sections H and I and `awesome.md` sections 5 and 6.
   different ids, so an id-keyed lookup would miss the locally-captured row.
   Content identity is the right key; do not "fix" it to use the id.
 - **New (2026-07-25):** entries pulled before #114 keep their pull-time id and
-  timestamps. This is a known, accepted rollout limitation — those rows age out
-  on their own. A backfill was considered and **rejected as a fixed decision**:
+  timestamps. This is an accepted rollout limitation; no automatic expiry
+  exists. A destructive backfill was rejected for this rollout:
   matching local rows to server rows by hash and rewriting primary keys is
   destructive on the one table the user cannot re-derive, and ids will key
   whatever delete propagation #113 lands on.
@@ -640,7 +638,7 @@ them.
 |---|---|---|
 | [#88](https://github.com/L-K-M/Copywraith/pull/88) | Single-transaction remote ingest, endpoint config resolved once per push batch, `busy_timeout=5000`. | `synchronous=NORMAL` **rejected** — both databases are explicitly `synchronous=FULL`, because a local capture can be the only copy and a synced row is excluded from later pushes, so re-sync cannot be assumed to repair an acknowledged write. The 0.2.1 version bump was dropped; the tree stays **0.3.1**. Remote blob writes moved under the DB mutex, after the duplicate lookup, so a concurrent delete cannot leave a row pointing at a removed file. |
 | [#89](https://github.com/L-K-M/Copywraith/pull/89) | Plain text projected once per row, list text bounded, on-demand `get_entry_text` for the preview dialog. | — |
-| [#90](https://github.com/L-K-M/Copywraith/pull/90) | Viewport-gated cancellable image loading, single paste per double-click, shared relative-time clock, correct data-URL MIME, explicit preview action, keyboard-reachable row actions, `viewport-fit=cover`. | **Type scale dropped** (see *Aesthetics*). Two local fixes were required: the preview button's Enter bubbled to row paste, and the image effect refetched on metadata refresh. |
+| [#90](https://github.com/L-K-M/Copywraith/pull/90) | Viewport-gated image loading with stale-response guards, single paste per double-click, shared relative-time clock, correct row data-URL MIME, explicit preview action, keyboard-reachable row actions, `viewport-fit=cover`. | **Type scale dropped** (see *Aesthetics*). Two local fixes were required: the preview button's Enter bubbled to row paste, and the image effect refetched on metadata refresh. |
 | [#91](https://github.com/L-K-M/Copywraith/pull/91) | RTF stripper rewritten as a linear brace-tracking pass; text helpers extracted to `lib/text.ts`; admin images no longer re-downloaded on every list refresh. | **Admin type scale dropped.** One local fix: numeric ampersand references were decoded twice. |
 | [#92](https://github.com/L-K-M/Copywraith/pull/92) | Sync Details read-only again; explicit Sync Now with an in-flight guard. | Sync summaries corrected — a manual sync no longer reports success when the endpoint is unreachable, disabled, or still checking. |
 | [#94](https://github.com/L-K-M/Copywraith/pull/94) | Pulled entries keep the server's id and timestamps, fixing reversed history on a fresh install and "paste most recent" picking the oldest item. | Star reconciliation stays keyed on `content_hash`, not id — two devices copying the same text mint independent ULIDs, so an id-keyed lookup would miss the locally-captured row. **No destructive backfill of existing rows.** |
@@ -653,19 +651,20 @@ asserts both schemas still start at `synchronous=FULL`).
 
 **Honest limitations of what shipped:**
 
-- Blob writes are still not crash-atomic. Ordering and the shared mutex prevent
-  orphan rows; there is no flush, temp file, or rename, and an existing file is
-  trusted without re-hashing. See *Make blob storage crash-consistent*.
+- Blob writes remain non-atomic across crashes. The shared mutex prevents
+  concurrent deletion during ingestion, not power-loss corruption. Existing
+  files are trusted without re-hashing; see *Make blob storage crash-consistent*.
 - On-demand text is capped at 500,000 characters plus an ellipsis. It is bounded,
   not literally complete.
 - Lazy image loading still transfers the full blob once a row is encountered.
   This is not thumbnail generation and not an eviction cache.
 - The batch settings snapshot can retain a batch's configuration until its
   at-most-50 entries finish. Intentional and bounded.
-- Rows pulled before #114 keep their pull-time ids and timestamps; they age out.
+- Rows pulled before #114 keep their pull-time ids and timestamps.
 - Image decode errors and the hardcoded PNG MIME in the preview dialog are
   pre-existing and untouched.
-- No live WebView, Android device, or Plasma runtime validation was performed.
+- CI exercises the installed Ubuntu client. No manual Android, macOS, or
+  Plasma runtime validation was performed.
 
 ### Integrated — #110 (dependencies)
 
@@ -679,7 +678,7 @@ not available.
 
 | PR | Reason | Tracked in |
 |---|---|---|
-| [#95](https://github.com/L-K-M/Copywraith/pull/95) Tombstones | An existing server database cannot start on the new schema (upgrade runs before the index it needs), local and server ids are conflated, recopying a deleted entry is suppressed, and a POST in flight during a delete can be acknowledged after it. Protocol change across three clients — needs a design, not a patch. | **#113** |
+| [#95](https://github.com/L-K-M/Copywraith/pull/95) Tombstones | An existing server database cannot start on the new schema (the index is created before the column migration), local and server ids are conflated, recopying a deleted entry is suppressed, and a POST in flight during a delete can be acknowledged after it. Protocol change across three clients — needs a design, not a patch. | **#113** |
 | [#97](https://github.com/L-K-M/Copywraith/pull/97) Native KDE shortcuts | Registration is incomplete: it calls `doRegister` only, which creates the action but never runs `setShortcutKeys`, so the advertised shortcuts are never initialised and stay excluded from enumeration. It also adds a startup path outside `main`'s existing shortcut-status model and does not filter D-Bus senders. | **#112** |
 
 **Neither of these shipped.** Do not describe tombstones or native KGlobalAccel
