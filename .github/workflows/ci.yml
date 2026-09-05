@@ -113,6 +113,9 @@ jobs:
   android-tooling:
     name: Android SDK tooling
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      ANDROID_NDK_VERSION: 26.1.10909125
     steps:
       - uses: actions/setup-java@v5.6.0
         with:
@@ -121,8 +124,10 @@ jobs:
 
       - uses: android-actions/setup-android@v4
 
-      - name: Verify SDK manager compatibility
-        run: sdkmanager --list
+      - name: Verify release NDK installation
+        run: |
+          sdkmanager "ndk;$ANDROID_NDK_VERSION"
+          "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
 
   # The Ubuntu/Linux desktop bundle is what the release workflow ships, so build
   # it here too — packaging breakage (a renamed binary, a missing icon, an
