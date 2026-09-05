@@ -25,7 +25,7 @@
     "@tauri-apps/cli": "^2",
     "@types/node": "^25.9.1",
     "@typescript/native": "npm:typescript@~7.0.2",
-    "svelte": "^5.55.0",
+    "svelte": "^5.57.0",
     "svelte-check": "^4.7.6",
     "typescript": "~6.0.3",
     "vite": "^8.2.2"
