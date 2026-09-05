@@ -1,4 +1,5 @@
 //! KGlobalAccel transport. Only typed activations and connection health escape.
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,10 +16,12 @@ const COMPONENT_INTERFACE: &str = "org.kde.kglobalaccel.Component";
 const COMPONENT: &str = "copywraith";
 const TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const PRESSED: &str = "globalShortcutPressed";
+const RELEASED: &str = "globalShortcutReleased";
 const SET_PRESENT: u32 = 2;
 type Keys = Vec<(Vec<i32>,)>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Activation {
     Toggle,
     Starred,
@@ -53,6 +56,9 @@ pub(super) struct Session {
     connection: Connection,
     owner: String,
     component_path: String,
+    // Keep cleanup ownership even before registration finishes or replies time out.
+    registered: Vec<(String, Activation)>,
+    held: HashSet<Activation>,
     pending: Arc<Mutex<Vec<dbus::Message>>>,
 }
 
@@ -60,27 +66,30 @@ impl Session {
     pub(super) fn connect() -> Result<Self, String> {
         let connection = Connection::new_session().map_err(|e| e.to_string())?;
         let pending = Arc::new(Mutex::new(Vec::new()));
-        let signals = pending.clone();
-
-        // Subscribe before registration; validate the unique sender on delivery.
-        connection
-            .add_match(
-                MatchRule::new_signal(COMPONENT_INTERFACE, "globalShortcutPressed")
-                    .with_sender(SERVICE),
-                move |_: (String, String, i64), _, message| {
-                    signals
-                        .lock()
-                        .unwrap()
-                        .push(message.duplicate().expect("signal copy"));
-                    true
-                },
-            )
-            .map_err(|e| e.to_string())?;
+        // Both KF5 repeats and KF6 releases pass through the same authentication.
+        // Subscribe before registration so no initial press/release is missed.
+        for member in [PRESSED, RELEASED] {
+            let signals = pending.clone();
+            connection
+                .add_match(
+                    MatchRule::new_signal(COMPONENT_INTERFACE, member).with_sender(SERVICE),
+                    move |_: (String, String, i64), _, message| {
+                        signals
+                            .lock()
+                            .unwrap()
+                            .push(message.duplicate().expect("signal copy"));
+                        true
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
 
         Ok(Self {
             connection,
             owner: String::new(),
             component_path: String::new(),
+            registered: Vec::new(),
+            held: HashSet::new(),
             pending,
         })
     }
@@ -94,33 +103,53 @@ impl Session {
         // Polling also catches missed owner changes and service replacement.
         // Address registration to that unique owner, never to a moving alias.
         if owner != self.owner {
+            // Old unique owners cannot authenticate events from a replacement.
+            let _ = self.deactivate();
             self.owner.clear();
+            self.held.clear();
             self.pending.lock().unwrap().clear();
             self.register(&owner)?;
             self.owner = owner;
         }
 
-        Ok(self
-            .pending
-            .lock()
-            .unwrap()
-            .drain(..)
-            .filter_map(|message| self.activation(&message))
+        let pending: Vec<_> = self.pending.lock().unwrap().drain(..).collect();
+        Ok(pending
+            .iter()
+            .filter_map(|message| self.handle_signal(message))
             .collect())
     }
 
-    pub(super) fn deactivate(&self) -> Result<(), String> {
-        if self.owner.is_empty() {
+    pub(super) fn deactivate(&mut self) -> Result<(), String> {
+        self.held.clear();
+        let mut errors = Vec::new();
+        // Attempt every action even if one owner or method fails. Keep failures
+        // for Drop to retry; successful cleanup must not run twice.
+        self.registered.retain(|(owner, action)| {
+            let proxy = self.connection.with_proxy(owner, ROOT, TIMEOUT);
+            match proxy.method_call::<(), _, _, _>(INTERFACE, "setInactive", (action.identity(),)) {
+                Ok(()) => false,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    true
+                }
+            }
+        });
+        if errors.is_empty() {
             return Ok(());
         }
-        // Release only our grabs; unregister would delete the user's settings.
-        let proxy = self.connection.with_proxy(&self.owner, ROOT, TIMEOUT);
-        for action in Activation::ALL {
-            proxy
-                .method_call::<(), _, _, _>(INTERFACE, "setInactive", (action.identity(),))
-                .map_err(|e| e.to_string())?;
+        Err(errors.join("; "))
+    }
+
+    fn handle_signal(&mut self, message: &dbus::Message) -> Option<Activation> {
+        let action = self.activation(message)?;
+        match &*message.member()? {
+            RELEASED => {
+                self.held.remove(&action);
+                None
+            }
+            PRESSED if self.held.insert(action) => Some(action),
+            _ => None,
         }
-        Ok(())
     }
 
     fn resolve_owner(&self) -> Result<String, String> {
@@ -146,6 +175,10 @@ impl Session {
     fn register(&mut self, owner: &str) -> Result<(), String> {
         let proxy = self.connection.with_proxy(owner, ROOT, TIMEOUT);
         for action in Activation::ALL {
+            let registration = (owner.to_string(), action);
+            if !self.registered.contains(&registration) {
+                self.registered.push(registration);
+            }
             proxy
                 .method_call::<(), _, _, _>(INTERFACE, "doRegister", (action.identity(),))
                 .map_err(|e| e.to_string())?;
@@ -168,8 +201,8 @@ impl Session {
     }
 
     fn activation(&self, message: &dbus::Message) -> Option<Activation> {
-        if message.sender()?.as_ref() != self.owner
-            || message.path()?.as_ref() != self.component_path
+        if &*message.sender()? != self.owner.as_str()
+            || &*message.path()? != self.component_path.as_str()
         {
             return None;
         }
@@ -180,6 +213,13 @@ impl Session {
         Activation::ALL
             .into_iter()
             .find(|candidate| candidate.id() == action)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Error returns and quitting during retry must also release presence.
+        let _ = self.deactivate();
     }
 }
 

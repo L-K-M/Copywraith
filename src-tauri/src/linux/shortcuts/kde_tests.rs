@@ -5,7 +5,15 @@ use std::sync::{
     Arc, Mutex,
 };
 
+#[derive(Clone, Copy)]
+enum Fault {
+    Error,
+    Timeout,
+}
+
 struct Mock {
+    faults: Arc<Mutex<Vec<(String, String, Fault)>>>,
+    actions: Arc<Mutex<Vec<(String, String)>>>,
     running: Arc<AtomicBool>,
     calls: Arc<Mutex<Vec<String>>>,
     signals: std::sync::mpsc::Sender<dbus::Message>,
@@ -14,6 +22,10 @@ struct Mock {
 
 impl Mock {
     fn start() -> Self {
+        let faults = Arc::new(Mutex::new(Vec::<(String, String, Fault)>::new()));
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let failures = faults.clone();
+        let identities = actions.clone();
         let running = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -30,6 +42,32 @@ impl Mock {
                 Box::new(move |message, conn| {
                     let method = message.member().unwrap().to_string();
                     recorded.lock().unwrap().push(method.clone());
+                    if let Ok(identity) = message.read1::<Vec<String>>() {
+                        let action = identity[1].clone();
+                        identities
+                            .lock()
+                            .unwrap()
+                            .push((method.clone(), action.clone()));
+                        let fault = {
+                            let mut failures = failures.lock().unwrap();
+                            failures
+                                .iter()
+                                .position(|(m, a, _)| m == &method && a == &action)
+                                .map(|index| failures.remove(index).2)
+                        };
+                        match fault {
+                            Some(Fault::Timeout) => return true,
+                            Some(Fault::Error) => {
+                                conn.send(message.error(
+                                    &dbus::strings::ErrorName::new("org.test.Failed").unwrap(),
+                                    &std::ffi::CString::new("injected failure").unwrap(),
+                                ))
+                                .unwrap();
+                                return true;
+                            }
+                            None => {}
+                        }
+                    }
                     let reply = match method.as_str() {
                         "doRegister" | "setInactive" => {
                             let (identity,) =
@@ -63,6 +101,8 @@ impl Mock {
         });
         ready_rx.recv().unwrap();
         Self {
+            faults,
+            actions,
             running,
             calls,
             thread: Some(thread),
@@ -180,4 +220,118 @@ fn signed_activation_crosses_bus_but_forgery_does_not() {
     }
     assert_eq!(received, vec![Activation::Starred]);
     assert!(session.poll().unwrap().is_empty());
+}
+
+#[test]
+#[ignore = "requires isolated dbus-run-session"]
+fn partial_registration_and_timeout_drop_release_every_attempted_action() {
+    for fault in [Fault::Error, Fault::Timeout] {
+        let mock = Mock::start();
+        mock.faults
+            .lock()
+            .unwrap()
+            .push(("setShortcutKeys".into(), "starred".into(), fault));
+        let mut session = Session::connect().unwrap();
+        assert!(session.poll().is_err());
+        drop(session);
+        let released: Vec<_> = mock
+            .actions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == "setInactive")
+            .map(|(_, action)| action.clone())
+            .collect();
+        assert_eq!(released, ["toggle", "starred"]);
+    }
+}
+
+#[test]
+#[ignore = "requires isolated dbus-run-session"]
+fn failed_deactivation_attempts_remaining_actions_and_drop_retries_failure() {
+    let mock = Mock::start();
+    let mut session = Session::connect().unwrap();
+    session.poll().unwrap();
+    mock.actions.lock().unwrap().clear();
+    mock.faults
+        .lock()
+        .unwrap()
+        .push(("setInactive".into(), "toggle".into(), Fault::Error));
+    assert!(session.deactivate().is_err());
+    let released: Vec<_> = mock
+        .actions
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, action)| action.clone())
+        .collect();
+    assert_eq!(released, ["toggle", "starred", "paste-plaintext"]);
+    drop(session);
+    assert_eq!(mock.actions.lock().unwrap().last().unwrap().1, "toggle");
+}
+
+#[test]
+#[ignore = "requires isolated dbus-run-session"]
+fn registration_timeout_then_exit_releases_registered_actions() {
+    let mock = Mock::start();
+    let mut session = Session::connect().unwrap();
+    session.poll().unwrap();
+    mock.faults
+        .lock()
+        .unwrap()
+        .push(("setShortcutKeys".into(), "toggle".into(), Fault::Timeout));
+    assert!(session.register(&session.owner.clone()).is_err());
+    mock.actions.lock().unwrap().clear();
+    drop(session);
+    assert_eq!(mock.actions.lock().unwrap().len(), 3);
+}
+
+#[test]
+#[ignore = "requires isolated dbus-run-session"]
+fn held_kf5_press_dispatches_once_until_authenticated_release() {
+    let mock = Mock::start();
+    let mut session = Session::connect().unwrap();
+    session.poll().unwrap();
+    let signal = |member, action| {
+        dbus::Message::new_signal("/component/copywraith", COMPONENT_INTERFACE, member)
+            .unwrap()
+            .append3(COMPONENT, action, -7_i64)
+    };
+    for action in Activation::ALL {
+        for _ in 0..3 {
+            mock.signals
+                .send(signal("globalShortcutPressed", action.id()))
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_millis(800);
+        let mut received = Vec::new();
+        while std::time::Instant::now() < deadline {
+            received.extend(session.poll().unwrap());
+        }
+        assert_eq!(received, [action], "held key must dispatch once");
+        let attacker = Connection::new_session().unwrap();
+        attacker
+            .send(signal("globalShortcutReleased", action.id()))
+            .unwrap();
+        mock.signals
+            .send(signal("globalShortcutPressed", action.id()))
+            .unwrap();
+        assert!(session.poll().unwrap().is_empty());
+        mock.signals
+            .send(signal("globalShortcutReleased", action.id()))
+            .unwrap();
+        mock.signals
+            .send(signal("globalShortcutPressed", action.id()))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if session.poll().unwrap().contains(&action) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "release did not rearm action"
+            );
+        }
+    }
 }
