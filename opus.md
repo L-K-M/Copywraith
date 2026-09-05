@@ -6,13 +6,15 @@ Reviewer: Claude Opus 5. Date: 2026-07-25. Reviewed tree: `main` @ `9ca8179`
 > **Historical record — read as a snapshot, not as current state.**
 >
 > This document describes `9ca8179` and is kept as the evidence trail for that
-> review. Current `main` is 0.3.1 and has since taken Ubuntu/Linux paste, popup
-> and release-gating work (PRs #104, #105, #106, #109) that this review predates,
-> so file:line citations here have drifted and some findings may already be moot.
+> review. It is deliberately not updated as the code changes. `main` has since
+> taken the 0.3.x Ubuntu/Linux work and the integration PRs #110 and #114, so
+> file:line citations here have drifted and some findings are already resolved.
 >
-> The companion implementation PRs from this review — #88, #89, #90, #91, #92,
-> #94, #95 — are **open and under review. None of them has merged.** Nothing
-> below has shipped.
+> **For the status of anything in this document, read the Outcome ledger in
+> `ANALYSIS.md`** — it records what each PR of this review became, what was
+> changed on the way in, and what was rejected. Do not infer status from this
+> file. Where a recommendation here was rejected on review, it is marked in
+> place; the reasoning stays for the record.
 >
 > **Withdrawn on maintainer direction.** The popup's varied and large type sizes,
 > its several accent colours, and the absence of dark mode are how System 7
@@ -50,9 +52,8 @@ Run at review time on this tree, before any change:
 At review time the open PRs on the repo were **Dependabot-only** (21 of them,
 #17–#86). Every implementation PR referenced in the `ANALYSIS.md` ledger
 (#32–#36, #41–#49) had been merged or closed, so that ledger was stale and was
-dropped when `ANALYSIS.md` was rebuilt. That is no longer the repo's state: the
-seven implementation PRs opened from this review (#88–#92, #94, #95) and #97
-(KDE follow-ups) are open and are not Dependabot's.
+dropped when `ANALYSIS.md` was rebuilt. Both statements are point-in-time and
+neither describes the repo now; the Outcome ledger in `ANALYSIS.md` does.
 
 `ANALYSIS.md` also claims GitHub Actions "creates jobs with zero steps and no
 assigned runner for every new PR". That is **no longer true** — the PRs opened
@@ -89,12 +90,21 @@ Android's flash an fsync is commonly 5–40 ms, so pulling 500 unstarred entries
 ~1,000 fsyncs — **5 to 40 seconds of pure disk-flush time**, before any network.
 That is still the largest single component of the reported latency.
 
-Fix: set `PRAGMA synchronous = NORMAL` (under WAL this keeps the database
+Fix (**`synchronous` change rejected on review — see below**): set
+`PRAGMA synchronous = NORMAL` (under WAL this keeps the database
 consistent and keeps commits durable across an *application* crash; what it gives
 up is durability across an OS crash or power loss, which can roll back any
 transaction committed since the last checkpoint — not just the last one. For a
 clipboard cache that re-syncs, that is an acceptable trade), add `busy_timeout`,
 and collapse the four calls into one transaction-wrapped storage method.
+
+> **Rejected in part.** The durability argument above was not accepted: a local
+> capture can be the only copy, and a synced row is excluded from later pushes,
+> so re-sync cannot be relied on to repair an acknowledged write. #114 keeps both
+> databases at explicit `synchronous=FULL` and takes the win from batching alone,
+> with `busy_timeout` added. **`synchronous=NORMAL` is not in the product and no
+> performance claim rests on it.** The transaction count above is still the
+> correct diagnosis.
 
 ### SYNC-A2 — Push is one sequential HTTP POST per entry, and re-reads settings every time
 
@@ -295,9 +305,15 @@ handling (`App.svelte:259`) that the popup does not share.
 
 `App.svelte:139` → `POST /api/auth/lock` → `crypto.lock()` clears the process-wide
 DEK (`crypto.rs:260`). A user clicking "Lock" in a browser tab to end *their*
-session silently breaks **every** connected desktop and Android client until
-someone unlocks the server again. Lock is presented as a session action but is a
-global server operation.
+session affects every connected desktop and Android client. Lock is presented as
+a session action but is a global server operation.
+
+> **Overstated.** "Until someone unlocks the server again" was wrong.
+> `verify_and_unlock` (`crypto.rs:144`) re-derives and re-caches the DEK on its
+> slow path, so the next native request carrying a valid password unlocks the
+> server automatically. The real cost is a latency spike and an Argon2id round
+> per client, not a persistent outage. The design question — session action vs.
+> global operation — still stands.
 
 ### BUG-09 — Wrong password stalls the entire server *(low, but a real DoS)*
 
@@ -802,8 +818,9 @@ Worth recording so it survives refactoring:
 ## 11. Implementation plan
 
 Items I have high confidence in, scoped as independent low-conflict branches.
-All of these were opened as PRs #88–#92, #94 and #95; **all are still open and
-none has merged**, so treat the table as proposed work, not delivered work.
+These were opened as PRs #88–#92, #94 and #95. They were not merged as-is: their
+disposition — consolidated, corrected, or rejected — is in the Outcome ledger in
+`ANALYSIS.md`. Treat this table as what was proposed, not as what shipped.
 
 | # | Branch | Scope | Findings |
 |---|---|---|---|

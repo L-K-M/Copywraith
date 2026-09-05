@@ -3,11 +3,13 @@
 Backlog last rebuilt 2026-07-25 against `9ca8179`. This is the maintained
 backlog — the single document to start from when picking up work.
 
-> **Currency warning.** `main` has moved since that rebuild. It is now 0.3.1 and
-> carries the Ubuntu/Linux paste, popup and release-gating work of PRs #104,
-> #105, #106 and #109, all of which postdate every finding below. File and line
-> references are anchored to `9ca8179` and have drifted. Confirm an item against
-> the code before acting on it.
+> **Currency warning.** `main` has moved since that rebuild: 0.3.1 plus the
+> Ubuntu/Linux paste, popup and release-gating work of PRs #104, #105, #106 and
+> #109, then the two integration PRs #110 (dependencies) and #114 (features).
+> Every finding below was written against `9ca8179`, so its file and line
+> references have drifted. **The disposition of every PR from the 2026-07-25
+> review is in the Outcome ledger at the bottom** — read it before acting on any
+> status claim in between.
 
 Sources, in order of currency:
 
@@ -19,8 +21,9 @@ Sources, in order of currency:
   for its product/design rationale (sections 5 and 6).
 
 Anything shipped is removed from the backlog and recorded in **Shipped** at the
-bottom, so it is neither lost nor accidentally reimplemented. Work that is only
-*proposed* sits in **Pending implementation** above it until it merges.
+bottom, so it is neither lost nor accidentally reimplemented. The **Outcome
+ledger** above it records what merged, what was rejected, and where the rejected
+work is tracked.
 
 ---
 
@@ -32,23 +35,25 @@ three places:
 
 1. **Sync convergence.** The Android client could not finish a first sync on a
    large history — see *Android sync latency* below. There are eight causes.
-   Two (SYNC-A1, SYNC-A2) have a fix proposed in #88 and part of SYNC-A5 in #89;
-   the other five and the remainder of SYNC-A5 are untouched, and each needs a
-   protocol or product decision. **SYNC-A3 is the one that matters**: a timed-out
-   `sync_now` discards all pull-watermark progress, so a large history never
-   converges at all. **None of this is fixed on `main` — the PRs are open.**
+   #114 fixes SYNC-A1 and SYNC-A2 and part of SYNC-A5; the other five and the
+   remainder of SYNC-A5 are untouched, and each needs a protocol or product
+   decision. **SYNC-A3 is the one that matters**: a timed-out `sync_now` discards
+   all pull-watermark progress, so a large history never converges at all.
 2. **Test coverage of the sync protocol.** Still the single highest-leverage
    piece of missing engineering work. The storage layer now has unit tests on
    both sides, but nothing exercises the protocol end to end.
-3. **Remote identity/chronology and delete propagation.** The other two
-   Priority 0 items. Implementations are proposed in #94 and #95; both PRs are
-   open and unmerged, so both problems are still live on `main`.
+3. **Delete propagation.** Remote identity/chronology (#94) shipped in #114.
+   Delete propagation did not: **#95 was rejected** — see the Outcome ledger —
+   so there are still no tombstones anywhere in the product, and a local delete
+   is silently undone by the next pull. Tracked in **#113**, and it remains a
+   Priority 0 item under *Deletion, retention, backup, and storage visibility*.
 
 ### Verification baseline
 
-Measured on `9ca8179` before any change, and again with the PRs below applied to
-that tree. Those PRs are still unmerged and this has **not** been re-measured
-against current `main` (0.3.1):
+Measured on `9ca8179` before any change, and again with the original PR branches
+applied to that tree. This is the historical baseline, **not** a measurement of
+`main` after #110 and #114; for what those integrate and how they were checked,
+see the Outcome ledger:
 
 | Check | Result |
 |---|---|
@@ -68,9 +73,9 @@ Two stale claims from the previous revision of this file, both now corrected:
   #88–#92 received runners immediately and ran green. Red badges are real
   results again.
 - **The old PR ledger is gone.** Every implementation PR it tracked (#32–#36,
-  #41–#49) has been merged or closed. The claim that followed it — that open PRs
-  are Dependabot-only — was true when written and is false now: #88, #89, #90,
-  #91, #92, #93, #94, #95 and #97 are all open and none of them is Dependabot's.
+  #41–#49) has been merged or closed, and so has every PR of the 2026-07-25
+  review. Do not read any open/closed count from this section — the Outcome
+  ledger is the only current record.
 
 ---
 
@@ -80,18 +85,18 @@ The headline performance complaint, with a root cause that turned out to be
 eight compounding problems (SYNC-A1 … SYNC-A8) rather than one. Detail and
 measurements in `opus.md` §1.
 
-### Fix proposed, not merged (see Pending implementation)
+### Fixed in #114
 
-**None of these has landed on `main`.** Each is the scope of an open PR.
-
-- **SYNC-A1** (#88) — up to four SQLite transactions per ingested entry. Only
-  the writes fsync: `has_content_hash` is a `SELECT`, and `set_starred` runs
-  only for starred entries, so the real cost is two fsyncs per entry (three when
-  starred), not four.
-- **SYNC-A2** (#88) — sequential push re-reading settings (7 queries) per entry.
-- Partial **SYNC-A5** (#89) — the duplicated text parsing and unbounded
-  `full_text` in the list projection (PERF-01/02) also cut Android list-load
-  cost.
+- **SYNC-A1** — up to four SQLite transactions per ingested entry, collapsed
+  into one. Only the writes ever fsynced: `has_content_hash` is a `SELECT` and
+  `set_starred` runs only for starred entries, so the real cost was two fsyncs
+  per entry, three when starred. **The gain is batching, not weaker durability.**
+  #88 also proposed `synchronous=NORMAL`; that was **rejected** and both
+  databases are explicitly `synchronous=FULL`, with `busy_timeout=5000` added.
+- **SYNC-A2** — sequential push re-reading settings (7 queries) per entry;
+  endpoint config is now resolved once per push batch.
+- Partial **SYNC-A5** — the duplicated text parsing and unbounded `full_text` in
+  the list projection (PERF-01/02) also cut Android list-load cost.
 
 ### Still open
 
@@ -271,8 +276,12 @@ can intervene and produce plaintext writes or ciphertext responses.
 - Return a DEK snapshot atomically from successful authorization.
 - Make a missing DEK an error whenever auth is configured.
 - Decide whether "Lock" is a global server operation or an admin-session action
-  — today the admin UI's Lock button (`App.svelte:139`) clears the process-wide
-  DEK and silently breaks **every** connected client (`opus.md` BUG-08).
+  — the admin UI's Lock button (`App.svelte:139`) clears the process-wide DEK,
+  which is global rather than session-scoped. It does **not** leave clients
+  permanently broken: `verify_and_unlock` (`server/src/crypto.rs:144`) re-derives
+  and re-caches the DEK on its slow path, so the next native request carrying a
+  valid password unlocks the server again. The cost is a latency spike and an
+  Argon2id round, not an outage. `opus.md` BUG-08 overstates this.
 - Test concurrent lock/create/get/blob requests.
 
 `sol.md` SERVER-07.
@@ -283,13 +292,15 @@ can intervene and produce plaintext writes or ciphertext responses.
 
 ### Deletion, retention, backup, and storage visibility
 
-- Implement synchronized tombstones and conflict-safe eventual purge.
+- Implement synchronized tombstones and conflict-safe eventual purge. **Still
+  entirely unbuilt.** #95 attempted it and was rejected (upgrade ordering, local
+  vs. server ids, recopy suppression, and an in-flight-POST acknowledgment race);
+  the replacement is tracked in **#113**. Nothing in the product deletes across
+  devices today, so a local delete is undone by the next pull. Whatever replaces
+  it must also own expiry of *local* tombstones once they exist.
 - Add Undo/Graveyard behaviour before permanent deletion.
 - Add configurable age/count/byte retention with starred exclusions. **Nothing
   bounds growth today** — the DB and blob directory grow forever on every device.
-  This should also own expiry of *local* tombstones: the server purges its own
-  after 90 days, but clients currently keep theirs indefinitely (they are
-  metadata only, so the cost is small but unbounded).
 - Show DB/blob/staging usage and a cleanup preview. No client shows any storage
   figure; the server exposes `entries_count` on `/api/health` only when
   authorised, and the admin UI does not display it.
@@ -434,8 +445,10 @@ MAC-13, ANDROID-13/14.
   native port and `svelte-check` 4.x cannot drive it** — `npm run check` dies
   with `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')`,
   verified at the repo root. `@sveltejs/kit` also declares a peer of
-  `^5.3.3 || ^6.0.0`. **Dependabot #63 proposes exactly this bump and will break
-  CI.**
+  `^5.3.3 || ^6.0.0`. Dependabot #63 proposed exactly this bump; it was **closed**
+  for that reason. The pin stands until `svelte-check` can drive TypeScript 7 —
+  that migration and the other seven closed dependency bumps are tracked in
+  **#111**.
 - Triage current npm advisories by reachability; record temporary exceptions.
 - Move CI/Docker to a supported Node/npm combination; verify the claimed
   package release-age policy.
@@ -487,16 +500,12 @@ What is left here is only what is defective on its own terms:
   The five-column fixed-width table simply overflows on a phone.
 - **First-run has no empty state or onboarding.** Independent of visual idiom.
 
-Two **open, unmerged** PRs propose changes that contradict the position above.
-Nothing has shipped, so this is a decision to take before merging them, not a
-revert:
-
-- #90 would set the popup row's content preview to 15px (from 24px) and
-  introduce four custom properties for the row's sizes. The large preview text is
-  deliberate: drop that hunk, or keep the custom properties and set
-  `--entry-text` back to 24px — it is one value.
-- #91 would set the admin table to 12/14px (from 18/22px `!important`) and align
-  the surrounding page to 11/12/14/20px. Same decision.
+**Decided.** #90 and #91 each proposed a type-scale change that contradicts the
+position above. #114 integrated their functional fixes and **dropped both
+typography changes**: the popup preview stays 24px desktop / 16px touch, the
+badges, mixed accents and admin typography are unchanged, `server/ui/App.svelte`
+was not touched, and there is still no dark mode. Only the popup's action column
+widened, to fit the new preview button. Do not reopen this as a defect.
 
 ### Power-user features
 
@@ -574,12 +583,12 @@ Full rationale in `sol.md` sections H and I and `awesome.md` sections 5 and 6.
   the server id, and that is deliberate. Two devices copying the same text mint
   different ids, so an id-keyed lookup would miss the locally-captured row.
   Content identity is the right key; do not "fix" it to use the id.
-- **New (2026-07-25):** entries pulled before #94 lands will keep their
-  pull-time id and timestamps — which today is every pulled entry, since #94 is
-  still open. A backfill was considered and rejected: matching local rows to
-  server rows by hash and rewriting primary keys is destructive on the one table
-  the user cannot re-derive, and ids now also key tombstone matching. Those rows
-  age out on their own.
+- **New (2026-07-25):** entries pulled before #114 keep their pull-time id and
+  timestamps. This is a known, accepted rollout limitation — those rows age out
+  on their own. A backfill was considered and **rejected as a fixed decision**:
+  matching local rows to server rows by hash and rewriting primary keys is
+  destructive on the one table the user cannot re-derive, and ids will key
+  whatever delete propagation #113 lands on.
 - **New (2026-07-25):** do not use `TextDecoder('windows-1252')` for CP1252.
   It depends on the host's ICU data; a Node build without full ICU decodes
   `0x80`-`0x9F` as Latin-1 and produces invisible C1 control characters. This
@@ -616,26 +625,65 @@ Full rationale in `sol.md` sections H and I and `awesome.md` sections 5 and 6.
 
 ---
 
-## Pending implementation
+## Outcome ledger
 
-**Not shipped.** These seven PRs implement the high-confidence items from the
-2026-07-25 review. All of them are **open and under review**; none has merged, so
-none of the behaviour below is on `main`. The verification column records what
-each branch was checked with when it was opened against `9ca8179`, not the state
-of `main`. This table is kept so the work is not duplicated while the merge
-decision is pending; entries move to *Shipped* only when they land.
+Final disposition of every PR from the 2026-07-25 review. This supersedes any
+status claim earlier in this document or in `opus.md`.
 
-### 2026-07-25 review (PRs #88–#92, #94, #95)
+### Integrated — #114 (features)
 
-| PR | Scope | Verification |
+Six PRs were reviewed, corrected and consolidated into one integration PR rather
+than merged individually. The original branches are superseded; do not merge
+them.
+
+| PR | What was kept | What was changed or dropped |
 |---|---|---|
-| [#88](https://github.com/L-K-M/Copywraith/pull/88) | `synchronous=NORMAL` + `busy_timeout` on both databases; single-transaction remote ingest (3 fsyncs → 1 per entry); endpoint config resolved once per push batch instead of 7 queries per entry. Server → 0.2.1 — stale, `main` is already 0.3.1, so the bump needs rebasing. | fmt, clippy, 64 tests (+5 new storage tests) |
-| [#89](https://github.com/L-K-M/Copywraith/pull/89) | List projection computed the plain text twice per row (2× flavor clone + 2× full HTML/RTF parse); `full_text` shipped every entry's complete text over IPC. Now computed once and bounded, with on-demand `get_entry_text`. | fmt, clippy, 66 tests (+7), check, build |
-| [#90](https://github.com/L-K-M/Copywraith/pull/90) | Viewport-gated cancellable image loading; double-click no longer pastes twice; live-updating relative times via a shared clock; correct data-URL MIME; popup type scale; focus/hover/selection distinguished; keyboard-reachable row actions; `viewport-fit=cover`. | check, build |
-| [#91](https://github.com/L-K-M/Copywraith/pull/91) | Admin RTF stripper rewritten as a linear brace-tracking pass: font names no longer leak into previews, paragraphs no longer run together, CP1252 hex escapes and `\uN`/`\ucN` decoded correctly (group-scoped), `\~` no longer shows as a tilde. Text helpers extracted to `lib/text.ts`; images no longer re-downloaded on every list refresh; admin type scale. | server UI build, svelte-check, 27 vitest cases |
-| [#94](https://github.com/L-K-M/Copywraith/pull/94) | Pulled entries keep the server's id and timestamps. Fixes a fresh install showing its whole history in reverse and "paste most recent" picking the oldest item; prerequisite for tombstones. | fmt, clippy, 67 tests |
-| [#95](https://github.com/L-K-M/Copywraith/pull/95) | Tombstones. Server DELETE retains a payload-free row with `deleted_at`, reaching clients through existing keyset pagination; clients push local deletions and apply remote ones. `Reset Sync Cursor` no longer resurrects deleted entries. | fmt, clippy, 78 tests |
-| [#92](https://github.com/L-K-M/Copywraith/pull/92) | Sync Details is read-only again (opening it no longer triggers a full sync); explicit Sync Now with in-flight guard and outcome reporting. | check, build |
+| [#88](https://github.com/L-K-M/Copywraith/pull/88) | Single-transaction remote ingest, endpoint config resolved once per push batch, `busy_timeout=5000`. | `synchronous=NORMAL` **rejected** — both databases are explicitly `synchronous=FULL`, because a local capture can be the only copy and a synced row is excluded from later pushes, so re-sync cannot be assumed to repair an acknowledged write. The 0.2.1 version bump was dropped; the tree stays **0.3.1**. Remote blob writes moved under the DB mutex, after the duplicate lookup, so a concurrent delete cannot leave a row pointing at a removed file. |
+| [#89](https://github.com/L-K-M/Copywraith/pull/89) | Plain text projected once per row, list text bounded, on-demand `get_entry_text` for the preview dialog. | — |
+| [#90](https://github.com/L-K-M/Copywraith/pull/90) | Viewport-gated cancellable image loading, single paste per double-click, shared relative-time clock, correct data-URL MIME, explicit preview action, keyboard-reachable row actions, `viewport-fit=cover`. | **Type scale dropped** (see *Aesthetics*). Two local fixes were required: the preview button's Enter bubbled to row paste, and the image effect refetched on metadata refresh. |
+| [#91](https://github.com/L-K-M/Copywraith/pull/91) | RTF stripper rewritten as a linear brace-tracking pass; text helpers extracted to `lib/text.ts`; admin images no longer re-downloaded on every list refresh. | **Admin type scale dropped.** One local fix: numeric ampersand references were decoded twice. |
+| [#92](https://github.com/L-K-M/Copywraith/pull/92) | Sync Details read-only again; explicit Sync Now with an in-flight guard. | Sync summaries corrected — a manual sync no longer reports success when the endpoint is unreachable, disabled, or still checking. |
+| [#94](https://github.com/L-K-M/Copywraith/pull/94) | Pulled entries keep the server's id and timestamps, fixing reversed history on a fresh install and "paste most recent" picking the oldest item. | Star reconciliation stays keyed on `content_hash`, not id — two devices copying the same text mint independent ULIDs, so an id-keyed lookup would miss the locally-captured row. **No destructive backfill of existing rows.** |
+
+**Regression coverage added, and wired into CI:** 13 popup/sync cases
+(`node --test scripts/tests/*.test.mjs`), 30 admin text cases
+(`server/ui` vitest), and 5 Python cases
+(`python3 -m unittest discover -s scripts -p 'test_*.py'`, of which the new one
+asserts both schemas still start at `synchronous=FULL`).
+
+**Honest limitations of what shipped:**
+
+- Blob writes are still not crash-atomic. Ordering and the shared mutex prevent
+  orphan rows; there is no flush, temp file, or rename, and an existing file is
+  trusted without re-hashing. See *Make blob storage crash-consistent*.
+- On-demand text is capped at 500,000 characters plus an ellipsis. It is bounded,
+  not literally complete.
+- Lazy image loading still transfers the full blob once a row is encountered.
+  This is not thumbnail generation and not an eviction cache.
+- The batch settings snapshot can retain a batch's configuration until its
+  at-most-50 entries finish. Intentional and bounded.
+- Rows pulled before #114 keep their pull-time ids and timestamps; they age out.
+- Image decode errors and the hardcoded PNG MIME in the preview dialog are
+  pre-existing and untouched.
+- No live WebView, Android device, or Plasma runtime validation was performed.
+
+### Integrated — #110 (dependencies)
+
+15 compatible dependency PRs consolidated. Eight more were **closed** as not
+compatible in isolation — #17, #54, #60, #62, #63, #67, #83, #86 — because each
+needs a coordinated migration rather than a version bump. Those migrations are
+tracked in **#111**. #54 in particular pinned a Rust toolchain (1.100.0) that is
+not available.
+
+### Rejected
+
+| PR | Reason | Tracked in |
+|---|---|---|
+| [#95](https://github.com/L-K-M/Copywraith/pull/95) Tombstones | An existing server database cannot start on the new schema (upgrade runs before the index it needs), local and server ids are conflated, recopying a deleted entry is suppressed, and a POST in flight during a delete can be acknowledged after it. Protocol change across three clients — needs a design, not a patch. | **#113** |
+| [#97](https://github.com/L-K-M/Copywraith/pull/97) Native KDE shortcuts | Registration is incomplete: it calls `doRegister` only, which creates the action but never runs `setShortcutKeys`, so the advertised shortcuts are never initialised and stay excluded from enumeration. It also adds a startup path outside `main`'s existing shortcut-status model and does not filter D-Bus senders. | **#112** |
+
+**Neither of these shipped.** Do not describe tombstones or native KGlobalAccel
+registration as present in the product.
 
 ---
 
@@ -649,7 +697,11 @@ Ubuntu/Linux paste and global-shortcut support, popup operations kept on the
 main thread, popup hiding distinguished from client termination, private desktop
 portal mounts cleaned up, macOS bundles shipped unsigned, and releases gated on
 installed-client checks. PRs #104, #105, #106, #109; releases 0.3.0 and 0.3.1.
-These postdate `opus.md` and are not reflected anywhere above.
+These postdate `opus.md` and are not reflected in the findings above.
+
+Then the two integration PRs: **#110** (15 compatible dependency updates) and
+**#114** (the six reviewed feature PRs). Both kept the tree at 0.3.1. Scope,
+corrections and limitations are in the Outcome ledger.
 
 ### Earlier (merged before 2026-07-25)
 
