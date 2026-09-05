@@ -63,36 +63,53 @@ impl NativeClipboard {
     // Serialize reads against app writes and preserve image/file/text priority.
     pub(crate) fn read(&self) -> Result<ClipboardPayload> {
         let context = self.context()?;
+
+        // Advertised formats can be unreadable; keep trying lower-priority data.
+        let mut read_error = None;
         if context.has(ContentFormat::Image) {
-            let image = context.get_image().map_err(|e| e.to_string())?;
-            let png = image.to_png().map_err(|e| e.to_string())?;
-            return Ok(ClipboardPayload::Image(png.get_bytes().to_vec()));
-        }
-        if context.has(ContentFormat::Files) {
-            let files = context.get_files().map_err(|e| e.to_string())?;
-            if !files.is_empty() {
-                return Ok(ClipboardPayload::Files(
-                    files
-                        .into_iter()
-                        .map(|path| path.strip_prefix("file://").unwrap_or(&path).to_string())
-                        .collect(),
-                ));
+            match context.get_image().and_then(|image| image.to_png()) {
+                Ok(png) => return Ok(ClipboardPayload::Image(png.get_bytes().to_vec())),
+                Err(error) => read_error = Some(error.to_string()),
             }
         }
-        let mut flavors = ClipboardFlavors::default();
-        if context.has(ContentFormat::Text) {
-            flavors.text_plain = nonempty(context.get_text().map_err(|e| e.to_string())?);
+        if context.has(ContentFormat::Files) {
+            match context.get_files() {
+                Ok(files) if !files.is_empty() => {
+                    return Ok(ClipboardPayload::Files(
+                        files
+                            .into_iter()
+                            .map(|path| path.strip_prefix("file://").unwrap_or(&path).to_string())
+                            .collect(),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    read_error.get_or_insert_with(|| error.to_string());
+                }
+            }
         }
-        if context.has(ContentFormat::Html) {
-            flavors.text_html = nonempty(context.get_html().map_err(|e| e.to_string())?);
+        let flavors = read_text_flavors(
+            |format| {
+                if !context.has(format.clone()) {
+                    return Ok(String::new());
+                }
+                match format {
+                    ContentFormat::Text => context.get_text(),
+                    ContentFormat::Html => context.get_html(),
+                    ContentFormat::Rtf => context.get_rich_text(),
+                    _ => unreachable!("Only text formats are requested"),
+                }
+                .map_err(|error| error.to_string())
+            },
+            &mut read_error,
+        );
+        if !flavors.is_empty() {
+            return Ok(ClipboardPayload::Flavors(flavors));
         }
-        if context.has(ContentFormat::Rtf) {
-            flavors.text_rtf = nonempty(context.get_rich_text().map_err(|e| e.to_string())?);
+        match read_error {
+            Some(error) => Err(error),
+            None => Ok(ClipboardPayload::Empty),
         }
-        if flavors.is_empty() {
-            return Ok(ClipboardPayload::Empty);
-        }
-        Ok(ClipboardPayload::Flavors(flavors))
     }
 
     // Publish all text representations together so rich writes retain plaintext.
@@ -272,4 +289,61 @@ impl Drop for NativeClipboard {
 
 fn nonempty(text: String) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
+}
+
+// Attempt every text representation; the caller reports errors only if none work.
+fn read_text_flavors(
+    mut read: impl FnMut(ContentFormat) -> Result<String>,
+    read_error: &mut Option<String>,
+) -> ClipboardFlavors {
+    let mut flavors = ClipboardFlavors::default();
+    for (format, target) in [
+        (ContentFormat::Text, &mut flavors.text_plain),
+        (ContentFormat::Html, &mut flavors.text_html),
+        (ContentFormat::Rtf, &mut flavors.text_rtf),
+    ] {
+        match read(format) {
+            Ok(text) => *target = nonempty(text),
+            Err(error) => {
+                read_error.get_or_insert(error);
+            }
+        }
+    }
+    flavors
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+
+    #[test]
+    fn text_read_errors_do_not_discard_other_flavors() {
+        // X11 getters turn read errors into empty strings; inject errors here to
+        // cover backends that return Err for an advertised text representation.
+        for failed_format in [ContentFormat::Text, ContentFormat::Html, ContentFormat::Rtf] {
+            let mut error = None;
+            let flavors = read_text_flavors(
+                |format| {
+                    if std::mem::discriminant(&format) == std::mem::discriminant(&failed_format) {
+                        return Err("unreadable format".into());
+                    }
+                    Ok("usable".into())
+                },
+                &mut error,
+            );
+            assert_eq!(error.as_deref(), Some("unreadable format"));
+            assert_eq!(
+                flavors.text_plain.as_deref(),
+                (!matches!(failed_format, ContentFormat::Text)).then_some("usable")
+            );
+            assert_eq!(
+                flavors.text_html.as_deref(),
+                (!matches!(failed_format, ContentFormat::Html)).then_some("usable")
+            );
+            assert_eq!(
+                flavors.text_rtf.as_deref(),
+                (!matches!(failed_format, ContentFormat::Rtf)).then_some("usable")
+            );
+        }
+    }
 }

@@ -32,7 +32,9 @@ pub fn start_monitoring(
         |error| log::error!("Clipboard monitor failed: {error}"),
     ) {
         log::error!("Failed to start clipboard monitor: {error}");
+        return;
     }
+    log::info!("Clipboard monitor started");
 }
 
 /// Handle a clipboard change by reading current clipboard contents and storing them.
