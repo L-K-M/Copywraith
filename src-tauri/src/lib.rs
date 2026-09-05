@@ -5,6 +5,8 @@ mod commands;
 mod linux;
 mod models;
 #[cfg(desktop)]
+mod native_clipboard;
+#[cfg(desktop)]
 mod paste;
 mod storage;
 mod sync;
@@ -55,9 +57,7 @@ pub fn run() {
     // Desktop-only plugins
     #[cfg(desktop)]
     {
-        builder = builder
-            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-            .plugin(tauri_plugin_clipboard::init());
+        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
         #[cfg(target_os = "macos")]
         {
@@ -111,20 +111,19 @@ pub fn run() {
             // Desktop: start clipboard monitoring and register global shortcuts
             #[cfg(desktop)]
             {
+                app.manage(
+                    native_clipboard::NativeClipboard::new().map_err(std::io::Error::other)?,
+                );
                 paste::start_frontmost_app_cache(&app_handle);
 
                 let settings = storage.get_settings();
                 register_shortcuts(&app_handle, &settings);
 
-                // Start clipboard monitoring shortly after setup completes so
-                // startup remains responsive even if monitor startup is slow.
-                let monitor_app = app_handle.clone();
-                let monitor_storage = storage.clone();
-                let monitor_sync_client = sync_client.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    clipboard::start_monitoring(monitor_app, monitor_storage, monitor_sync_client);
-                });
+                clipboard::start_monitoring(
+                    app_handle.clone(),
+                    storage.clone(),
+                    sync_client.clone(),
+                );
             }
 
             // Start periodic two-way sync loop (push unsynced + pull remote)
@@ -194,8 +193,25 @@ pub fn run() {
             commands::get_platform,
             commands::hide_popup,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running copywraith");
+        .build(tauri::generate_context!())
+        .expect("error while building copywraith")
+        .run(|app, event| {
+            // Release the callback's AppHandle and join before app state teardown.
+            #[cfg(desktop)]
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(clipboard) = app.try_state::<native_clipboard::NativeClipboard>() {
+                    log::debug!(
+                        "Clipboard monitor at exit: {:?}",
+                        clipboard.monitor_status()
+                    );
+                    if let Err(error) = clipboard.stop_monitor() {
+                        log::error!("Failed to stop clipboard monitor: {error}");
+                    }
+                }
+            }
+            #[cfg(not(desktop))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(desktop)]

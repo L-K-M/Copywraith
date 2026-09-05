@@ -33,3 +33,9 @@ utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 tempfile = "3"
 log = "0.4"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Test the desktop adapter without pulling in Tauri/GTK.
+[target.'cfg(not(target_os = "android"))'.dev-dependencies]
+clipboard-rs = "0.3.5"
+# Preserve the image decoders previously enabled by the desktop plugin.
+image = "0.25.8"

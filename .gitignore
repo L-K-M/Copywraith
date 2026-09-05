@@ -43,3 +43,7 @@ blobs/
 copywraith-data/*
 !copywraith-data/README.md
 server/copywraith-data/
+
+# Native Svelte checker cache
+.svelte-check/
+.tooling-test-*/

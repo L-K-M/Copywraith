@@ -5,7 +5,8 @@ backlog — the single document to start from when picking up work.
 
 > **Currency warning.** `main` has moved since that rebuild: 0.3.1 plus the
 > Ubuntu/Linux paste, popup and release-gating work of PRs #104, #105, #106 and
-> #109, then the two integration PRs #110 (dependencies) and #114 (features).
+> #109, then #110 (dependencies), #114 (features), and #117 (coordinated
+> dependency migrations).
 > Every finding below was written against `9ca8179`, so its file and line
 > references have drifted. **The disposition of every PR from the 2026-07-25
 > review is in the Outcome ledger at the bottom** — read it before acting on any
@@ -439,14 +440,10 @@ MAC-13, ANDROID-13/14.
 
 ## Priority 2: engineering and release hardening
 
-- Keep `typescript` pinned to `~6.0.3` in both packages. **TypeScript 7 is the
-  native port and `svelte-check` 4.x cannot drive it** — `npm run check` dies
-  with `Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')`,
-  verified at the repo root. `@sveltejs/kit` also declares a peer of
-  `^5.3.3 || ^6.0.0`. Dependabot #63 proposed exactly this bump; it was **closed**
-  for that reason. The pin stands until `svelte-check` can drive TypeScript 7 —
-  that migration and the other seven closed dependency bumps are tracked in
-  **#111**.
+- Keep `typescript: ~6.0.3` for Kit's compiler API. **#117 resolves #111**
+  with TypeScript 7.0.2 under the `@typescript/native` alias and
+  `svelte-check` 4.7.6's `--tsgo` mode. Both compilers run in CI. The direct
+  replacement proposed by #63 remains incompatible; do not remove TS6.
 - Triage current npm advisories by reachability; record temporary exceptions.
 - Move CI/Docker to a supported Node/npm combination; verify the claimed
   package release-age policy.
@@ -670,9 +667,29 @@ asserts both schemas still start at `synchronous=FULL`).
 
 15 compatible dependency PRs consolidated. Eight more were **closed** as not
 compatible in isolation — #17, #54, #60, #62, #63, #67, #83, #86 — because each
-needs a coordinated migration rather than a version bump. Those migrations are
-tracked in **#111**. #54 in particular pinned a Rust toolchain (1.100.0) that is
-not available.
+needs a coordinated migration rather than a version bump. **#117** supplies
+those replacements for **#111**. Rust 1.100.0 from #54 remained unpublished
+at verification on 2026-09-05; the replacement uses published Rust 1.98.0.
+
+### Integrated — #117 (dependency migrations)
+
+- Rust 1.98.0, rusqlite 0.40.2, aes-gcm 0.11.1, rand 0.10.2 and ULID 3.0.0.
+  Legacy ciphertext, authentication, database and identifier fixtures remain
+  readable; both databases retain `synchronous=FULL` and existing local keys.
+- One private native clipboard adapter owns clipboard-rs 0.3.5 and its watcher.
+  Unreadable advertised formats fall back independently. Decoder features,
+  rich flavors, Android's separate clipboard plugin and startup logging remain.
+- Vite 8.2.2/plugin 7.3.0 with TS7 checking and Kit's TS6 compiler API retained.
+  Explicit targets preserve the prior WebView baseline. System7 and 0.3.1 stay.
+- CI covers both compiler checks, 15 popup/tooling tests, 30 admin tests,
+  workspace checks, installed Ubuntu 22.04/24.04 clients and isolated native
+  clipboard tests on Linux/macOS/Windows. Native tests are not full macOS or
+  Windows application validation; Wayland and Android runtime remain untested.
+
+Pre-existing URI escaping, blank-plain/rich fallback and monitor recovery UI
+remain follow-ups. Reentrant callback lifecycle changes were declined: the
+private contract assigns lifecycle calls to the owning app thread. No public
+storage test layer, destructive ID backfill or compiler-peer override was added.
 
 ### Rejected
 
