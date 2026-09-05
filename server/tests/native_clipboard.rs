@@ -12,6 +12,8 @@ use clipboard_rs::{
 use copywraith_core::models::ClipboardFlavors;
 use native_clipboard::{ClipboardPayload, MonitorStatus, NativeClipboard};
 
+static NATIVE_CLIPBOARD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 // Upstream exposes no subscription-ready notification. This is a startup grace
 // period, not clipboard polling; each assertion below waits for a native event.
@@ -21,6 +23,7 @@ const PNG: &[u8] = include_bytes!("../../src-tauri/icons/32x32.png");
 #[test]
 #[ignore = "requires an isolated native clipboard (Xvfb on Linux)"]
 fn native_clipboard_roundtrip_events_and_cleanup() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
     let adapter = Arc::new(NativeClipboard::new().unwrap());
     let peer = ClipboardContext::new().unwrap();
     peer.set_text("seed pasteboard change count".into())
@@ -189,4 +192,83 @@ fn stored_gif_remains_decodable() {
         RustImageData::from_bytes(&bytes).unwrap().get_size(),
         (1, 1)
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 clipboard (Xvfb)"]
+fn unreadable_native_format_preserves_usable_payloads() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    const PNG_MIME: &str = "image/png";
+    const INVALID_PNG: &[u8] = b"invalid PNG";
+    const PLAIN: &str = "usable fallback";
+    const HTML: &str = "<b>usable fallback</b>";
+    const RTF: &str = "{\\rtf1 usable fallback}";
+
+    // Real selection targets can advertise data that their decoder cannot read.
+    peer.set(vec![
+        ClipboardContent::Other(PNG_MIME.into(), INVALID_PNG.to_vec()),
+        ClipboardContent::Text(PLAIN.into()),
+        ClipboardContent::Html(HTML.into()),
+        ClipboardContent::Rtf(RTF.into()),
+    ])
+    .unwrap();
+    assert!(peer.has(clipboard_rs::ContentFormat::Image));
+    assert!(peer.get_image().is_err());
+    assert_eq!(peer.get_text().unwrap(), PLAIN);
+    let ClipboardPayload::Flavors(flavors) = adapter.read().unwrap() else {
+        panic!("expected usable text flavors")
+    };
+    assert_eq!(flavors.text_plain.as_deref(), Some(PLAIN));
+    assert_eq!(flavors.text_html.as_deref(), Some(HTML));
+    assert_eq!(flavors.text_rtf.as_deref(), Some(RTF));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fallback.txt");
+    std::fs::write(&path, PLAIN).unwrap();
+    let uri = format!("file://{}", path.display());
+    peer.set(vec![
+        ClipboardContent::Other(PNG_MIME.into(), INVALID_PNG.to_vec()),
+        ClipboardContent::Files(vec![uri.clone()]),
+        ClipboardContent::Text(PLAIN.into()),
+    ])
+    .unwrap();
+    let ClipboardPayload::Files(files) = adapter.read().unwrap() else {
+        panic!("expected file priority over text")
+    };
+    assert_eq!(files, [path.to_string_lossy()]);
+
+    // X11 reports malformed file lists/empty HTML as empty, not errors.
+    peer.set(vec![
+        ClipboardContent::Other("text/uri-list".into(), b"not a file URI".to_vec()),
+        ClipboardContent::Html(String::new()),
+        ClipboardContent::Rtf(RTF.into()),
+    ])
+    .unwrap();
+    let ClipboardPayload::Flavors(flavors) = adapter.read().unwrap() else {
+        panic!("expected surviving RTF")
+    };
+    assert_eq!(flavors.text_html, None);
+    assert_eq!(flavors.text_rtf.as_deref(), Some(RTF));
+
+    peer.set(vec![
+        ClipboardContent::Image(RustImageData::from_bytes(PNG).unwrap()),
+        ClipboardContent::Files(vec![uri]),
+        ClipboardContent::Text(PLAIN.into()),
+    ])
+    .unwrap();
+    assert!(matches!(
+        adapter.read().unwrap(),
+        ClipboardPayload::Image(_)
+    ));
+
+    peer.set_buffer(PNG_MIME, INVALID_PNG.to_vec()).unwrap();
+    assert!(
+        adapter.read().is_err(),
+        "all unreadable must retain an error"
+    );
+    peer.set_text(" ".into()).unwrap();
+    assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Empty));
 }
