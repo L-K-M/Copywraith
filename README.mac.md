@@ -13,7 +13,7 @@ The Mac app is a Tauri v2 + Svelte clipboard popup. It captures clipboard change
 
 ## Prerequisites
 
-- Rust 1.85 or newer; this repository pins the toolchain in `rust-toolchain.toml`.
+- Rust 1.98 or newer; this repository pins the toolchain in `rust-toolchain.toml`.
 - Node.js and npm.
 - Tauri v2 prerequisites for macOS.
 

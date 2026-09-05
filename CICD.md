@@ -20,7 +20,7 @@ Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Inst
 - `npm run build` — build the popup frontend.
 - `npm ci` then `npm run build` in `server/ui` — build the server UI.
 
-**Rust (fmt, clippy, test)** — runs on the Rust `1.85.0` toolchain (with `rustfmt` and `clippy`), cargo build cache enabled:
+**Rust (fmt, clippy, test)** — runs on the Rust `1.98.0` toolchain (with `rustfmt` and `clippy`), cargo build cache enabled:
 
 - Installs Tauri's Linux system dependencies (`libwebkit2gtk-4.1-dev`, `build-essential`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, and others) — the desktop backend in `src-tauri` links against the system webview and GTK.
 - Builds the frontend first (`npm ci && npm run build`) because `src-tauri` embeds it via `tauri::generate_context!`, so `build/` must exist before any cargo command.

@@ -442,7 +442,7 @@ impl Storage {
         };
 
         let now = Utc::now();
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
         let starred = starred.unwrap_or(false);
 
         let sensitive = search_text
@@ -907,4 +907,59 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
             .parse()
             .unwrap_or_else(|_| Utc::now()),
     })
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_database_upgrade_preserves_identifiers() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real rusqlite 0.32 database lacking flavor/sensitive columns.
+        std::fs::write(
+            dir.path().join("copywraith.db"),
+            include_bytes!("../tests/fixtures/legacy.db"),
+        )
+        .unwrap();
+        let legacy: ClipboardEntry =
+            serde_json::from_str(include_str!("../tests/fixtures/entry.json")).unwrap();
+        let storage = Storage::new(dir.path()).unwrap();
+        let row = storage.get_entry(&legacy.id, None).unwrap().unwrap();
+        assert_eq!(row.id, legacy.id);
+        assert_eq!(row.flavors.text_plain.as_deref(), Some("legacy row"));
+        let id: Ulid = row.id.parse().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Ulid>(&serde_json::to_string(&id).unwrap()).unwrap(),
+            id
+        );
+        let flavors = ClipboardFlavors {
+            text_plain: Some("new row".into()),
+            ..Default::default()
+        };
+        let (new, _) = storage
+            .create_entry(
+                ContentType::Text,
+                &flavors,
+                None,
+                None,
+                None,
+                "new-hash",
+                None,
+            )
+            .unwrap();
+        assert_ne!(new.id, legacy.id);
+        assert!(new.id.parse::<Ulid>().is_ok());
+        drop(storage);
+        let reopened = Storage::new(dir.path()).unwrap();
+        assert_eq!(reopened.count_entries().unwrap(), 2);
+        assert_eq!(
+            reopened.get_entry(&new.id, None).unwrap().unwrap().id,
+            new.id
+        );
+        assert_eq!(
+            reopened.get_entry(&legacy.id, None).unwrap().unwrap().id,
+            legacy.id
+        );
+    }
 }

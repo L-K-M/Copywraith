@@ -270,7 +270,7 @@ impl ClipboardEntry {
             ..ClipboardFlavors::default()
         };
         Self {
-            id: Ulid::new().to_string(),
+            id: Ulid::generate().to_string(),
             content_type: ContentType::Text,
             text_content: Some(text),
             blob_hash: None,
@@ -292,7 +292,7 @@ impl ClipboardEntry {
             ..ClipboardFlavors::default()
         };
         Self {
-            id: Ulid::new().to_string(),
+            id: Ulid::generate().to_string(),
             content_type: ContentType::Html,
             text_content: Some(html),
             blob_hash: None,
@@ -309,7 +309,7 @@ impl ClipboardEntry {
     pub fn new_image(blob_hash: String, blob_size: u64) -> Self {
         let now = Utc::now();
         Self {
-            id: Ulid::new().to_string(),
+            id: Ulid::generate().to_string(),
             content_type: ContentType::Image,
             text_content: None,
             blob_hash: Some(blob_hash),

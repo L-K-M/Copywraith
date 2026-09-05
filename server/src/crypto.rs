@@ -6,7 +6,7 @@ use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::Context;
 use argon2::Argon2;
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -23,6 +23,7 @@ const ARGON2_OUTPUT_LEN: usize = 32;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12; // AES-256-GCM nonce
 const DEK_LEN: usize = 32;
+const TAG_LEN: usize = 16; // AES-GCM authentication tag
 
 /// On-disk auth configuration stored as `{data_dir}/auth.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,9 +115,9 @@ impl CryptoState {
 
         let cipher = Aes256Gcm::new_from_slice(&kek)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
         let encrypted_dek = cipher
-            .encrypt(nonce, dek.as_ref())
+            .encrypt(&nonce, dek.as_ref())
             .map_err(|e| anyhow::anyhow!("Failed to encrypt DEK: {}", e))?;
 
         let config = AuthConfig {
@@ -177,9 +178,11 @@ impl CryptoState {
 
         let cipher = Aes256Gcm::new_from_slice(&kek)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        // Persisted nonces are untrusted; reject invalid lengths without panicking.
+        let nonce = Nonce::try_from(nonce_bytes.as_slice())
+            .map_err(|_| anyhow::anyhow!("Invalid DEK nonce length"))?;
         let dek_bytes = cipher
-            .decrypt(nonce, encrypted_dek.as_ref())
+            .decrypt(&nonce, encrypted_dek.as_ref())
             .map_err(|e| anyhow::anyhow!("Failed to decrypt DEK: {}", e))?;
 
         let mut dek = [0u8; DEK_LEN];
@@ -231,9 +234,9 @@ impl CryptoState {
 
         let cipher = Aes256Gcm::new_from_slice(&kek)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
         let encrypted_dek = cipher
-            .encrypt(nonce, dek.as_ref())
+            .encrypt(&nonce, dek.as_ref())
             .map_err(|e| anyhow::anyhow!("Failed to encrypt DEK: {}", e))?;
 
         let config = AuthConfig {
@@ -274,9 +277,9 @@ pub fn encrypt_text(dek: &[u8; DEK_LEN], plaintext: &str) -> anyhow::Result<Stri
 
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
+        .encrypt(&nonce, plaintext.as_bytes())
         .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
     // nonce || ciphertext (includes tag)
@@ -295,16 +298,17 @@ pub fn decrypt_text(dek: &[u8; DEK_LEN], stored: &str) -> anyhow::Result<String>
     };
 
     let combined = base64_decode(payload)?;
-    if combined.len() < NONCE_LEN + 16 {
+    if combined.len() < NONCE_LEN + TAG_LEN {
         anyhow::bail!("Encrypted text too short");
     }
 
     let (nonce_bytes, ciphertext) = combined.split_at(NONCE_LEN);
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes)
+        .map_err(|_| anyhow::anyhow!("Invalid ciphertext nonce length"))?;
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
 
     String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("Invalid UTF-8 after decrypt: {}", e))
@@ -317,9 +321,9 @@ pub fn encrypt_blob(dek: &[u8; DEK_LEN], data: &[u8]) -> anyhow::Result<Vec<u8>>
 
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, data)
+        .encrypt(&nonce, data)
         .map_err(|e| anyhow::anyhow!("Blob encryption failed: {}", e))?;
 
     let mut out = Vec::with_capacity(4 + NONCE_LEN + ciphertext.len());
@@ -336,16 +340,17 @@ pub fn decrypt_blob(dek: &[u8; DEK_LEN], data: &[u8]) -> anyhow::Result<Vec<u8>>
     }
 
     let rest = &data[4..];
-    if rest.len() < NONCE_LEN + 16 {
+    if rest.len() < NONCE_LEN + TAG_LEN {
         anyhow::bail!("Encrypted blob too short");
     }
 
     let (nonce_bytes, ciphertext) = rest.split_at(NONCE_LEN);
     let cipher = Aes256Gcm::new_from_slice(dek)
         .map_err(|e| anyhow::anyhow!("Failed to create cipher: {}", e))?;
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes)
+        .map_err(|_| anyhow::anyhow!("Invalid ciphertext nonce length"))?;
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| anyhow::anyhow!("Blob decryption failed: {}", e))?;
 
     Ok(plaintext)
@@ -449,6 +454,123 @@ fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LEGACY_DEK: &[u8; DEK_LEN] = include_bytes!("../tests/fixtures/dek.bin");
+    const LEGACY_TEXT: &str = include_str!("../tests/fixtures/text.enc");
+    const LEGACY_BLOB: &[u8] = include_bytes!("../tests/fixtures/blob.enc");
+
+    // These bytes were written by aes-gcm 0.10.3, before the dependency migration.
+    #[test]
+    fn legacy_ciphertext_and_auth_remain_readable() {
+        assert_eq!(
+            decrypt_text(LEGACY_DEK, LEGACY_TEXT).unwrap(),
+            "legacy ciphertext 🦀"
+        );
+        assert_eq!(
+            decrypt_blob(LEGACY_DEK, LEGACY_BLOB).unwrap(),
+            b"\x00\xfflegacy blob"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("auth.json"),
+            include_bytes!("../tests/fixtures/auth.json"),
+        )
+        .unwrap();
+        let mut state = CryptoState::load(dir.path()).unwrap();
+        assert!(state.verify_and_unlock("fixture-password").unwrap());
+        assert_eq!(state.get_dek().unwrap(), *LEGACY_DEK);
+        state
+            .change_password("fixture-password", "replacement-password")
+            .unwrap();
+        let mut reopened = CryptoState::load(dir.path()).unwrap();
+        assert!(reopened.verify_and_unlock("replacement-password").unwrap());
+        assert_eq!(reopened.get_dek().unwrap(), *LEGACY_DEK);
+    }
+
+    #[test]
+    fn ciphertext_rejects_tampering_and_truncation() {
+        let payload = base64_decode(LEGACY_TEXT.strip_prefix(ENC_TEXT_PREFIX).unwrap()).unwrap();
+        for index in [0, NONCE_LEN, payload.len() - 1] {
+            let mut tampered = payload.clone();
+            tampered[index] ^= 1;
+            assert!(decrypt_text(
+                LEGACY_DEK,
+                &format!("{ENC_TEXT_PREFIX}{}", base64_encode(&tampered))
+            )
+            .is_err());
+            let mut blob = ENC_BLOB_MAGIC.to_vec();
+            blob.extend_from_slice(&tampered);
+            assert!(decrypt_blob(LEGACY_DEK, &blob).is_err());
+        }
+        for len in 0..NONCE_LEN + TAG_LEN {
+            assert!(decrypt_text(
+                LEGACY_DEK,
+                &format!("{ENC_TEXT_PREFIX}{}", base64_encode(&payload[..len]))
+            )
+            .is_err());
+            let mut blob = ENC_BLOB_MAGIC.to_vec();
+            blob.extend_from_slice(&payload[..len]);
+            assert!(decrypt_blob(LEGACY_DEK, &blob).is_err());
+        }
+        assert!(decrypt_text(LEGACY_DEK, "ENC:1:!").is_err());
+    }
+
+    #[test]
+    fn tampered_legacy_auth_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config: AuthConfig =
+            serde_json::from_str(include_str!("../tests/fixtures/auth.json")).unwrap();
+        let mut encrypted = base64_decode(&config.encrypted_dek).unwrap();
+        encrypted[0] ^= 1;
+        config.encrypted_dek = base64_encode(&encrypted);
+        std::fs::write(
+            dir.path().join("auth.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let mut state = CryptoState::load(dir.path()).unwrap();
+        assert!(state.verify_and_unlock("fixture-password").is_err());
+        assert!(!state.is_unlocked());
+    }
+
+    #[test]
+    fn encryption_uses_fresh_random_nonces() {
+        let first = encrypt_text(LEGACY_DEK, "same plaintext").unwrap();
+        let second = encrypt_text(LEGACY_DEK, "same plaintext").unwrap();
+        assert_ne!(first, second);
+        assert_ne!(
+            encrypt_blob(LEGACY_DEK, b"same").unwrap(),
+            encrypt_blob(LEGACY_DEK, b"same").unwrap()
+        );
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let mut a = CryptoState::load(a.path()).unwrap();
+        let mut b = CryptoState::load(b.path()).unwrap();
+        a.setup_password("same-password").unwrap();
+        b.setup_password("same-password").unwrap();
+        assert_ne!(a.get_dek(), b.get_dek());
+        assert_ne!(
+            a.auth_config.as_ref().unwrap().argon2_salt,
+            b.auth_config.as_ref().unwrap().argon2_salt
+        );
+        assert_ne!(
+            a.auth_config.as_ref().unwrap().dek_nonce,
+            b.auth_config.as_ref().unwrap().dek_nonce
+        );
+    }
+
+    // Invalid persisted nonces must return errors instead of panicking on unlock.
+    #[test]
+    fn malformed_auth_nonce_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = CryptoState::load(dir.path()).unwrap();
+        state.setup_password("fixture-password").unwrap();
+        state.lock();
+        for len in [0, NONCE_LEN - 1, NONCE_LEN, NONCE_LEN + 1] {
+            state.auth_config.as_mut().unwrap().dek_nonce = base64_encode(&vec![0; len]);
+            assert!(state.verify_and_unlock("fixture-password").is_err());
+        }
+    }
 
     #[test]
     fn test_text_encrypt_decrypt_roundtrip() {

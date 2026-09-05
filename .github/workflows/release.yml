@@ -104,7 +104,7 @@ jobs:
           cache: npm
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: ${{ matrix.rust-targets }}
 
@@ -185,7 +185,7 @@ jobs:
         run: bash scripts/install-android-ndk.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
