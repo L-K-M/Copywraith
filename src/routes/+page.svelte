@@ -82,23 +82,25 @@
 		const mobile = detectedPlatform === 'android' || detectedPlatform === 'ios';
 
 		// Native move grabs must neither dim nor dismiss the desktop popup.
-		unlistenActivity = windowManager.subscribeActivity((active, source) => {
-			windowFocused.set(active);
-			// Startup initializes styling; only deactivation events dismiss the popup.
-			if (mobile || source === WindowActivitySource.Snapshot) return;
+		if (!mobile) {
+			unlistenActivity = windowManager.subscribeActivity((active, source) => {
+				windowFocused.set(active);
+				// Startup initializes styling; only deactivation events dismiss the popup.
+				if (source === WindowActivitySource.Snapshot) return;
 
-			if (autoHideTimer) {
-				clearTimeout(autoHideTimer);
-				autoHideTimer = null;
-			}
+				if (autoHideTimer) {
+					clearTimeout(autoHideTimer);
+					autoHideTimer = null;
+				}
 
-			if (active) return;
+				if (active) return;
 
-			autoHideTimer = setTimeout(() => {
-				autoHideTimer = null;
-				windowManager.close();
-			}, AUTO_HIDE_DELAY_MS);
-		});
+				autoHideTimer = setTimeout(() => {
+					autoHideTimer = null;
+					windowManager.close();
+				}, AUTO_HIDE_DELAY_MS);
+			});
+		}
 
 		try {
 			unlistenSyncEndpointStatus = await listen<SyncEndpointStatusInput>(
@@ -126,9 +128,10 @@
 			}
 		}
 
-		// Mobile resume still follows input focus, independently of decorations.
+		// Keep mobile on focus events: Android's focus snapshot getter is a stub.
 		if (mobile) {
 			const stop = await appWindow.onFocusChanged(({ payload: focused }) => {
+				windowFocused.set(focused);
 				if (focused) void refreshMobileEntries('App resumed on mobile.');
 			});
 			if (destroyed) stop();

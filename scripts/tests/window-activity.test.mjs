@@ -32,7 +32,7 @@ function popup(t, platformName = 'linux') {
 	const listeners = new Map();
 	const mounts = [];
 	const destroys = [];
-	const state = { active: true, nativeActive: true, hidden: 0, captured: 0 };
+	const state = { active: true, nativeActive: true, activityQueries: 0, hidden: 0, captured: 0 };
 	const listen = async (event, callback) => {
 		listeners.set(event, callback);
 		return () => { listeners.delete(event); };
@@ -61,6 +61,7 @@ function popup(t, platformName = 'linux') {
 		'@tauri-apps/api/event': { listen },
 		'@tauri-apps/api/core': { invoke: async (command) => {
 			assert.equal(command, 'is_window_active');
+			state.activityQueries++;
 			return state.nativeActive;
 		} },
 		'$lib/tauri': { TauriService },
@@ -253,12 +254,15 @@ for (const platform of ['android', 'ios']) {
 		await app.mount();
 		const captures = app.state.captured;
 		assert.equal(captures, 1, 'initial mobile refresh must complete');
+		assert.equal(app.state.activityQueries, 0, 'mobile must not query desktop window activity');
 
 		app.keyboardFocus(false);
+		assert.equal(app.state.active, false);
 		t.mock.timers.tick(AUTO_HIDE_WAIT_MS);
 		assert.equal(app.state.hidden, 0);
 		app.keyboardFocus(true);
 		await setImmediate();
+		assert.equal(app.state.active, true);
 		assert.equal(app.state.captured, captures + 1);
 		assert.equal(app.state.hidden, 0);
 	});
