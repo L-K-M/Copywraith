@@ -622,6 +622,8 @@ impl LocalStorage {
                 .is_some_and(|g| g.state == GenerationState::Live)
         {
             let generation = receipt.generation.as_ref().unwrap();
+            // Older builds lacked the journal; a newer same-incarnation revision proves a star edit.
+            tx.execute("INSERT INTO sync_star_intents SELECT e.id, e.sync_incarnation, e.sync_revision FROM entries e JOIN sync_operation_provenance p ON p.local_id = e.id AND p.incarnation = e.sync_incarnation WHERE p.operation_id = ?1 AND e.sync_revision > ?2 ON CONFLICT(local_id) DO UPDATE SET incarnation = excluded.incarnation, revision = excluded.revision", params![receipt.operation_id, sent.revision])?;
             tx.execute("INSERT OR REPLACE INTO sync_create_conflicts SELECT p.server_id, p.local_id, p.incarnation, ?2, p.content_hash FROM sync_operation_provenance p JOIN entries e ON e.id = p.local_id AND e.sync_incarnation = p.incarnation WHERE p.operation_id = ?1", params![receipt.operation_id, generation.id])?;
             let (changed, blob) =
                 reconcile_create_conflict(&tx, &receipt.server_id, &sent.local_id)?;

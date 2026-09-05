@@ -1511,3 +1511,69 @@ async fn liveness_missing_blob_recovery_preserves_local_identity() {
     assert!(device.storage.get_unsynced_entries().unwrap().is_empty());
     assert!(device.storage.sync_warning(&server_id).unwrap().is_none());
 }
+
+#[tokio::test]
+async fn liveness_upgrade_preserves_post_freeze_star_on_recovered_capture() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let local = device.capture("recovered pre-upgrade star");
+    let first = device
+        .freeze_create(&server, "recovered pre-upgrade star")
+        .await;
+    let competing = server.create_request("recovered pre-upgrade star").await;
+    let generation = server.apply(&competing).await.generation.unwrap();
+    server.delete_generation(&generation.id).await;
+    let conflict = server.apply(&first).await;
+    let pending = device
+        .storage
+        .pending_mutations(&first.server_id)
+        .unwrap()
+        .remove(0);
+    device
+        .storage
+        .acknowledge_mutation(&pending, &conflict)
+        .unwrap();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let flavors = local.resolved_flavors();
+    device
+        .storage
+        .insert_entry(
+            ContentType::Text,
+            &flavors,
+            None,
+            &flavors.payload_hash(ContentType::Text, None),
+            None,
+        )
+        .unwrap();
+    let frozen = device
+        .freeze_create(&server, "recovered pre-upgrade star")
+        .await;
+    let mut competing = server.create_request("recovered pre-upgrade star").await;
+    if let SyncAction::Create { payload, .. } = &mut competing.action {
+        payload.starred = Some(true);
+    }
+    server.apply(&competing).await;
+    let conflict = server.apply(&frozen).await;
+    // The previous build tracked revisions, but had no explicit-star journal.
+    let db = rusqlite::Connection::open(device._dir.path().join("copywraith.db")).unwrap();
+    db.execute_batch("DROP TRIGGER entries_sync_star_intent; DROP TABLE sync_star_intents;")
+        .unwrap();
+    drop(db);
+    device.storage.toggle_star(&local.id).unwrap();
+    device.storage.toggle_star(&local.id).unwrap();
+    let device = device.restart();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let pending = device
+        .storage
+        .pending_mutations(&frozen.server_id)
+        .unwrap()
+        .remove(0);
+    device
+        .storage
+        .acknowledge_mutation(&pending, &conflict)
+        .unwrap();
+    device.exchange().await;
+    assert_eq!(device.entries()[0].id, local.id);
+    assert!(!device.entries()[0].starred);
+    assert!(!server.entries().await.entries[0].entry.starred);
+}
