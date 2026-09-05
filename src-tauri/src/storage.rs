@@ -17,6 +17,24 @@ pub struct LocalStorage {
     blob_dir: std::path::PathBuf,
 }
 
+/// The server's identity for an entry being pulled into local storage.
+///
+/// Pulled rows used to be inserted through the local capture path, which minted
+/// a fresh ULID and stamped `created_at`/`updated_at` with the time of the pull.
+/// Because the server returns newest-first and the client walks pages in that
+/// order, the *oldest* server entry was inserted last and so received the
+/// *newest* local timestamp — a fresh install displayed its history in reverse,
+/// and "paste most recent" picked the wrong item.
+///
+/// Carrying the server's id and timestamps through keeps one entry the same
+/// entry on every device, and keeps the list in true chronological order.
+#[derive(Debug, Clone, Copy)]
+pub struct RemoteEntryIdentity<'a> {
+    pub id: &'a str,
+    pub created_at: chrono::DateTime<Utc>,
+    pub updated_at: chrono::DateTime<Utc>,
+}
+
 /// Parse a SQLite row (with the standard entry SELECT columns) into a ClipboardEntry.
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
     let content_type = row
@@ -295,9 +313,15 @@ impl LocalStorage {
     /// pull that disk time dominates everything else, so the three writes are
     /// committed together here instead.
     ///
-    /// Returns `Ok(true)` when a new row was created.
+    /// Returns `Ok(true)` when a new row was created, or `Ok(false)` when the
+    /// entry was already present — matched either by content hash or by the
+    /// server id. Re-pulling a known id with different content keeps the
+    /// existing row: entries are immutable apart from `starred`, which the
+    /// caller reconciles separately.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_remote_entry(
         &self,
+        remote: RemoteEntryIdentity<'_>,
         content_type: ContentType,
         flavors: &ClipboardFlavors,
         blob_data: Option<&[u8]>,
@@ -322,27 +346,25 @@ impl LocalStorage {
 
         let existing_id: Option<String> = tx
             .query_row(
-                "SELECT id FROM entries WHERE content_hash = ?1",
-                params![content_hash],
+                "SELECT id FROM entries WHERE content_hash = ?1 OR id = ?2 LIMIT 1",
+                params![content_hash, remote.id],
                 |row| row.get(0),
             )
             .optional()?;
 
         if existing_id.is_some() {
-            // Already present locally; the caller applies remote starred state
-            // separately so unpushed local changes are not clobbered.
+            // Already present locally, either by payload or because this exact
+            // server row was pulled before. The caller applies remote starred
+            // state separately so unpushed local changes are not clobbered.
             tx.commit()?;
             return Ok(false);
         }
 
-        let now = Utc::now().to_rfc3339();
-        let id = Ulid::new().to_string();
-
         tx.execute(
             "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?14)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14, ?15)",
             params![
-                id,
+                remote.id,
                 content_type.as_str(),
                 legacy_text_content,
                 resolved_flavors.text_plain,
@@ -355,7 +377,8 @@ impl LocalStorage {
                 source_app,
                 starred as i32,
                 sensitive as i32,
-                now,
+                remote.created_at.to_rfc3339(),
+                remote.updated_at.to_rfc3339(),
             ],
         )?;
 
@@ -789,6 +812,13 @@ mod tests {
         (dir, storage)
     }
 
+    /// Parse an RFC3339 timestamp for use in a RemoteEntryIdentity.
+    fn ts(value: &str) -> chrono::DateTime<Utc> {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
     fn text_flavors(text: &str) -> ClipboardFlavors {
         ClipboardFlavors {
             text_plain: Some(text.to_string()),
@@ -803,7 +833,19 @@ mod tests {
         let hash = flavors.payload_hash(ContentType::Text, None);
 
         let inserted = storage
-            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .insert_remote_entry(
+                RemoteEntryIdentity {
+                    id: "01JQZ0R0000000000000000001",
+                    created_at: ts("2026-07-01T10:00:00Z"),
+                    updated_at: ts("2026-07-01T10:00:00Z"),
+                },
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                false,
+            )
             .unwrap();
         assert!(inserted);
 
@@ -819,7 +861,19 @@ mod tests {
         let hash = flavors.payload_hash(ContentType::Text, None);
 
         assert!(storage
-            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, true)
+            .insert_remote_entry(
+                RemoteEntryIdentity {
+                    id: "01JQZ0R0000000000000000002",
+                    created_at: ts("2026-07-01T10:00:00Z"),
+                    updated_at: ts("2026-07-01T10:00:00Z"),
+                },
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                true,
+            )
             .unwrap());
 
         let entries = storage.get_entries(10, 0, true, None).unwrap();
@@ -833,13 +887,34 @@ mod tests {
         let flavors = text_flavors("seen before");
         let hash = flavors.payload_hash(ContentType::Text, None);
 
+        let identity = RemoteEntryIdentity {
+            id: "01JQZ0R0000000000000000003",
+            created_at: ts("2026-07-01T10:00:00Z"),
+            updated_at: ts("2026-07-01T10:00:00Z"),
+        };
         assert!(storage
-            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .insert_remote_entry(
+                identity,
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                false
+            )
             .unwrap());
         // Re-ingesting the same payload must not create a second row, so a
         // restarted or retried pull is safe to replay.
         assert!(!storage
-            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .insert_remote_entry(
+                identity,
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                false
+            )
             .unwrap());
 
         assert_eq!(storage.get_entries(10, 0, false, None).unwrap().len(), 1);
@@ -860,7 +935,19 @@ mod tests {
         // The server still has this entry unstarred. Ingesting it must leave the
         // pending local star alone; push reconciles it later.
         assert!(!storage
-            .insert_remote_entry(ContentType::Text, &flavors, None, &hash, None, false)
+            .insert_remote_entry(
+                RemoteEntryIdentity {
+                    id: "01JQZ0R0000000000000000004",
+                    created_at: ts("2026-07-01T10:00:00Z"),
+                    updated_at: ts("2026-07-01T10:00:00Z"),
+                },
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                false,
+            )
             .unwrap());
         assert!(!storage
             .apply_remote_star_state_by_content_hash(&hash, false)
@@ -871,6 +958,136 @@ mod tests {
     }
 
     #[test]
+    fn insert_remote_entry_preserves_server_id_and_timestamps() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("copied last week");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+
+        assert!(storage
+            .insert_remote_entry(
+                RemoteEntryIdentity {
+                    id: "01JQZ0R0000000000000000010",
+                    created_at: ts("2026-07-01T09:00:00Z"),
+                    updated_at: ts("2026-07-02T11:30:00Z"),
+                },
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                false,
+            )
+            .unwrap());
+
+        // An entry must be the same entry on every device, and must keep the
+        // time it was actually copied rather than the time it was pulled.
+        let entry = storage
+            .get_entry("01JQZ0R0000000000000000010")
+            .unwrap()
+            .expect("row is stored under the server id");
+        assert_eq!(entry.created_at, ts("2026-07-01T09:00:00Z"));
+        assert_eq!(entry.updated_at, ts("2026-07-02T11:30:00Z"));
+    }
+
+    #[test]
+    fn pulled_entries_keep_server_chronology() {
+        let (_dir, storage) = temp_storage();
+
+        // The server returns newest-first, so the pull loop ingests in that
+        // order. Previously each insert stamped `now`, which meant the oldest
+        // entry was written last and sorted to the top — a fresh install showed
+        // its history reversed.
+        let page = [
+            (
+                "01JQZ0R0000000000000000030",
+                "newest",
+                "2026-07-03T12:00:00Z",
+            ),
+            (
+                "01JQZ0R0000000000000000020",
+                "middle",
+                "2026-07-02T12:00:00Z",
+            ),
+            (
+                "01JQZ0R0000000000000000010",
+                "oldest",
+                "2026-07-01T12:00:00Z",
+            ),
+        ];
+
+        for (id, text, at) in page {
+            let flavors = text_flavors(text);
+            let hash = flavors.payload_hash(ContentType::Text, None);
+            assert!(storage
+                .insert_remote_entry(
+                    RemoteEntryIdentity {
+                        id,
+                        created_at: ts(at),
+                        updated_at: ts(at),
+                    },
+                    ContentType::Text,
+                    &flavors,
+                    None,
+                    &hash,
+                    None,
+                    false,
+                )
+                .unwrap());
+        }
+
+        let listed = storage.get_entries(10, 0, false, None).unwrap();
+        let order: Vec<String> = listed
+            .iter()
+            .map(|e| e.best_plain_text().unwrap_or_default())
+            .collect();
+        assert_eq!(order, ["newest", "middle", "oldest"]);
+
+        // "Paste most recent" must pick the genuinely newest entry.
+        let most_recent = storage.get_most_recent_entry().unwrap().unwrap();
+        assert_eq!(most_recent.best_plain_text().as_deref(), Some("newest"));
+    }
+
+    #[test]
+    fn re_pulling_the_same_server_row_is_a_no_op() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("pulled twice");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let identity = RemoteEntryIdentity {
+            id: "01JQZ0R0000000000000000040",
+            created_at: ts("2026-07-01T09:00:00Z"),
+            updated_at: ts("2026-07-01T09:00:00Z"),
+        };
+
+        assert!(storage
+            .insert_remote_entry(
+                identity,
+                ContentType::Text,
+                &flavors,
+                None,
+                &hash,
+                None,
+                false
+            )
+            .unwrap());
+
+        // Same id, different payload: the primary key must not collide-and-fail.
+        let other = text_flavors("different payload");
+        let other_hash = other.payload_hash(ContentType::Text, None);
+        assert!(!storage
+            .insert_remote_entry(
+                identity,
+                ContentType::Text,
+                &other,
+                None,
+                &other_hash,
+                None,
+                false
+            )
+            .unwrap());
+        assert_eq!(storage.get_entries(10, 0, false, None).unwrap().len(), 1);
+    }
+
+    #[test]
     fn insert_remote_entry_stores_blob_bytes_once() {
         let (dir, storage) = temp_storage();
         let bytes = b"\x89PNG\r\n\x1a\n fake image payload";
@@ -878,6 +1095,11 @@ mod tests {
 
         assert!(storage
             .insert_remote_entry(
+                RemoteEntryIdentity {
+                    id: "01JQZ0R0000000000000000005",
+                    created_at: ts("2026-07-01T10:00:00Z"),
+                    updated_at: ts("2026-07-01T10:00:00Z"),
+                },
                 ContentType::Image,
                 &ClipboardFlavors::default(),
                 Some(bytes),
