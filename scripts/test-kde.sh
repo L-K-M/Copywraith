@@ -27,4 +27,4 @@ fi
 export XDG_CONFIG_HOME="$harness_dir/config" XDG_DATA_HOME="$harness_dir/data"
 export XDG_CACHE_HOME="$harness_dir/cache" XDG_RUNTIME_DIR="$harness_dir/runtime"
 mkdir -m 700 -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
-dbus-run-session --config-file "$repo_dir/scripts/kde-session.conf" -- cargo test --manifest-path "$harness_dir/Cargo.toml" -- --ignored --skip plasma_runtime --test-threads=1
+dbus-run-session --config-file "$repo_dir/scripts/kde-session.conf" -- cargo test --manifest-path "$harness_dir/Cargo.toml" -- --include-ignored --skip plasma_runtime --test-threads=1
