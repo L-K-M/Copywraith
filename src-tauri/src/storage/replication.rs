@@ -14,6 +14,43 @@ pub(crate) struct PendingMutation {
     pub revision: i64,
 }
 
+fn project_remote_state(
+    db: &Connection,
+    server: &str,
+    local_id: &str,
+) -> anyhow::Result<(bool, Option<String>)> {
+    let state: Option<(bool, bool, Option<String>)> = db.query_row(
+        "SELECT deleted, starred, updated_at FROM sync_links WHERE server_id = ?1 AND local_id = ?2 ORDER BY sequence DESC LIMIT 1",
+        params![server, local_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    ).optional()?;
+    let Some((deleted, starred, updated_at)) = state else {
+        return Ok((false, None));
+    };
+    if !deleted {
+        let changed = db.execute("UPDATE entries SET starred = ?1, updated_at = COALESCE(?2, updated_at) WHERE id = ?3 AND synced = 1 AND starred != ?1", params![starred, updated_at, local_id])?;
+        return Ok((changed > 0, None));
+    }
+
+    let blob = db
+        .query_row(
+            "SELECT blob_hash FROM entries WHERE id = ?1",
+            [local_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let changed = db.execute("DELETE FROM entries WHERE id = ?1", [local_id])?;
+    db.execute(
+        "DELETE FROM sync_blocked WHERE server_id = ?1 AND local_id = ?2",
+        params![server, local_id],
+    )?;
+    db.execute(
+        "DELETE FROM sync_outbox WHERE server_id = ?1 AND local_id = ?2 AND kind = 'star'",
+        params![server, local_id],
+    )?;
+    Ok((changed > 0, blob))
+}
+
 pub(super) fn initialize(conn: &mut Connection) -> anyhow::Result<()> {
     let tx = conn.transaction()?;
     ensure_entries_column(&tx, "sync_revision", "INTEGER NOT NULL DEFAULT 1")?;
@@ -142,12 +179,16 @@ impl LocalStorage {
     }
 
     pub(crate) fn sync_cursor(&self, server: &str) -> anyhow::Result<u64> {
-        let db = self.db.lock().unwrap();
-        let cursor: i64 = db.query_row(
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        // A reset requested during an older pull survives that pull and a restart.
+        tx.execute("UPDATE sync_peers SET cursor = 0, reset_requested = 0 WHERE server_id = ?1 AND reset_requested = 1", [server])?;
+        let cursor: i64 = tx.query_row(
             "SELECT cursor FROM sync_peers WHERE server_id = ?1",
             [server],
             |r| r.get(0),
         )?;
+        tx.commit()?;
         Ok(u64::try_from(cursor)?)
     }
 
@@ -155,7 +196,7 @@ impl LocalStorage {
         self.db
             .lock()
             .unwrap()
-            .execute("UPDATE sync_peers SET cursor = 0", [])?;
+            .execute("UPDATE sync_peers SET cursor = 0, reset_requested = 1", [])?;
         Ok(())
     }
 
@@ -254,7 +295,7 @@ impl LocalStorage {
         &self,
         sent: &PendingMutation,
         receipt: &SyncReceipt,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         anyhow::ensure!(
             receipt.server_id == sent.request.server_id
                 && receipt.operation_id == sent.request.operation_id,
@@ -267,7 +308,7 @@ impl LocalStorage {
             [&receipt.operation_id],
         )?;
         if removed == 0 {
-            return Ok(());
+            return Ok(false);
         }
         if matches!(sent.request.action, SyncAction::Delete { .. }) {
             anyhow::ensure!(
@@ -276,17 +317,17 @@ impl LocalStorage {
             );
             if let Some(g) = &receipt.generation {
                 tx.execute(
-                    "UPDATE sync_links SET deleted = 1 WHERE server_id = ?1 AND remote_id = ?2",
-                    params![receipt.server_id, g.id],
+                    "UPDATE sync_links SET deleted = 1, sequence = MAX(sequence, ?3) WHERE server_id = ?1 AND remote_id = ?2",
+                    params![receipt.server_id, g.id, i64::try_from(receipt.sequence)?],
                 )?;
             }
             tx.commit()?;
-            return Ok(());
+            return Ok(false);
         }
         if receipt.outcome != SyncOutcome::Applied {
             tx.execute("INSERT OR REPLACE INTO sync_blocked VALUES (?1, ?2, ?3)", params![receipt.server_id, sent.local_id, "An older capture or star update targets a retired generation; copy again after synchronization."])?;
             tx.commit()?;
-            return Ok(());
+            return Ok(false);
         }
         if let Some(g) = &receipt.generation {
             let hash: Option<String> = tx
@@ -297,7 +338,15 @@ impl LocalStorage {
                 )
                 .optional()?;
             if let Some(hash) = hash {
-                tx.execute("INSERT INTO sync_links (server_id, remote_id, local_id, content_hash) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(server_id, remote_id) DO UPDATE SET local_id = excluded.local_id", params![receipt.server_id, g.id, sent.local_id, hash])?;
+                let starred = match &sent.request.action {
+                    SyncAction::Create { payload, .. } => payload.starred.unwrap_or(false),
+                    SyncAction::Star { starred, .. } => *starred,
+                    SyncAction::Delete { .. } => unreachable!(),
+                };
+                tx.execute("INSERT INTO sync_links (server_id, remote_id, local_id, content_hash, sequence, starred) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    ON CONFLICT(server_id, remote_id) DO UPDATE SET local_id = excluded.local_id,
+                    starred = CASE WHEN excluded.sequence > sequence THEN excluded.starred ELSE starred END,
+                    sequence = MAX(sequence, excluded.sequence)", params![receipt.server_id, g.id, sent.local_id, hash, i64::try_from(receipt.sequence)?, starred])?;
             }
         }
         // Only the sent revision is clean. A newer star/delete remains pending.
@@ -305,8 +354,10 @@ impl LocalStorage {
             "UPDATE entries SET synced = 1 WHERE id = ?1 AND sync_revision = ?2",
             params![sent.local_id, sent.revision],
         )?;
+        let (changed, blob) = project_remote_state(&tx, &receipt.server_id, &sent.local_id)?;
         tx.commit()?;
-        Ok(())
+        self.remove_unreferenced_blob(&db, blob.as_deref())?;
+        Ok(changed)
     }
 
     pub(crate) fn apply_sync_deletion(
@@ -320,9 +371,10 @@ impl LocalStorage {
             .query_row(
                 "SELECT local_id FROM sync_links WHERE server_id = ?1 AND remote_id = ?2",
                 params![server, change.generation.id],
-                |r| r.get(0),
+                |r| r.get::<_, Option<String>>(0),
             )
-            .optional()?;
+            .optional()?
+            .flatten();
         let mut changed = false;
         let mut blob = None;
         if let Some(id) = local {
@@ -342,8 +394,10 @@ impl LocalStorage {
                 )?;
                 tx.execute("DELETE FROM sync_outbox WHERE server_id = ?1 AND local_id = ?2 AND kind = 'star'", params![server, id])?;
             }
-            tx.execute("UPDATE sync_links SET deleted = 1, sequence = ?1 WHERE server_id = ?2 AND remote_id = ?3", params![i64::try_from(change.sequence)?, server, change.generation.id])?;
         }
+        // Unknown tombstones must survive until a delayed create receipt supplies its local ID.
+        tx.execute("INSERT INTO sync_links (server_id, remote_id, content_hash, deleted, sequence) VALUES (?1, ?2, ?3, 1, ?4)
+            ON CONFLICT(server_id, remote_id) DO UPDATE SET deleted = 1, sequence = MAX(sequence, excluded.sequence)", params![server, change.generation.id, change.content_hash, i64::try_from(change.sequence)?])?;
         tx.execute(
             "UPDATE sync_peers SET cursor = MAX(cursor, ?1) WHERE server_id = ?2",
             params![i64::try_from(change.sequence)?, server],
@@ -369,7 +423,7 @@ impl LocalStorage {
         );
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
-        let retired_here: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_links l WHERE l.server_id = ?1 AND l.remote_id = ?2 AND (l.deleted = 1 OR NOT EXISTS(SELECT 1 FROM entries WHERE id = l.local_id)))", params![server, change.generation.id], |r| r.get(0))?;
+        let retired_here: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_links l WHERE l.server_id = ?1 AND l.remote_id = ?2 AND (l.deleted = 1 OR EXISTS(SELECT 1 FROM sync_outbox o WHERE o.server_id = l.server_id AND o.local_id = l.local_id AND o.kind = 'delete')))", params![server, change.generation.id], |r| r.get(0))?;
         if retired_here {
             tx.execute(
                 "UPDATE sync_peers SET cursor = MAX(cursor, ?1) WHERE server_id = ?2",
@@ -400,8 +454,9 @@ impl LocalStorage {
             [&change.content_hash],
             |r| r.get(0),
         )?;
-        tx.execute("INSERT INTO sync_links (server_id, remote_id, local_id, content_hash, sequence) VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(server_id, remote_id) DO UPDATE SET local_id = excluded.local_id, sequence = excluded.sequence, deleted = 0", params![server, change.generation.id, id, change.content_hash, i64::try_from(change.sequence)?])?;
+        // Keep confirmed stars even while pending local edits hide their projection.
+        tx.execute("INSERT INTO sync_links (server_id, remote_id, local_id, content_hash, sequence, starred, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(server_id, remote_id) DO UPDATE SET local_id = excluded.local_id, sequence = excluded.sequence, deleted = 0, starred = excluded.starred, updated_at = excluded.updated_at", params![server, change.generation.id, id, change.content_hash, i64::try_from(change.sequence)?, entry.starred, entry.updated_at.to_rfc3339()])?;
         tx.execute(
             "DELETE FROM sync_blocked WHERE server_id = ?1 AND local_id = ?2",
             params![server, id],

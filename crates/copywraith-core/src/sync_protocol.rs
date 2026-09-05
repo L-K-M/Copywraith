@@ -75,6 +75,7 @@ pub enum SyncOutcome {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SyncReceipt {
     pub server_id: String,
+    pub sequence: u64,
     pub operation_id: String,
     pub outcome: SyncOutcome,
     pub generation: Option<GenerationHead>,

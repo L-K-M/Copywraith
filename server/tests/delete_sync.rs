@@ -359,3 +359,113 @@ async fn different_fallback_servers_are_rejected_before_upload() {
     assert_eq!(first.entries().await.total, 0);
     assert_eq!(second.entries().await.total, 0);
 }
+
+#[tokio::test]
+async fn push_side_pulls_still_notify_the_ui() {
+    let server = Server::start().await;
+    let a = Device::new(&server.url);
+    let b = Device::new(&server.url);
+    a.capture("remote update");
+    a.exchange().await;
+    b.sync.sync_unsynced_entries(&b.storage).await;
+    let result = b.sync.pull_new_entries(&b.storage).await.unwrap();
+    assert_eq!(
+        result.pulled, 1,
+        "a push-side pull must not consume the UI notification"
+    );
+}
+
+#[tokio::test]
+async fn lost_star_ack_preserves_a_newer_canonical_star() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let local = device.capture("star race");
+    device.exchange().await;
+    let server_id = server.info().await.server_id;
+    device.storage.toggle_star(&local.id).unwrap();
+    let candidate = device
+        .storage
+        .sync_candidates(&server_id)
+        .unwrap()
+        .remove(0);
+    let remote_id = candidate.remote_id.clone().unwrap();
+    device
+        .storage
+        .enqueue_sync_candidate(
+            &server_id,
+            &candidate,
+            SyncAction::Star {
+                generation_id: remote_id.clone(),
+                starred: true,
+            },
+        )
+        .unwrap();
+    let pending = device
+        .storage
+        .pending_mutations(&server_id)
+        .unwrap()
+        .remove(0);
+    let receipt = server.apply(&pending.request).await;
+    // The upload committed, but its receipt has not reached local storage.
+    let status = reqwest::Client::new()
+        .patch(format!("{}/api/entries/{remote_id}", server.url))
+        .bearer_auth(PASSWORD)
+        .json(&serde_json::json!({"starred": false}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, StatusCode::OK);
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    assert!(
+        device.entries()[0].starred,
+        "pending local intent remains visible"
+    );
+    device
+        .storage
+        .acknowledge_mutation(&pending, &receipt)
+        .unwrap();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    assert!(
+        !device.entries()[0].starred,
+        "acknowledgment must project the newer canonical state"
+    );
+}
+
+#[tokio::test]
+async fn tombstone_before_create_receipt_is_not_forgotten() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let local = device.capture("unacknowledged capture");
+    let create = server.create_request("unacknowledged capture").await;
+    let server_id = create.server_id.clone();
+    device.storage.bind_sync_server("test", &server_id).unwrap();
+    let candidate = device
+        .storage
+        .sync_candidates(&server_id)
+        .unwrap()
+        .remove(0);
+    device
+        .storage
+        .enqueue_sync_candidate(&server_id, &candidate, create.action)
+        .unwrap();
+    let pending = device
+        .storage
+        .pending_mutations(&server_id)
+        .unwrap()
+        .remove(0);
+    let receipt = server.apply(&pending.request).await;
+    server
+        .delete_generation(&receipt.generation.as_ref().unwrap().id)
+        .await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    device
+        .storage
+        .acknowledge_mutation(&pending, &receipt)
+        .unwrap();
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    assert!(
+        device.storage.get_entry(&local.id).unwrap().is_none(),
+        "the earlier tombstone must apply when the delayed receipt reveals its identity"
+    );
+}

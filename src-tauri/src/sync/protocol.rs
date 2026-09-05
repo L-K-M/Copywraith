@@ -153,8 +153,15 @@ impl SyncClient {
                 Ok(result)
             }
             Backend::Protocol(session) => {
-                let pulled = self.pull_protocol(storage, &session).await?;
-                let mut endpoint_status = SyncEndpointStatus::online(&session.endpoints[0]);
+                let result = self.pull_protocol(storage, &session).await;
+                let pulled = std::mem::take(&mut *self.pending_protocol_changes.lock().unwrap());
+                let mut endpoint_status = match result {
+                    Ok(_) => SyncEndpointStatus::online(&session.endpoints[0]),
+                    Err(error) => SyncEndpointStatus::unreachable_endpoint(
+                        &session.endpoints[0],
+                        format!("Synchronization incomplete: {error}"),
+                    ),
+                };
                 if let Some(warning) = storage.sync_warning(&session.server_id)? {
                     endpoint_status.message = Some(warning);
                 }
@@ -175,7 +182,8 @@ impl SyncClient {
             let receipt: SyncReceipt = self
                 .protocol_request(session, Method::POST, "/operations", Some(&pending.request))
                 .await?;
-            storage.acknowledge_mutation(&pending, &receipt)?;
+            let changed = storage.acknowledge_mutation(&pending, &receipt)?;
+            *self.pending_protocol_changes.lock().unwrap() += usize::from(changed);
         }
         Ok(())
     }
@@ -346,6 +354,7 @@ impl SyncClient {
                     }
                 };
                 applied += usize::from(changed);
+                *self.pending_protocol_changes.lock().unwrap() += usize::from(changed);
                 cursor = change.sequence;
             }
             if !page.has_more {

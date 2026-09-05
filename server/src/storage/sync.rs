@@ -60,6 +60,14 @@ fn head(db: &Connection, hash: &str) -> anyhow::Result<Option<GenerationHead>> {
     ).optional()?)
 }
 
+fn sequence(db: &Connection) -> anyhow::Result<u64> {
+    Ok(u64::try_from(db.query_row(
+        "SELECT sequence FROM sync_clock",
+        [],
+        |r| r.get::<_, i64>(0),
+    )?)?)
+}
+
 fn state(deleted: bool) -> GenerationState {
     if deleted {
         GenerationState::Deleted
@@ -284,6 +292,7 @@ impl Storage {
                                     None,
                                     &SyncReceipt {
                                         server_id: server_id.clone(),
+                                        sequence: sequence(&tx)?,
                                         operation_id: operation_id.clone(),
                                         outcome: SyncOutcome::Cancelled,
                                         generation: None,
@@ -312,6 +321,7 @@ impl Storage {
         };
         let result = SyncReceipt {
             server_id,
+            sequence: sequence(&tx)?,
             operation_id: request.operation_id.clone(),
             outcome,
             generation,

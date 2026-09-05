@@ -133,6 +133,7 @@ struct EndpointHeartbeat {
 pub struct SyncClient {
     http: reqwest::Client,
     protocol_lock: tokio::sync::Mutex<()>,
+    pending_protocol_changes: Mutex<usize>,
     pull_state: Mutex<PullState>,
     last_responding_endpoint: Mutex<Option<EndpointHeartbeat>>,
 }
@@ -155,6 +156,7 @@ impl SyncClient {
         Self {
             http,
             protocol_lock: tokio::sync::Mutex::new(()),
+            pending_protocol_changes: Mutex::new(0),
             pull_state: Mutex::new(PullState {
                 initialized: watermark.is_some(),
                 watermark,
