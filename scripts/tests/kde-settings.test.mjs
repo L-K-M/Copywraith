@@ -24,6 +24,7 @@ test('KDE unavailable gives recovery guidance without exposing app accelerators'
             if (mechanism === 'kde_unavailable') {
                 assert.doesNotMatch(body, /KDE manages these shortcuts/);
                 assert.match(body, /unavailable/i);
+                assert.doesNotMatch(body, /reconnection is retried/);
                 assert.match(body, /commands below/);
                 assert.match(body, /shortcut-status-warning/);
             }

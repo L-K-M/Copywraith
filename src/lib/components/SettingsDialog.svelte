@@ -320,7 +320,7 @@
 			<div class="shortcut-hint">
 				{#if shortcutStatus?.mechanism.startsWith('kde')}
 					{#if shortcutStatus.mechanism === 'kde_unavailable'}
-						KDE shortcuts are unavailable. Use the commands below while reconnection is retried.
+						KDE shortcuts are unavailable. Use the commands below and check the status for recovery steps.
 					{:else}
 						KDE manages these shortcuts. Assign or disable them in System Settings.
 					{/if}

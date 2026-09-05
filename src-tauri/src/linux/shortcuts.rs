@@ -224,7 +224,14 @@ pub fn sync(settings: &Settings, on_activate: impl Fn(Action) + Send + 'static) 
 static KDE_STARTED: Once = Once::new();
 static KDE_STOP: AtomicBool = AtomicBool::new(false);
 static KDE_WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
-static KDE_HEALTH: Mutex<Option<Result<(), String>>> = Mutex::new(None);
+
+#[derive(Debug)]
+enum KdeFailure {
+    Session(String),
+    WorkerStart(String),
+}
+
+static KDE_HEALTH: Mutex<Option<Result<(), KdeFailure>>> = Mutex::new(None);
 static KDE_RETRY_WAKE: Condvar = Condvar::new();
 static KDE_RETRY_LOCK: Mutex<()> = Mutex::new(());
 const KDE_RETRY: Duration = Duration::from_secs(2);
@@ -281,7 +288,7 @@ fn start_kde(on_activate: impl Fn(Action) + Send + 'static) {
                         }
                     })
                 });
-                *KDE_HEALTH.lock().unwrap() = Some(result);
+                *KDE_HEALTH.lock().unwrap() = Some(result.map_err(KdeFailure::Session));
                 if KDE_STOP.load(Ordering::Acquire) {
                     break;
                 }
@@ -289,7 +296,9 @@ fn start_kde(on_activate: impl Fn(Action) + Send + 'static) {
             });
         match result {
             Ok(worker) => *KDE_WORKER.lock().unwrap() = Some(worker),
-            Err(error) => *KDE_HEALTH.lock().unwrap() = Some(Err(error.to_string())),
+            Err(error) => {
+                *KDE_HEALTH.lock().unwrap() = Some(Err(KdeFailure::WorkerStart(error.to_string())))
+            }
         }
     });
 }
@@ -315,7 +324,7 @@ fn kde_status(commands: Vec<ShortcutCommand>) -> ShortcutStatus {
 }
 
 fn status_for_kde_health(
-    health: Option<&Result<(), String>>,
+    health: Option<&Result<(), KdeFailure>>,
     mut commands: Vec<ShortcutCommand>,
 ) -> ShortcutStatus {
     // KDE owns assignments; app-managed accelerators never describe these keys.
@@ -324,7 +333,13 @@ fn status_for_kde_health(
     }
     let (mechanism, message) = match health {
         Some(Ok(())) => ("kde", "Registered with KDE. Assign or disable keys in System Settings → Keyboard → Shortcuts → Copywraith. Existing KDE assignments are preserved; new actions start unbound.".to_string()),
-        Some(Err(error)) => ("kde_unavailable", format!("KDE shortcuts unavailable ({error}). Retrying automatically. You can bind these commands in System Settings instead; avoid assigning the same key to both a command and a native action.")),
+        Some(Err(failure)) => {
+            let (error, recovery) = match failure {
+                KdeFailure::Session(error) => (error, "Retrying automatically."),
+                KdeFailure::WorkerStart(error) => (error, "The shortcut worker could not start; restart the app to retry."),
+            };
+            ("kde_unavailable", format!("KDE shortcuts unavailable ({error}). {recovery} You can bind these commands in System Settings instead; avoid assigning the same key to both a command and a native action."))
+        },
         None => ("kde_connecting", "Connecting to KDE shortcuts. Assign keys in System Settings → Keyboard → Shortcuts → Copywraith once connected.".to_string()),
     };
     ShortcutStatus {
@@ -726,6 +741,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn worker_spawn_failure_requires_restart_instead_of_promising_retry() {
+        let failure = Err(KdeFailure::WorkerStart("resource unavailable".into()));
+        let status = status_for_kde_health(Some(&failure), manual_commands(&Settings::default()));
+        assert_eq!(status.mechanism, "kde_unavailable");
+        assert!(!status.message.contains("Retrying automatically"));
+        assert!(status.message.contains("restart the app"));
+        assert_eq!(status.commands.len(), Action::ALL.len());
+    }
+
+    #[test]
     fn shutdown_wakes_retry_wait() {
         KDE_STOP.store(false, Ordering::Release);
         let waiter = std::thread::spawn(wait_kde_retry);
@@ -744,7 +769,8 @@ mod tests {
         let failure = outcome.expect("worker panic must become an unavailable status");
         assert!(failure.is_err());
         assert_eq!(
-            status_for_kde_health(Some(&failure), Vec::new()).mechanism,
+            status_for_kde_health(Some(&failure.map_err(KdeFailure::Session)), Vec::new())
+                .mechanism,
             "kde_unavailable"
         );
         assert!(run_kde_attempt(|| Ok(())).is_ok());
@@ -756,8 +782,10 @@ mod tests {
             shortcut_toggle_popup: "Super+Q".into(),
             ..Settings::default()
         };
-        let status =
-            status_for_kde_health(Some(&Err("offline".into())), manual_commands(&settings));
+        let status = status_for_kde_health(
+            Some(&Err(KdeFailure::Session("offline".into()))),
+            manual_commands(&settings),
+        );
         assert!(status
             .commands
             .iter()
@@ -782,7 +810,7 @@ mod tests {
         assert_eq!(ready.mechanism, "kde");
         assert!(ready.message.contains("System Settings"));
         let failure = status_for_kde_health(
-            Some(&Err("bus disconnected".into())),
+            Some(&Err(KdeFailure::Session("bus disconnected".into()))),
             manual_commands(&Settings::default()),
         );
         assert_eq!(failure.mechanism, "kde_unavailable");
