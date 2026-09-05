@@ -136,10 +136,20 @@
 		try {
 			const result = await TauriService.syncNow();
 			setSyncEndpointStatus(result.endpoint_status);
+
+			// Backend timeouts resolve normally; only online results indicate success.
+			if (result.endpoint_status.state !== 'online') {
+				lastSyncSummary =
+					result.endpoint_status.state === 'disabled'
+						? 'Sync is disabled. Configure a server in Settings.'
+						: 'Sync did not complete. See the message above.';
+				return;
+			}
+
 			lastSyncSummary =
 				result.pulled > 0
 					? `Pulled ${result.pulled} entr${result.pulled === 1 ? 'y' : 'ies'}.`
-					: 'Already up to date.';
+					: 'No new entries pulled.';
 		} catch (e) {
 			setSyncEndpointStatus({
 				state: 'unreachable',
