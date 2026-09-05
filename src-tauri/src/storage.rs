@@ -164,11 +164,8 @@ impl LocalStorage {
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
-            -- WAL + NORMAL still survives a process crash; only a full OS/power
-            -- loss can drop the most recent commit. Without this SQLite defaults
-            -- to FULL, which fsyncs on every implicit transaction — on Android
-            -- flash that is 5-40ms per statement and dominates sync wall time.
-            PRAGMA synchronous=NORMAL;
+            -- Synced rows are not retried after acknowledgment; retain durability.
+            PRAGMA synchronous=FULL;
             -- Wait instead of failing immediately when the sync loop and a UI
             -- command reach the database at the same time.
             PRAGMA busy_timeout=5000;
@@ -337,10 +334,6 @@ impl LocalStorage {
             .map(|t| contains_sensitive_data(t))
             .unwrap_or(false);
 
-        // Write the blob before the row so a crash can never leave a row
-        // pointing at a blob that does not exist.
-        let (blob_hash, blob_size) = self.write_blob(blob_data)?;
-
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
 
@@ -359,6 +352,10 @@ impl LocalStorage {
             tx.commit()?;
             return Ok(false);
         }
+
+        // Serialize blob creation with deletion and skip rejected payloads.
+        // The file must exist before committing its row.
+        let (blob_hash, blob_size) = self.write_blob(blob_data)?;
 
         tx.execute(
             "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
@@ -1085,6 +1082,37 @@ mod tests {
             )
             .unwrap());
         assert_eq!(storage.get_entries(10, 0, false, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejected_remote_identity_does_not_leave_a_blob() {
+        let (dir, storage) = temp_storage();
+        let flavors = text_flavors("existing identity");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        let bytes = b"different payload for an existing identity";
+        let blob_hash = copywraith_core::content::hash_bytes(bytes);
+
+        // A rejected payload must not persist outside the database's lifecycle.
+        assert!(!storage
+            .insert_remote_entry(
+                RemoteEntryIdentity {
+                    id: &entry.id,
+                    created_at: entry.created_at,
+                    updated_at: entry.updated_at,
+                },
+                ContentType::Image,
+                &ClipboardFlavors::default(),
+                Some(bytes),
+                &blob_hash,
+                None,
+                false,
+            )
+            .unwrap());
+        assert!(!dir.path().join("blobs").join(blob_hash).exists());
     }
 
     #[test]
