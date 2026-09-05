@@ -15,8 +15,21 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Kit imports the TS6 compiler API; TS7 runs through @typescript/native.
+    ignore:
+      - dependency-name: typescript
+        versions: [">=7"]
+    groups:
+      svelte-bundler:
+        patterns: [vite, "@sveltejs/vite-plugin-svelte", "@sveltejs/kit"]
 
   - package-ecosystem: npm
     directory: /server/ui
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: typescript
+        versions: [">=7"]
+    groups:
+      svelte-bundler:
+        patterns: [vite, "@sveltejs/vite-plugin-svelte", "@sveltejs/kit"]

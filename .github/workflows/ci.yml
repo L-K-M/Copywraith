@@ -32,8 +32,10 @@ jobs:
       - name: Install dependencies (popup frontend)
         run: npm ci
 
-      - name: Type-check (svelte-check)
-        run: npm run check
+      - name: Type-check (TS7 and compiler API compatibility)
+        run: |
+          npm run check
+          npm run check:ts6
 
       - name: Test popup actions and sync status
         run: node --test scripts/tests/*.test.mjs
@@ -48,8 +50,10 @@ jobs:
         run: npm ci
         working-directory: server/ui
 
-      - name: Type-check server UI (svelte-check)
-        run: npm run check
+      - name: Type-check server UI (TS7 and compiler API compatibility)
+        run: |
+          npm run check
+          npm run check:ts6
         working-directory: server/ui
 
       - name: Test server UI
