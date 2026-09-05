@@ -68,7 +68,7 @@ Source: `src-tauri/src/clipboard.rs`
 - `native_clipboard.rs` owns the clipboard-rs 0.3 context, watcher and locks
 - Registers the capture callback before starting the watcher; stops/joins on exit
 - Reads typed image/file/flavor payloads; paste writes through the same adapter
-- Priority order: `Image > File > Html > Rtf > Text`
+- Priority order: `Image > File > Text/HTML/RTF bundle`
 
 Do not re-introduce frontend `startListening()` dependency unless intentionally redesigning.
 
@@ -197,7 +197,7 @@ Server defaults:
 ## Environment and dependency gotchas
 
 - Rust toolchain is pinned at the repo root via `rust-toolchain.toml` (`1.98.0`).
-- Do not downgrade the server Docker builder image below Rust 1.98; Cargo 1.83 fails on the current lockfile with `base64ct` due to missing `edition2024` support (`feature \`edition2024\` is required`).
+- Keep the server Docker builder aligned with `rust-toolchain.toml` (1.98.0), CI and release builds. Revalidate dependency MSRVs before changing this pin; edition2024 support alone is insufficient.
 - Server binds `127.0.0.1` by default; Docker deployments must set `COPYWRAITH_HOST=0.0.0.0` (set in compose + Dockerfile env) so published port `3742` is reachable.
 - Compose supports explicit image tagging via `COPYWRAITH_SERVER_IMAGE_REPO` + `COPYWRAITH_SERVER_IMAGE_TAG`; `scripts/redeploy-server-docker.sh` defaults tag to the server crate version to reduce stale-image confusion.
 - Do not expose the server publicly; it is intended for a local network or secure VPN and does not add rate limiting / brute-force protection.
