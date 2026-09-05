@@ -22,7 +22,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libkf5globalaccel-bin libdbus-1-dev dbus-x11 xvfb xauth xdotool dunst xterm xfonts-base
-      - name: Mock bus, native keys, restart and visible guidance
+      - name: Mock bus security, cleanup and held-key regressions
+        run: scripts/test-kde.sh
+      - name: Native keys, restart and visible guidance
         run: scripts/test-kde-runtime.sh
 
   plasma6:
@@ -38,5 +40,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Record runtime versions
         run: rpm -q kglobalacceld kf6-kglobalaccel
-      - name: Mock bus, native keys, restart and visible guidance
+      - name: Mock bus security, cleanup and held-key regressions
+        run: scripts/test-kde.sh
+      - name: Native keys, restart and visible guidance
         run: scripts/test-kde-runtime.sh
