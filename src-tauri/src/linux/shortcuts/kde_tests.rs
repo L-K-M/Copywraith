@@ -20,6 +20,28 @@ struct Mock {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+fn acquire_mock_name(connection: &Connection) -> Result<(), String> {
+    let ownership = connection
+        .request_name(SERVICE, false, false, true)
+        .map_err(|error| error.to_string())?;
+    if ownership != dbus::blocking::stdintf::org_freedesktop_dbus::RequestNameReply::PrimaryOwner {
+        return Err(format!("mock must solely own {SERVICE}: {ownership:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires isolated dbus-run-session"]
+fn mock_rejects_an_already_owned_service_name() {
+    let owner = Connection::new_session().unwrap();
+    acquire_mock_name(&owner).unwrap();
+    let contender = Connection::new_session().unwrap();
+    assert!(
+        acquire_mock_name(&contender).is_err(),
+        "mock must own the service, not queue"
+    );
+}
+
 impl Mock {
     fn start() -> Self {
         let faults = Arc::new(Mutex::new(Vec::<(String, String, Fault)>::new()));
@@ -34,9 +56,7 @@ impl Mock {
         let recorded = calls.clone();
         let thread = std::thread::spawn(move || {
             let connection = Connection::new_session().unwrap();
-            connection
-                .request_name(SERVICE, false, true, false)
-                .unwrap();
+            acquire_mock_name(&connection).unwrap();
             connection.start_receive(
                 MatchRule::new_method_call(),
                 Box::new(move |message, conn| {
@@ -297,26 +317,56 @@ fn held_kf5_press_dispatches_once_until_authenticated_release() {
             .unwrap()
             .append3(COMPONENT, action, -7_i64)
     };
+    // A distinct authenticated action marks delivery of every earlier relay signal.
+    let through_marker = |session: &mut Session, action| {
+        let marker = Activation::ALL
+            .into_iter()
+            .find(|candidate| *candidate != action)
+            .unwrap();
+        mock.signals.send(signal(RELEASED, marker.id())).unwrap();
+        mock.signals.send(signal(PRESSED, marker.id())).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut received = Vec::new();
+        loop {
+            received.extend(session.poll().unwrap());
+            if received.contains(&marker) {
+                mock.signals.send(signal(RELEASED, marker.id())).unwrap();
+                received.retain(|activation| *activation != marker);
+                return received;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "authenticated marker did not arrive"
+            );
+        }
+    };
     for action in Activation::ALL {
         for _ in 0..3 {
             mock.signals
                 .send(signal("globalShortcutPressed", action.id()))
                 .unwrap();
         }
-        let deadline = std::time::Instant::now() + Duration::from_millis(800);
-        let mut received = Vec::new();
-        while std::time::Instant::now() < deadline {
-            received.extend(session.poll().unwrap());
-        }
-        assert_eq!(received, [action], "held key must dispatch once");
+        assert_eq!(
+            through_marker(&mut session, action),
+            [action],
+            "held key must dispatch once"
+        );
         let attacker = Connection::new_session().unwrap();
         attacker
             .send(signal("globalShortcutReleased", action.id()))
             .unwrap();
+        // Flush the attack and wait for the bus to process it before the owner relay.
+        let (_bus_id,): (String,) = attacker
+            .with_proxy(BUS, BUS_PATH, TIMEOUT)
+            .method_call(BUS, "GetId", ())
+            .unwrap();
         mock.signals
             .send(signal("globalShortcutPressed", action.id()))
             .unwrap();
-        assert!(session.poll().unwrap().is_empty());
+        assert!(
+            through_marker(&mut session, action).is_empty(),
+            "forged release must not rearm a held key"
+        );
         mock.signals
             .send(signal("globalShortcutReleased", action.id()))
             .unwrap();
