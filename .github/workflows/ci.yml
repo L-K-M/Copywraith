@@ -35,10 +35,10 @@ jobs:
       - name: Type-check (svelte-check)
         run: npm run check
 
-      - name: Test popup row keyboard actions
-        run: node --test scripts/tests/entry-row.test.mjs
+      - name: Test popup actions and sync status
+        run: node --test scripts/tests/*.test.mjs
 
-      - name: Test Linux smoke harness
+      - name: Test storage durability and Linux smoke harness
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Build popup frontend

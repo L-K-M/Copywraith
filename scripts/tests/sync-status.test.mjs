@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 
 // Exercise the component handler with backend outcomes, without a Tauri runtime.
-const component = readFileSync(new URL('../src/lib/components/StatusBar.svelte', import.meta.url), 'utf8');
+const component = readFileSync(new URL('../../src/lib/components/StatusBar.svelte', import.meta.url), 'utf8');
 const handler = component.slice(component.indexOf('async function handleSyncNow()'), component.indexOf('</script>'));
 
 for (const state of ['unreachable', 'disabled', 'checking']) {
