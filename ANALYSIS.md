@@ -6,7 +6,7 @@ backlog — the single document to start from when picking up work.
 > **Currency warning.** `main` has moved since that rebuild: 0.3.1 plus the
 > Ubuntu/Linux paste, popup and release-gating work of PRs #104, #105, #106 and
 > #109, then #110 (dependencies), #114 (features), and #117 (coordinated
-> dependency migrations).
+> dependency migrations) and #118 (native KDE shortcuts).
 > Every finding below was written against `9ca8179`, so its file and line
 > references have drifted. **The disposition of every PR from the 2026-07-25
 > review is in the Outcome ledger at the bottom** — read it before acting on any
@@ -691,6 +691,27 @@ remain follow-ups. Reentrant callback lifecycle changes were declined: the
 private contract assigns lifecycle calls to the owning app thread. No public
 storage test layer, destructive ID backfill or compiler-peer override was added.
 
+### Integrated — #118 (native KDE shortcuts)
+
+The replacement for **#112** uses the existing Linux shortcut dispatcher,
+not #97's parallel startup path. Native actions preserve KDE's saved or disabled
+assignments, authenticate signal owners and recover after daemon replacement.
+Settings reports connection failures and offers command fallbacks without
+pretending app-managed accelerators configure KDE. Native paste guidance leaves
+the target focused.
+
+Isolated Plasma 5/6 CI exercises real keys, assignments, restart and notification
+focus. Mock-bus tests cover hostile signals, partial registration, repeated keys
+and cleanup failures. Worker panics report unavailable status and retry;
+spawn failure asks for restart. Shutdown wakes retries and bounds individual
+cleanup calls. This is not a universal
+one-second exit guarantee or physical Wayland-session validation.
+
+Declined speculative callback replacement, extra polling sleeps and notification
+threads: dispatch resolves current windows, polling already blocks, and paste
+notifications already run off the main thread. dbus-rs invokes its message filters
+in Rust, not across the claimed C callback boundary.
+
 ### Rejected
 
 | PR | Reason | Tracked in |
@@ -698,8 +719,8 @@ storage test layer, destructive ID backfill or compiler-peer override was added.
 | [#95](https://github.com/L-K-M/Copywraith/pull/95) Tombstones | An existing server database cannot start on the new schema (the index is created before the column migration), local and server ids are conflated, recopying a deleted entry is suppressed, and a POST in flight during a delete can be acknowledged after it. Protocol change across three clients — needs a design, not a patch. | **#113** |
 | [#97](https://github.com/L-K-M/Copywraith/pull/97) Native KDE shortcuts | Registration is incomplete: it calls `doRegister` only, which creates the action but never runs `setShortcutKeys`, so the advertised shortcuts are never initialised and stay excluded from enumeration. It also adds a startup path outside `main`'s existing shortcut-status model and does not filter D-Bus senders. | **#112** |
 
-**Neither of these shipped.** Do not describe tombstones or native KGlobalAccel
-registration as present in the product.
+**Neither original implementation shipped.** #118 supplies the independent KDE
+replacement. Delete propagation remains unshipped and tracked in **#113**.
 
 ---
 

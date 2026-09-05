@@ -9,6 +9,7 @@ Copywraith is a cross-platform Tauri app (Rust backend + Svelte frontend) with a
 | `.github/workflows/ci.yml` | Pull requests, pushes to `main`, and manual `workflow_dispatch` | Type-check & build the frontends; format, lint, and test the Rust workspace. |
 | `.github/workflows/release.yml` | Pushing a `v*.*.*` tag | Build desktop/Android/server artifacts and publish them in a GitHub Release. |
 | `.github/workflows/clipboard.yml` | Pull requests, pushes to `main`, and manual dispatch | Run native clipboard tests on Linux, macOS and Windows. |
+| `.github/workflows/kde.yml` | Pull requests, pushes to `main`, and manual dispatch | Run mock D-Bus and real Plasma 5/6 shortcut tests. |
 
 ## Continuous integration (`ci.yml`)
 
@@ -67,6 +68,15 @@ npm run tauri -- build --bundles deb,appimage
 ```
 
 On Linux you also need the Tauri system dependencies listed above before running the cargo commands.
+
+### KDE shortcut tests
+
+`kde.yml` uses Rust 1.98.0 on Ubuntu (Plasma 5) and Fedora (Plasma 6).
+Both jobs run `scripts/test-kde.sh` for ignored mock-bus tests and
+`scripts/test-kde-runtime.sh` for real key delivery, saved assignments,
+daemon restart and notification focus. Scripts isolate D-Bus, XDG configuration
+and Xvfb; they must not alter host shortcuts. This does not test native Wayland.
+Cleanup timeout tests bound individual calls, not the entire application's exit.
 
 ### GNOME keybinding test
 

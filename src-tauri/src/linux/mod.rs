@@ -9,6 +9,7 @@
 //! This module is only compiled on Linux and is kept entirely separate from the
 //! macOS paste path.
 
+mod notifications;
 mod popup;
 pub mod shortcuts;
 mod ydotool;
@@ -49,16 +50,19 @@ pub fn simulate_paste(app: tauri::AppHandle, target_app: Option<String>) {
 
 /// Tell the user the content is on the clipboard and they should paste manually.
 fn notify_manual_paste(app: &tauri::AppHandle) {
-    // Best-effort desktop notification via libnotify.
-    if which("notify-send").is_some() {
-        let _ = Command::new("notify-send")
-            .args([
-                "--app-name=Copywraith",
-                "--icon=copywraith",
-                "Copied to clipboard",
-                "Press Ctrl+V to paste. Install ydotool for automatic paste.",
-            ])
-            .spawn();
+    // The popup is already hidden. Deliver native guidance without focusing it.
+    if let Err(error) = notifications::manual_paste() {
+        log::warn!("Native paste notification failed: {error}");
+        if which("notify-send").is_some() {
+            let _ = Command::new("notify-send")
+                .args([
+                    "--app-name=Copywraith",
+                    "--icon=copywraith",
+                    "Copied to clipboard",
+                    "Press Ctrl+V to paste. Install ydotool for automatic paste.",
+                ])
+                .spawn();
+        }
     }
 
     // Also surface it in-app if the popup happens to be visible.

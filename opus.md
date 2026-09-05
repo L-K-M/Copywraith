@@ -7,8 +7,8 @@ Reviewer: Claude Opus 5. Date: 2026-07-25. Reviewed tree: `main` @ `9ca8179`
 >
 > This document describes `9ca8179` and is kept as the evidence trail for that
 > review. It is deliberately not updated as the code changes. `main` has since
-> taken the 0.3.x Ubuntu/Linux work and integration PRs #110, #114 and #117,
-> so file:line citations have drifted and some findings are already resolved.
+> taken the 0.3.x Ubuntu/Linux work and integration PRs #110, #114, #117 and
+> #118, so file:line citations have drifted and some findings are resolved.
 >
 > **For the status of anything in this document, read the Outcome ledger in
 > `ANALYSIS.md`** — it records what each PR of this review became, what was
