@@ -14,6 +14,8 @@ const ROOT: &str = "/kglobalaccel";
 const INTERFACE: &str = "org.kde.KGlobalAccel";
 const COMPONENT_INTERFACE: &str = "org.kde.kglobalaccel.Component";
 const COMPONENT: &str = "copywraith";
+// Cleanup attempts every action, including Drop retries, without long exit stalls.
+const CLEANUP_TIMEOUT: Duration = Duration::from_millis(100);
 const TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const PRESSED: &str = "globalShortcutPressed";
@@ -125,7 +127,7 @@ impl Session {
         // Attempt every action even if one owner or method fails. Keep failures
         // for Drop to retry; successful cleanup must not run twice.
         self.registered.retain(|(owner, action)| {
-            let proxy = self.connection.with_proxy(owner, ROOT, TIMEOUT);
+            let proxy = self.connection.with_proxy(owner, ROOT, CLEANUP_TIMEOUT);
             match proxy.method_call::<(), _, _, _>(INTERFACE, "setInactive", (action.identity(),)) {
                 Ok(()) => false,
                 Err(error) => {
