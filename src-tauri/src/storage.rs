@@ -304,7 +304,14 @@ impl LocalStorage {
                 "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
                 params![now.to_rfc3339(), id],
             )?;
-            if replication::recover_blocked_capture(tx, &id)? {
+            let recovered = replication::recover_blocked_capture(tx, &id)?
+                || match authority {
+                    CaptureAuthority::Current => false,
+                    CaptureAuthority::Registration(registration) => {
+                        ingress::renew_unprepared_capture(tx, &id, content_hash, registration)?
+                    }
+                };
+            if recovered {
                 record_capture_in(tx, &id, content_hash, authority)?;
             }
             return Ok(None); // Duplicate, moved to top

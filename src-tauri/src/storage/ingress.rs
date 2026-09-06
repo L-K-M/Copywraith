@@ -110,6 +110,42 @@ pub(super) fn initialize(conn: &mut Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(super) fn renew_unprepared_capture(
+    db: &Connection,
+    id: &str,
+    hash: &str,
+    registration: &str,
+) -> anyhow::Result<bool> {
+    // Scheduling a block must not decide whether genuinely newer capture authority is retained.
+    // An existing operation or canonical binding still owns its incarnation, even after an ACK.
+    let prior: Option<(i64, i64)> = db.query_row("SELECT e.sync_incarnation, r.epoch FROM entries e
+        JOIN ingress_capture_authority a ON a.local_id = e.id AND a.incarnation = e.sync_incarnation
+        JOIN ingress_registrations r ON r.registration_id = a.registration_id
+        WHERE e.id = ?1
+        AND NOT EXISTS(SELECT 1 FROM sync_outbox WHERE local_id = e.id)
+        AND NOT EXISTS(SELECT 1 FROM sync_operation_provenance WHERE local_id = e.id AND incarnation = e.sync_incarnation)
+        AND NOT EXISTS(SELECT 1 FROM sync_links WHERE local_id = e.id AND local_incarnation = e.sync_incarnation)",
+        [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    let Some((incarnation, old_epoch)) = prior else {
+        return Ok(false);
+    };
+    let heads = db.prepare("SELECT t.server_id, t.remote_id FROM ingress_tombstones t
+        JOIN sync_links l ON l.server_id = t.server_id AND l.remote_id = t.remote_id
+        JOIN ingress_registrations r ON r.registration_id = ?1
+        WHERE t.content_hash = ?2 AND t.first_known > ?3 AND t.first_known <= r.epoch AND l.deleted = 1
+        AND NOT EXISTS(SELECT 1 FROM sync_links newer WHERE newer.server_id = l.server_id AND newer.content_hash = l.content_hash AND newer.sequence > l.sequence)")?
+        .query_map(params![registration, hash, old_epoch], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+    for (server, generation) in heads {
+        if can_restore(db, &server, id, incarnation, &generation)? != Some(false) {
+            continue;
+        }
+        // Retain old receipts/authority; record the new registration on a fresh incarnation only.
+        db.execute("UPDATE entries SET sync_incarnation = sync_incarnation + 1, sync_revision = sync_revision + 1, sync_origin = 'capture', synced = 0 WHERE id = ?1", [id])?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub(super) fn associate_capture(
     db: &Connection,
     id: &str,

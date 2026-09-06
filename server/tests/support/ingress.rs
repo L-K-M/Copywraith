@@ -750,3 +750,250 @@ async fn ingress_recopy_cannot_bind_old_generation_before_cancel_ack() {
         receipt
     );
 }
+
+async fn recapture_before_blocking(kind: ObservationKind) {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let create = server.create_request("recapture before blocking").await;
+    let generation = server.apply(&create).await.generation.unwrap();
+    let old = registration(&device);
+    device
+        .storage
+        .accept_capture(&envelope(
+            &old,
+            "old baseline",
+            1,
+            ObservationKind::Snapshot,
+        ))
+        .unwrap();
+    let original = envelope(&old, "recapture before blocking", 2, ObservationKind::Event);
+    let first = device.storage.accept_capture(&original).unwrap();
+    server.delete_generation(&generation.id).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    // An unknown tombstone survives without binding/deleting this never-prepared local row.
+    assert_eq!(device.entries()[0].id, accepted(&first).0);
+    let db = rusqlite::Connection::open(device._dir.path().join("copywraith.db")).unwrap();
+    let counts: (i64, i64, i64) = db.query_row("SELECT (SELECT COUNT(*) FROM sync_outbox), (SELECT COUNT(*) FROM sync_blocked), (SELECT COUNT(*) FROM sync_operation_provenance)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(counts, (0, 0, 0));
+    let fresh = registration(&device);
+    assert!(fresh.knowledge_clock > old.knowledge_clock);
+    device
+        .storage
+        .accept_capture(&envelope(
+            &fresh,
+            "fresh baseline",
+            3,
+            ObservationKind::Snapshot,
+        ))
+        .unwrap();
+    let renewed = envelope(&fresh, "recapture before blocking", 4, kind);
+    let receipt = device.storage.accept_capture(&renewed).unwrap();
+    let device = device.restart();
+    device.exchange().await;
+    assert_eq!(
+        server.entries().await.total,
+        1,
+        "fresh restoration intent must not depend on prior scheduling of sync_blocked"
+    );
+    assert_ne!(server.entries().await.entries[0].entry.id, generation.id);
+    assert_eq!(accepted(&receipt).0, accepted(&first).0);
+    assert!(accepted(&receipt).1 > accepted(&first).1);
+    assert_eq!(device.storage.accept_capture(&original).unwrap(), first);
+    assert_eq!(device.storage.accept_capture(&renewed).unwrap(), receipt);
+    assert_eq!(device.entries()[0].id, accepted(&receipt).0);
+    let retained: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM ingress_capture_authority WHERE local_id = ?1",
+            [accepted(&first).0],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        retained, 2,
+        "renewal must retain the old incarnation's authority"
+    );
+}
+
+#[tokio::test]
+async fn ingress_explicit_recapture_before_blocking_uses_fresh_authority() {
+    recapture_before_blocking(ObservationKind::Explicit).await;
+}
+
+#[tokio::test]
+async fn ingress_eligible_event_before_blocking_uses_fresh_authority() {
+    recapture_before_blocking(ObservationKind::Event).await;
+}
+
+#[tokio::test]
+async fn ingress_new_registration_cannot_replace_an_active_frozen_request() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let create = server.create_request("active capture request").await;
+    let generation = server.apply(&create).await.generation.unwrap();
+    let original = envelope(
+        &registration(&device),
+        "active capture request",
+        1,
+        ObservationKind::Explicit,
+    );
+    let first = device.storage.accept_capture(&original).unwrap();
+    let frozen = device
+        .freeze_create(&server, "active capture request")
+        .await;
+    let body = serde_json::to_vec(&frozen).unwrap();
+    server.delete_generation(&generation.id).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let new_intent = envelope(
+        &registration(&device),
+        "active capture request",
+        2,
+        ObservationKind::Explicit,
+    );
+    let receipt = device.storage.accept_capture(&new_intent).unwrap();
+    assert_eq!(receipt.outcome, first.outcome);
+    let pending = device
+        .storage
+        .pending_mutations(&create.server_id)
+        .unwrap()
+        .remove(0);
+    assert_eq!(serde_json::to_vec(&pending.request).unwrap(), body);
+    assert_eq!(device.storage.accept_capture(&original).unwrap(), first);
+    device.exchange().await;
+    assert_eq!(
+        server.entries().await.total,
+        0,
+        "an immutable old create must settle before recovery"
+    );
+    let recovery = envelope(
+        &registration(&device),
+        "active capture request",
+        3,
+        ObservationKind::Explicit,
+    );
+    let recovered = device.storage.accept_capture(&recovery).unwrap();
+    assert_eq!(accepted(&recovered).0, accepted(&first).0);
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 1);
+}
+
+#[tokio::test]
+async fn ingress_recapture_cannot_upgrade_its_stale_registration() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let create = server.create_request("stale repeated intent").await;
+    let generation = server.apply(&create).await.generation.unwrap();
+    let old = registration(&device);
+    let first = device
+        .storage
+        .accept_capture(&envelope(
+            &old,
+            "stale repeated intent",
+            1,
+            ObservationKind::Explicit,
+        ))
+        .unwrap();
+    server.delete_generation(&generation.id).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let stale = device
+        .storage
+        .accept_capture(&envelope(
+            &old,
+            "stale repeated intent",
+            2,
+            ObservationKind::Explicit,
+        ))
+        .unwrap();
+    assert_eq!(stale.outcome, first.outcome);
+    device.exchange().await;
+    assert_eq!(server.entries().await.total, 0);
+}
+
+#[tokio::test]
+async fn ingress_retained_conflict_receipt_keeps_its_unbound_incarnation() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let create = server.create_request("retained receipt guard").await;
+    let first_generation = server.apply(&create).await.generation.unwrap();
+    let original = envelope(
+        &registration(&device),
+        "retained receipt guard",
+        1,
+        ObservationKind::Explicit,
+    );
+    let first = device.storage.accept_capture(&original).unwrap();
+    let frozen = device
+        .freeze_create(&server, "retained receipt guard")
+        .await;
+    server.delete_generation(&first_generation.id).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let mut competing = server.create_request("retained receipt guard").await;
+    if let SyncAction::Create { payload, .. } = &mut competing.action {
+        payload.starred = Some(true);
+    }
+    let canonical = server.apply(&competing).await.generation.unwrap();
+    let conflict = server.apply(&frozen).await;
+    assert_eq!(conflict.outcome, SyncOutcome::Conflict);
+    let pending = device
+        .storage
+        .pending_mutations(&create.server_id)
+        .unwrap()
+        .remove(0);
+    device
+        .storage
+        .acknowledge_mutation(&pending, &conflict)
+        .unwrap();
+    let db = rusqlite::Connection::open(device._dir.path().join("copywraith.db")).unwrap();
+    let counts: (i64, i64, i64) = db.query_row("SELECT (SELECT COUNT(*) FROM sync_outbox), (SELECT COUNT(*) FROM sync_operation_provenance), (SELECT COUNT(*) FROM sync_links WHERE local_id IS NOT NULL)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(
+        counts,
+        (0, 1, 0),
+        "an acknowledged operation can precede its canonical binding"
+    );
+    let fresh = envelope(
+        &registration(&device),
+        "retained receipt guard",
+        2,
+        ObservationKind::Explicit,
+    );
+    assert_eq!(
+        device.storage.accept_capture(&fresh).unwrap().outcome,
+        first.outcome
+    );
+    device.exchange().await;
+    let entries = server.entries().await;
+    assert_eq!(entries.total, 1);
+    assert_eq!(entries.entries[0].entry.id, canonical.id);
+    assert!(
+        entries.entries[0].entry.starred,
+        "new capture defaults must not displace pending canonical reconciliation"
+    );
+    assert_eq!(device.entries()[0].id, accepted(&first).0);
+    assert!(device.entries()[0].starred);
+}
+
+#[tokio::test]
+async fn ingress_unrelated_knowledge_does_not_replace_capture_authority() {
+    let server = Server::start().await;
+    let device = Device::new(&server.url);
+    let old = registration(&device);
+    let first = device
+        .storage
+        .accept_capture(&envelope(
+            &old,
+            "unchanged authority",
+            1,
+            ObservationKind::Explicit,
+        ))
+        .unwrap();
+    let unrelated = server.create_request("unrelated deleted content").await;
+    let generation = server.apply(&unrelated).await.generation.unwrap();
+    server.delete_generation(&generation.id).await;
+    device.sync.pull_new_entries(&device.storage).await.unwrap();
+    let fresh = registration(&device);
+    assert!(fresh.knowledge_clock > old.knowledge_clock);
+    let repeated = envelope(&fresh, "unchanged authority", 2, ObservationKind::Explicit);
+    assert_eq!(
+        device.storage.accept_capture(&repeated).unwrap().outcome,
+        first.outcome
+    );
+}
