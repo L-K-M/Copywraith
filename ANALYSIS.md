@@ -41,8 +41,8 @@ three places:
    decision. **SYNC-A3 is the one that matters**: a timed-out `sync_now` discards
    all pull-watermark progress, so a large history never converges at all.
 2. **Sync regression coverage.** The unmerged #113 foundation now exercises
-   actual client/server sources over HTTP. Error isolation, conflict ordering,
-   filesystem durability and Android coverage remain incomplete.
+   actual client/server sources over HTTP. Durable blob publication and Android
+   runtime coverage remain incomplete.
 3. **Delete propagation.** Remote identity/chronology (#94) shipped in #114.
    Delete propagation did not: **#95 was rejected** — see the Outcome ledger —
    so there are still no tombstones anywhere in the product, and a local delete
@@ -51,28 +51,45 @@ three places:
 
 ### #113 development checkpoint — not release-ready
 
-Local `fix/delete-sync` includes merged #117/#118. The v2 foundation preserves
-local keys and FULL, with immutable operations/generations, retained receipts
-and tombstones, durable cursors/outbox, capture-time provenance and revision-aware
-acknowledgments. Missing generation deletes complete; missing cancellation
-receipts cannot discard replay fences. No metadata expiry is supported.
+`fix/delete-sync` includes merged #117/#118 and #138. The v2 foundation
+preserves local keys and SQLite FULL, immutable operations/generations,
+capture-time provenance, and retained receipts, tombstones and cancellation
+fences. Missing generation deletes complete; missing cancellation receipts
+cannot discard fences. No metadata expiry is supported.
 
-Validation at `0949594`: 46 harness tests (22 HTTP regressions), core/server
-tests, full workspace check/strict Clippy, 21 frontend tests, both checker paths
-and popup build pass. This does not establish release readiness.
+`5983e89` and `a9a7e21` isolate failed requests/candidates durably and reconcile
+consumed live conflicts without overwriting later explicit stars. Manual retry
+preserves frozen requests and unresolved deletions. The 61-test protocol harness
+includes the original 46 cases and a real timeout after server commit. Recovery
+UI remains unimplemented.
 
-Remaining source-audit findings need regression tests before fixes:
-- Isolate rejected operations and missing blobs without losing frozen intent or
-  predecessor fences; expose durable failure/retry status.
-- Reconcile live create conflicts after canonical feed consumption, without
-  turning rejected capture state into a new star write.
-- Publish/replace blobs durably before DB acknowledgment; repair valid duplicate
-  payloads and corrupt caches. FULL alone does not synchronize blob files.
-- Resolve Android foreground-service versus restricted legacy-upload behavior,
-  then validate one durable producer. No Android runtime evidence exists yet.
+Android FULL background sync with a persistent notification is selected:
+- `3832a44` shares one private storage/sync core. Host registry tests and Android
+  cross-compilation pass; shared Arcs alone prove no lifecycle behavior.
+- `6e42750`, `d850a23` and `010a4df` remove privileged HTTP/credentials, isolate
+  versioned clipboard IPC, and prepare both the process leader and each sender
+  as shell. Eight JVM tests pass. Parcel and identity tests model published
+  sources, not real Shizuku execution. The isolated device probe is unrun.
+- Debug probe `235f6fb` builds app/instrumentation APKs and exercises core leases
+  and canceled HTTP work on the host. Its first CI run, `34037600448`, failed
+  before compilation because `sdkmanager` was unavailable. SDK setup, exit/lease
+  arbitration, fresh UI assertions and cleanup ownership require corrections.
+  Activity destruction, headless HTTP and functional reopening remain unproven.
 
-Transport/restart, pagination, server-identity and blob fault coverage, recovery
-UI and protocol/compatibility documentation remain. #113 stays open and unmerged.
+Remaining release gates:
+- Transactional ingress receipts, frozen registration authority, conservative
+  observation quarantine, and explicit capture-again recovery.
+- A genuine monitoring foreground service, separate quota-respecting jobs for
+  full protocol exchanges, and truthful permission/notification lifecycle.
+  Neither a notification nor Shizuku removes Android execution restrictions.
+- Portable durable blob publication/repair before DB acknowledgment. The isolated
+  blob branch fails Windows startup and is not integrated; SQLite FULL does not
+  synchronize external files.
+- Combined validation, recovery UI, remaining protocol/fault schedules, and
+  API/schema/legacy compatibility documentation.
+
+Only a debug CI branch is published; its shared base includes protocol work.
+#113 has no PR and remains open and unmerged.
 
 ### Verification baseline
 
