@@ -17,6 +17,7 @@ class ProbeJobService : JobService() {
         } catch (_: IllegalStateException) {
             return false
         }
+        ProbeJobEvidence.started(parameters, token)
         if (token == RuntimeProbe.NO_LEASE) return false
         val current = Run(parameters, token)
         run = current
@@ -37,6 +38,7 @@ class ProbeJobService : JobService() {
     }
 
     override fun onStopJob(parameters: JobParameters): Boolean {
+        ProbeJobEvidence.stopped(parameters)
         val current = run ?: return true
         if (current.parameters !== parameters) return true
         run = null

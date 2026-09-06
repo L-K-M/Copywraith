@@ -70,10 +70,29 @@ Fixture settings are applied only after the first Activity is destroyed, so UI
 startup cannot account for the HTTP proof. Host tests cancel the same job runtime
 after server commit but before reply and require byte-identical frozen replay.
 
-## Remaining gate
+## Results and follow-up
 
-Compilation does not prove Android execution. Same-process viability remains
-blocked until the APK test passes on a device. The optional workflow runs only
+G1 passed on API36 at `e1884f2` in CI `34041898579` (26.437 seconds).
+That bounded same-process lifecycle result remains valid. It did not stop a
+running job through Android's framework callbacks.
+
+The follow-up test holds an operation response after server commit, delivers a
+second job to the busy native reservation, and requires an OS-owned retry after
+admission settles. It then uses API36's `cmd jobscheduler stop` with
+`STOP_REASON_USER`, whose backoff prevents an immediate automatic restart.
+`ANDROID_JOB_STOP` instrumentation markers separately report busy admission,
+framework stop delivery/reference identity, and native teardown. The test checks
+lease release within three seconds, before the client's 30-second HTTP timeout,
+with one unsynced entry and no response or pull. It forces the retained second
+job without rescheduling it, checks byte-identical requests and cached receipts,
+and retains every functional reopening assertion.
+
+This is a test-only red candidate: the reference-identity stop check and
+`NO_LEASE -> false` handling remain unchanged until behavioral red execution.
+The host cancellation fixture validates the HTTP controls and replay assertions;
+it cannot prove Android stop handling or scheduler retry retention.
+
+The optional workflow runs only
 by manual dispatch or a parent push to `probe/android-runtime-*`; it creates no
 PR and performs no merge. Emulator setup follows the
 [runner's documented setup](https://github.com/ReactiveCircus/android-emulator-runner).
@@ -81,7 +100,7 @@ PR and performs no merge. Emulator setup follows the
 The short-lived FGS is test scaffolding. Production still needs job scheduling,
 quota/retry policy, missed-hint recovery, service policy, notification handling,
 and the separately owned ingress/capture work. The fixture tests text protocol
-exchange, not the complete deletion/star/blob matrix. OS job-stop callbacks,
+exchange, not the complete deletion/star/blob matrix. The new OS stop/retry test,
 timeout, sticky restart, force-stop, Doze, permission changes, and root/shell
 Shizuku/SELinux behavior require additional device evidence. No alternate process
 layout is selected by this prototype.

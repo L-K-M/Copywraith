@@ -268,6 +268,7 @@ extern "system" fn Java_ch_lkmc_copywraith_RuntimeProbe_snapshot(
             "completed": owner().completed(),
             "windows": APP.get().map(|app| app.webview_windows().len()).unwrap_or_default(),
             "failed": FAILED.load(Ordering::SeqCst),
+            "unsynced": CORE.get().map(|core| core.probe_unsynced_count()).transpose()?.unwrap_or_default(),
             "downloaded": CORE.get().map(|core| core.probe_contains("android-headless-download")).transpose()?.unwrap_or_default(),
         });
         Ok(env.new_string(snapshot.to_string())?.into_raw())

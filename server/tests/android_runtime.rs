@@ -39,9 +39,37 @@ struct Evidence {
     operations: AtomicUsize,
     feeds: AtomicUsize,
     uploaded: AtomicBool,
-    hold_reply: AtomicBool,
+    reply_gate: ReplyGate,
+    held_replies: AtomicUsize,
+    returned_replies: AtomicUsize,
     committed: tokio::sync::Notify,
     requests: Mutex<Vec<Vec<u8>>>,
+    receipts: Mutex<Vec<Vec<u8>>>,
+}
+
+struct ReplyGate(tokio::sync::watch::Sender<bool>);
+
+impl Default for ReplyGate {
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(false).0)
+    }
+}
+
+impl Evidence {
+    fn snapshot(&self) -> serde_json::Value {
+        let requests = self.requests.lock().unwrap();
+        let receipts = self.receipts.lock().unwrap();
+        serde_json::json!({
+            "operations": self.operations.load(Ordering::SeqCst),
+            "feeds": self.feeds.load(Ordering::SeqCst),
+            "uploaded": self.uploaded.load(Ordering::SeqCst),
+            "heldReplies": self.held_replies.load(Ordering::SeqCst),
+            "returnedReplies": self.returned_replies.load(Ordering::SeqCst),
+            "requests": requests.len(),
+            "identicalRequests": requests.len() == 2 && requests[0] == requests[1],
+            "identicalReceipts": receipts.len() == 2 && receipts[0] == receipts[1],
+        })
+    }
 }
 
 struct Fixture {
@@ -66,6 +94,8 @@ impl Fixture {
         let evidence = Arc::new(Evidence::default());
         let observed = evidence.clone();
         let report = evidence.clone();
+        let hold = evidence.clone();
+        let release = evidence.clone();
         let app = axum::Router::new()
             .nest("/api", api::router())
             .with_state(state)
@@ -73,13 +103,22 @@ impl Fixture {
                 "/probe/evidence",
                 axum::routing::get(move || {
                     let report = report.clone();
-                    async move {
-                        axum::Json(serde_json::json!({
-                            "operations": report.operations.load(Ordering::SeqCst),
-                            "feeds": report.feeds.load(Ordering::SeqCst),
-                            "uploaded": report.uploaded.load(Ordering::SeqCst),
-                        }))
-                    }
+                    async move { axum::Json(report.snapshot()) }
+                }),
+            )
+            // These controls exist only in the loopback test fixture.
+            .route(
+                "/probe/hold",
+                axum::routing::post(move || {
+                    hold.reply_gate.0.send_replace(true);
+                    async { axum::http::StatusCode::NO_CONTENT }
+                }),
+            )
+            .route(
+                "/probe/release",
+                axum::routing::post(move || {
+                    release.reply_gate.0.send_replace(false);
+                    async { axum::http::StatusCode::NO_CONTENT }
                 }),
             )
             .layer(axum::middleware::from_fn(
@@ -104,15 +143,21 @@ impl Fixture {
                             ))
                             .await;
                         assert!(response.status().is_success());
+                        let (parts, body) = response.into_parts();
+                        let receipt = axum::body::to_bytes(body, MAX_REQUEST_BYTES).await.unwrap();
+                        observed.receipts.lock().unwrap().push(receipt.to_vec());
                         observed.operations.fetch_add(1, Ordering::SeqCst);
                         if upload {
                             observed.uploaded.store(true, Ordering::SeqCst);
                         }
                         observed.committed.notify_one();
-                        if observed.hold_reply.load(Ordering::SeqCst) {
-                            std::future::pending::<()>().await;
+                        let mut gate = observed.reply_gate.0.subscribe();
+                        if *gate.borrow_and_update() {
+                            observed.held_replies.fetch_add(1, Ordering::SeqCst);
+                            gate.wait_for(|held| !held).await.unwrap();
                         }
-                        response
+                        observed.returned_replies.fetch_add(1, Ordering::SeqCst);
+                        axum::response::Response::from_parts(parts, axum::body::Body::from(receipt))
                     }
                 },
             ));
@@ -144,7 +189,7 @@ async fn cancelled_job_replays_identical_frozen_request_after_server_commit() {
     let directory = tempfile::tempdir().unwrap();
     let core = CoreRegistry::default().open(directory.path()).unwrap();
     core.prepare_probe(&fixture.url).unwrap();
-    fixture.evidence.hold_reply.store(true, Ordering::SeqCst);
+    control(&fixture, "hold").await;
     let runtime = Arc::new(MobileRuntime::default());
     let worker = core.clone();
     let id = runtime
@@ -167,6 +212,9 @@ async fn cancelled_job_replays_identical_frozen_request_after_server_commit() {
     let pending = core.storage().pending_mutations(&info.server_id).unwrap();
     assert_eq!(pending.len(), 1);
     let frozen = serde_json::to_vec(&pending[0].request).unwrap();
+    assert_eq!(core.probe_unsynced_count().unwrap(), 1);
+    assert_eq!(fixture.evidence.snapshot()["heldReplies"], 1);
+    assert_eq!(fixture.evidence.snapshot()["returnedReplies"], 0);
     runtime.stop_job(id);
     tokio::time::timeout(TEST_TIMEOUT, async {
         while runtime.job_id().is_some() {
@@ -178,7 +226,7 @@ async fn cancelled_job_replays_identical_frozen_request_after_server_commit() {
     assert!(!runtime.prevents_exit());
     let retained = core.storage().pending_mutations(&info.server_id).unwrap();
     assert_eq!(serde_json::to_vec(&retained[0].request).unwrap(), frozen);
-    fixture.evidence.hold_reply.store(false, Ordering::SeqCst);
+    control(&fixture, "release").await;
     let worker = core.clone();
     runtime
         .start_job(&tokio::runtime::Handle::current(), async move {
@@ -200,6 +248,18 @@ async fn cancelled_job_replays_identical_frozen_request_after_server_commit() {
     let requests = fixture.evidence.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0], requests[1]);
+    drop(requests);
+    assert_eq!(fixture.evidence.snapshot()["identicalReceipts"], true);
+    assert_eq!(core.probe_unsynced_count().unwrap(), 0);
+}
+
+async fn control(fixture: &Fixture, action: &str) {
+    let response = reqwest::Client::new()
+        .post(format!("{}/probe/{action}", fixture.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -219,6 +279,9 @@ async fn serve_android_probe() {
     seed.exchange().await.unwrap();
     fixture.evidence.operations.store(0, Ordering::SeqCst);
     fixture.evidence.feeds.store(0, Ordering::SeqCst);
+    fixture.evidence.returned_replies.store(0, Ordering::SeqCst);
+    fixture.evidence.requests.lock().unwrap().clear();
+    fixture.evidence.receipts.lock().unwrap().clear();
     println!("ANDROID_PROBE_FIXTURE_READY");
     std::future::pending::<()>().await;
 }

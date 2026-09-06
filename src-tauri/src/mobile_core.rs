@@ -160,4 +160,8 @@ impl MobileCore {
         self.storage
             .has_content_hash(&flavors.payload_hash(ContentType::Text, None))
     }
+
+    pub(crate) fn probe_unsynced_count(&self) -> anyhow::Result<usize> {
+        Ok(self.storage.get_unsynced_entries()?.len())
+    }
 }
