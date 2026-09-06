@@ -64,9 +64,11 @@ includes the original 46 cases and a real timeout after server commit. Recovery
 UI remains unimplemented.
 
 `b68acf4` adds transactional capture receipts, frozen knowledge epochs and
-conservative observation quarantine. All 84 protocol/admission harness tests
-pass, retaining the earlier 61. Android adapters and independent source review
-remain; blob-bearing captures stay quarantined pending safe publication.
+conservative observation quarantine. Review exposed fresh authority being lost
+before upload scheduling marked an older duplicate blocked. `75ed89e` fixes that
+ordering without changing local keys or frozen operations. All 90 harness tests
+pass, retaining the earlier 84. Android adapters remain; blob-bearing captures
+stay quarantined pending safe publication.
 
 Android FULL background sync with a persistent notification is selected:
 - `3832a44` shares one private storage/sync core. Host registry tests and Android
@@ -81,9 +83,13 @@ Android FULL background sync with a persistent notification is selected:
   Tauri startup survive the sequence. Host tests cover exit/lease arbitration,
   canceled frozen requests and UI/runner negative assertions. This validates
   same-process viability on that emulator, not production monitoring, Shizuku,
-  process-death recovery, or every Android version. OS-driven job cancellation
-  needs native coverage: the probe's parameter identity check does not survive
-  Binder parceling.
+  process-death recovery, or every Android version.
+- Job-stop CI `34050426309` reproduced both lost busy retries and rejected
+  separately parceled stops. Correction `4eb1c3d` passes API 36 CI `34052223672`:
+  retry retained, exact native token canceled, lease released, quiescence and
+  byte-identical request/receipt replay, with functional reopening retained.
+  G2 monitoring is deleted. This default-namespace, nonreplacement probe does
+  not establish broader scheduler or production lifecycle behavior.
 
 Remaining release gates:
 - Review and wire transactional ingress, listener registration/rotation,
