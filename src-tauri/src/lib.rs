@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "android", feature = "android-runtime-probe"))]
+mod android_probe;
 #[cfg(desktop)]
 mod clipboard;
 mod commands;
@@ -5,6 +7,10 @@ mod commands;
 mod linux;
 #[cfg(target_os = "android")]
 mod mobile_core;
+#[cfg(all(target_os = "android", feature = "android-runtime-probe"))]
+mod mobile_runtime;
+#[cfg(all(feature = "android-runtime-probe", not(debug_assertions)))]
+compile_error!("android-runtime-probe requires a debug build");
 mod models;
 #[cfg(desktop)]
 mod native_clipboard;
@@ -15,8 +21,11 @@ mod sync;
 mod window_activity;
 
 use std::sync::Arc;
+#[cfg(not(all(target_os = "android", feature = "android-runtime-probe")))]
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+#[cfg(not(all(target_os = "android", feature = "android-runtime-probe")))]
+use tauri::Emitter;
+use tauri::Manager;
 
 pub struct AppState {
     pub storage: Arc<storage::LocalStorage>,
@@ -54,6 +63,9 @@ pub fn run() {
             return;
         }
     }
+
+    #[cfg(all(target_os = "android", feature = "android-runtime-probe"))]
+    android_probe::tauri_starting();
 
     let mut builder = tauri::Builder::default();
 
@@ -95,6 +107,8 @@ pub fn run() {
             #[cfg(target_os = "android")]
             let (storage, sync_client) = {
                 let core = mobile_core::shared_core(&data_dir)?;
+                #[cfg(feature = "android-runtime-probe")]
+                android_probe::observe_ui_core(&core);
                 (core.storage(), core.sync_client())
             };
 
@@ -147,7 +161,11 @@ pub fn run() {
             }
 
             // Start periodic two-way sync loop (push unsynced + pull remote)
+            #[cfg(not(all(target_os = "android", feature = "android-runtime-probe")))]
             start_sync_loop(app_handle.clone(), storage.clone(), sync_client.clone());
+
+            #[cfg(all(target_os = "android", feature = "android-runtime-probe"))]
+            android_probe::attach(app_handle.clone());
 
             // Linux/KDE: system tray, single-instance listener, and a command
             // passed on first launch (e.g. `copywraith --toggle` bound to a KDE
@@ -191,32 +209,48 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::get_entries,
-            commands::get_entry_text,
-            commands::get_entry_image,
-            commands::toggle_star,
-            commands::delete_entry,
-            commands::paste_entry,
-            commands::paste_entry_plaintext,
-            commands::get_settings,
-            commands::update_settings,
-            commands::reregister_shortcuts,
-            commands::get_shortcut_status,
-            commands::capture_clipboard,
-            commands::has_pending_shares,
-            commands::import_pending_shares,
-            commands::sync_now,
-            commands::reset_sync_cursor,
-            commands::shizuku_clipboard_status,
-            commands::set_shizuku_clipboard_enabled,
-            commands::get_platform,
-            commands::hide_popup,
-            window_activity::is_window_active,
-        ])
+        .invoke_handler(|invoke| {
+            // The debug fixture admits network work only through its JobService.
+            #[cfg(all(target_os = "android", feature = "android-runtime-probe"))]
+            if matches!(
+                invoke.message.command(),
+                "sync_now" | "capture_clipboard" | "import_pending_shares"
+            ) {
+                invoke
+                    .resolver
+                    .reject("Automatic refresh is disabled in the runtime probe");
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                commands::get_entries,
+                commands::get_entry_text,
+                commands::get_entry_image,
+                commands::toggle_star,
+                commands::delete_entry,
+                commands::paste_entry,
+                commands::paste_entry_plaintext,
+                commands::get_settings,
+                commands::update_settings,
+                commands::reregister_shortcuts,
+                commands::get_shortcut_status,
+                commands::capture_clipboard,
+                commands::has_pending_shares,
+                commands::import_pending_shares,
+                commands::sync_now,
+                commands::reset_sync_cursor,
+                commands::shizuku_clipboard_status,
+                commands::set_shizuku_clipboard_enabled,
+                commands::get_platform,
+                commands::hide_popup,
+                window_activity::is_window_active,
+            ];
+            handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building copywraith")
         .run(|app, event| {
+            #[cfg(all(target_os = "android", feature = "android-runtime-probe"))]
+            android_probe::event(app, &event);
             // Release the callback's AppHandle and join before app state teardown.
             #[cfg(desktop)]
             if matches!(event, tauri::RunEvent::Exit) {
@@ -870,6 +904,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(not(all(target_os = "android", feature = "android-runtime-probe")))]
 fn start_sync_loop(
     app: tauri::AppHandle,
     storage: Arc<storage::LocalStorage>,

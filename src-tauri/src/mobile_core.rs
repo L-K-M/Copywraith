@@ -117,3 +117,47 @@ mod tests {
         assert!(registry.open(other.path()).is_err());
     }
 }
+
+#[cfg(any(test, feature = "android-runtime-probe"))]
+impl MobileCore {
+    pub(crate) fn prepare_probe(&self, endpoint: &str) -> anyhow::Result<()> {
+        // Only a fresh debug installation may receive fixture settings.
+        let mut settings = self.storage.get_settings();
+        anyhow::ensure!(
+            settings.server_url_primary.is_empty(),
+            "Probe requires cleared app data"
+        );
+        settings.server_url_primary = endpoint.into();
+        settings.api_key = "fixture-password".into();
+        self.storage.save_settings(&settings)?;
+        self.capture_probe("android-headless-upload")
+    }
+
+    pub(crate) fn capture_probe(&self, text: &str) -> anyhow::Result<()> {
+        use copywraith_core::models::{ClipboardFlavors, ContentType};
+        let flavors = ClipboardFlavors {
+            text_plain: Some(text.into()),
+            ..Default::default()
+        };
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        self.storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)?;
+        Ok(())
+    }
+
+    pub(crate) async fn exchange(&self) -> anyhow::Result<()> {
+        self.sync_client.sync_unsynced_entries(&self.storage).await;
+        self.sync_client.pull_new_entries(&self.storage).await?;
+        Ok(())
+    }
+
+    pub(crate) fn probe_contains(&self, text: &str) -> anyhow::Result<bool> {
+        use copywraith_core::models::{ClipboardFlavors, ContentType};
+        let flavors = ClipboardFlavors {
+            text_plain: Some(text.into()),
+            ..Default::default()
+        };
+        self.storage
+            .has_content_hash(&flavors.payload_hash(ContentType::Text, None))
+    }
+}

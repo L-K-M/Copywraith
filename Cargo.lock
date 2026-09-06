@@ -792,6 +792,7 @@ dependencies = [
  "env_logger",
  "gtk",
  "image",
+ "jni",
  "log",
  "reqwest 0.12.28",
  "rusqlite",

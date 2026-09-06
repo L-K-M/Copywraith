@@ -10,6 +10,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 default = []
 cargo-clippy = []
+android-runtime-probe = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -51,3 +52,4 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2"
 # Android: official clipboard manager (read/write text)
 [target.'cfg(target_os = "android")'.dependencies]
 tauri-plugin-clipboard-manager = "2"
+jni = "0.21"
