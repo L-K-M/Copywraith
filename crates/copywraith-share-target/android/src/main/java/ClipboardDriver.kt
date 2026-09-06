@@ -124,6 +124,7 @@ internal class ClipboardDriver(
 
       // Binder attributes transactions to the process leader. A worker-thread
       // UID change cannot satisfy ClipboardService's package ownership check.
+      @Suppress("DEPRECATION") // Deprecated for unprivileged apps, not this root user service.
       Os.setuid(Process.SHELL_UID)
       check(Os.getuid() == Process.SHELL_UID) { "Clipboard shell identity was not established." }
       processIdentityPrepared = true

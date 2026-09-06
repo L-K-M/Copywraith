@@ -49,6 +49,11 @@ Three old marshalling regressions failed before extraction. Seven Robolectric
 tests now cover layouts, rich payload decoding, ambiguous registration and failed
 cleanup. Layouts are modeled, not executed on every Android release.
 
+`scripts/test-android-clipboard.sh <debug-apk>` exercises actual root/shell Binder
+reads and callbacks in a disposable emulator. It requires an explicit
+`COPYWRAITH_TEST_ANDROID_SERIAL` and refuses non-emulator targets. The debug-only
+probe compiles, but has not run here.
+
 Root/shell startup, SELinux, package attribution, actual callbacks and secondary
 users still require isolated device tests. JVM tests establish none of those OS
 guarantees. Foreground-service lifecycle and durable capture identity are separate
