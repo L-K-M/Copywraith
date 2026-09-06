@@ -12,6 +12,29 @@ use crate::models::Settings;
 #[path = "storage/replication.rs"]
 mod replication;
 
+#[path = "storage/ingress.rs"]
+pub(crate) mod ingress;
+
+#[derive(Clone, Copy)]
+enum CaptureAuthority<'a> {
+    Current,
+    Registration(&'a str),
+}
+
+fn record_capture_in(
+    db: &Connection,
+    id: &str,
+    hash: &str,
+    authority: CaptureAuthority<'_>,
+) -> anyhow::Result<()> {
+    match authority {
+        CaptureAuthority::Current => replication::record_capture(db, id, hash),
+        CaptureAuthority::Registration(registration) => {
+            ingress::associate_capture(db, id, hash, registration)
+        }
+    }
+}
+
 const ENTRY_SELECT_COLUMNS: &str =
     "id, content_type, text_content, text_plain, text_html, text_rtf, blob_hash, blob_size, source_app, starred, sensitive, created_at, updated_at";
 
@@ -219,6 +242,7 @@ impl LocalStorage {
 
         backfill_flavor_columns(&conn)?;
         replication::initialize(&mut conn)?;
+        ingress::initialize(&mut conn)?;
 
         Ok(Self {
             db: Mutex::new(conn),
@@ -236,7 +260,31 @@ impl LocalStorage {
     ) -> anyhow::Result<Option<ClipboardEntry>> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
+        let result = self.insert_entry_in(
+            &tx,
+            content_type,
+            flavors,
+            blob_data,
+            content_hash,
+            source_app,
+            CaptureAuthority::Current,
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
 
+    // Ingress owns the transaction and supplies its frozen authority; ordinary capture uses current knowledge.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_entry_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        content_type: ContentType,
+        flavors: &ClipboardFlavors,
+        blob_data: Option<&[u8]>,
+        content_hash: &str,
+        source_app: Option<&str>,
+        authority: CaptureAuthority<'_>,
+    ) -> anyhow::Result<Option<ClipboardEntry>> {
         let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
         let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
         let search_text = resolved_flavors.best_plain_text();
@@ -256,8 +304,9 @@ impl LocalStorage {
                 "UPDATE entries SET updated_at = ?1 WHERE id = ?2",
                 params![now.to_rfc3339(), id],
             )?;
-            replication::recover_blocked_capture(&tx, &id, content_hash)?;
-            tx.commit()?;
+            if replication::recover_blocked_capture(tx, &id)? {
+                record_capture_in(tx, &id, content_hash, authority)?;
+            }
             return Ok(None); // Duplicate, moved to top
         }
 
@@ -291,8 +340,7 @@ impl LocalStorage {
                 now.to_rfc3339(),
             ],
         )?;
-        replication::record_capture(&tx, &id, content_hash)?;
-        tx.commit()?;
+        record_capture_in(tx, &id, content_hash, authority)?;
 
         let entry_flavors = flavors.clone().merge_legacy(content_type, None);
         let entry_text_content = entry_flavors.to_legacy_text_content(content_type);

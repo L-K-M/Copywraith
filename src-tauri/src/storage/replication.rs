@@ -167,16 +167,15 @@ pub(super) fn record_capture(db: &Connection, id: &str, hash: &str) -> anyhow::R
     Ok(())
 }
 
-pub(super) fn recover_blocked_capture(db: &Connection, id: &str, hash: &str) -> anyhow::Result<()> {
+pub(super) fn recover_blocked_capture(db: &Connection, id: &str) -> anyhow::Result<bool> {
     let blocked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sync_blocked WHERE local_id = ?1) AND NOT EXISTS(SELECT 1 FROM sync_outbox WHERE local_id = ?1)", [id], |r| r.get(0))?;
     if !blocked {
-        return Ok(());
+        return Ok(false);
     }
     // An explicit re-copy changes intent without changing the user's primary key.
     db.execute("UPDATE entries SET sync_incarnation = sync_incarnation + 1, sync_revision = sync_revision + 1, sync_origin = 'capture', synced = 0 WHERE id = ?1", [id])?;
-    record_capture(db, id, hash)?;
     db.execute("DELETE FROM sync_blocked WHERE local_id = ?1", [id])?;
-    Ok(())
+    Ok(true)
 }
 
 fn unknown_predecessor_pending(db: &Connection, server: &str) -> anyhow::Result<bool> {
@@ -400,6 +399,19 @@ impl LocalStorage {
         Ok(())
     }
 
+    pub(crate) fn sync_server_for_profile(&self, profile: &str) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT server_id FROM sync_profiles WHERE profile = ?1",
+                [profile],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub(crate) fn sync_cursor(&self, server: &str) -> anyhow::Result<u64> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
@@ -465,6 +477,15 @@ impl LocalStorage {
         generation_id: &str,
     ) -> anyhow::Result<bool> {
         let db = self.db.lock().unwrap();
+        if let Some(allowed) = ingress::can_restore(
+            &db,
+            server,
+            &candidate.entry.id,
+            candidate.incarnation,
+            generation_id,
+        )? {
+            return Ok(allowed);
+        }
         // Authority is either an observed tombstone or this capture's own predecessor.
         Ok(db.query_row("SELECT
             EXISTS(SELECT 1 FROM sync_capture_heads WHERE local_id = ?1 AND incarnation = ?2 AND server_id = ?3 AND remote_id = ?4 AND deleted = 1)

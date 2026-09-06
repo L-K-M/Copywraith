@@ -1577,3 +1577,6 @@ async fn liveness_upgrade_preserves_post_freeze_star_on_recovered_capture() {
     assert!(!device.entries()[0].starred);
     assert!(!server.entries().await.entries[0].entry.starred);
 }
+
+#[path = "support/ingress.rs"]
+mod ingress_tests;
