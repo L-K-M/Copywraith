@@ -70,11 +70,15 @@ Android FULL background sync with a persistent notification is selected:
   versioned clipboard IPC, and prepare both the process leader and each sender
   as shell. Eight JVM tests pass. Parcel and identity tests model published
   sources, not real Shizuku execution. The isolated device probe is unrun.
-- Debug probe `235f6fb` builds app/instrumentation APKs and exercises core leases
-  and canceled HTTP work on the host. Its first CI run, `34037600448`, failed
-  before compilation because `sdkmanager` was unavailable. SDK setup, exit/lease
-  arbitration, fresh UI assertions and cleanup ownership require corrections.
-  Activity destruction, headless HTTP and functional reopening remain unproven.
+- Debug probe `e1884f2` passes API 36 emulator CI `34041898579`: cold headless
+  initialization, first UI, final Activity destruction, headless HTTP text
+  push/pull, and functional configuration/rapid reopening. One shared core and
+  Tauri startup survive the sequence. Host tests cover exit/lease arbitration,
+  canceled frozen requests and UI/runner negative assertions. This validates
+  same-process viability on that emulator, not production monitoring, Shizuku,
+  process-death recovery, or every Android version. OS-driven job cancellation
+  needs native coverage: the probe's parameter identity check does not survive
+  Binder parceling.
 
 Remaining release gates:
 - Transactional ingress receipts, frozen registration authority, conservative
