@@ -83,12 +83,20 @@ admission settles. It then uses API36's `cmd jobscheduler stop` with
 `ANDROID_JOB_STOP` instrumentation markers separately report busy admission,
 framework stop delivery/reference identity, and native teardown. The test checks
 lease release within three seconds, before the client's 30-second HTTP timeout,
-with one unsynced entry and no response or pull. It forces the retained second
-job without rescheduling it, checks byte-identical requests and cached receipts,
-and retains every functional reopening assertion.
+with one unsynced entry and no returned mutation response. Protocol push pulls
+before freezing candidates, so download state and feed counters are compared
+against their pre-stop baseline. After teardown, a quiet interval must produce
+no additional work. The test forces the retained second job without rescheduling
+it, requires its exact replacement token to complete, checks byte-identical
+requests and cached receipts, and retains every functional reopening assertion.
 
-This is a test-only red candidate: the reference-identity stop check and
-`NO_LEASE -> false` handling remain unchanged until behavioral red execution.
+API36 CI `34050426309` at `5d5b9ab` reproduced both bugs: busy admission lost the
+retry, and a separately parceled stop left native work and its lease running.
+The handler now matches the framework job ID and cancels the stored native token.
+Busy admission returns ongoing and requests `jobFinished(parameters, true)`;
+JobServiceEngine dispatches that completion after acknowledging start, leaving
+retry timing to OS backoff. The probe uses only the default scheduler namespace.
+The corrected native test awaits parent CI; no native green is claimed yet.
 The host cancellation fixture validates the HTTP controls and replay assertions;
 it cannot prove Android stop handling or scheduler retry retention.
 
@@ -114,7 +122,8 @@ Use an isolated checkout: the generated debug overlay requires the probe feature
 until that generated Android project is removed and regenerated for normal builds.
 
 ExitRequested commits its decision under the acquisition lock. Once exit commits,
-service and job acquisition return no lease; Kotlin stops/declines that work.
+service and job acquisition return no lease; Kotlin stops the service or returns
+the rejected job to scheduler backoff.
 Inspection alone does not close admission. The service-held instrumentation
 scenario does not exercise this final-exit race; deterministic Rust tests do.
 

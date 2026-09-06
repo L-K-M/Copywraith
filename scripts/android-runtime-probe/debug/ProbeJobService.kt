@@ -18,7 +18,12 @@ class ProbeJobService : JobService() {
             return false
         }
         ProbeJobEvidence.started(parameters, token)
-        if (token == RuntimeProbe.NO_LEASE) return false
+        if (token == RuntimeProbe.NO_LEASE) {
+            // The engine dispatches finish after acknowledging start; let OS backoff own retry.
+            jobFinished(parameters, true)
+            return true
+        }
+
         val current = Run(parameters, token)
         run = current
         poll(current)
@@ -40,7 +45,8 @@ class ProbeJobService : JobService() {
     override fun onStopJob(parameters: JobParameters): Boolean {
         ProbeJobEvidence.stopped(parameters)
         val current = run ?: return true
-        if (current.parameters !== parameters) return true
+        // Framework callbacks are serialized; stop carries a fresh parcel for this job ID.
+        if (current.parameters.jobId != parameters.jobId) return true
         run = null
         handler.removeCallbacksAndMessages(null)
         RuntimeProbe.stopJob(current.token)

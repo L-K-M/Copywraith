@@ -54,10 +54,11 @@ class RuntimeLifecycleTest {
         schedule(scheduler, JOB_ID)
         forceRun(JOB_ID)
         await { evidence().getInt("heldReplies") == 1 }
-        stopAndRetry(scheduler)
+        val retryToken = stopAndRetry(scheduler)
         await {
             val snapshot = state()
-            snapshot.getLong("completed") > 0L && snapshot.getBoolean("downloaded") && snapshot.getInt("leases") == 1
+            snapshot.getLong("completed") == retryToken && snapshot.isNull("job") &&
+                snapshot.getBoolean("downloaded") && snapshot.getInt("leases") == 1
         }
         assertEquals(0, state().getInt("windows"))
         assertEquals(1, state().getInt("leases"))
@@ -97,7 +98,7 @@ class RuntimeLifecycleTest {
         // Keep the final Activity alive until instrumentation returns; Tao may exit otherwise.
     }
 
-    private fun stopAndRetry(scheduler: JobScheduler) {
+    private fun stopAndRetry(scheduler: JobScheduler): Long {
         val token = state().getLong("job")
         assertEquals(2, state().getInt("leases"))
         assertEquals(1, state().getInt("unsynced"))
@@ -120,6 +121,11 @@ class RuntimeLifecycleTest {
         assertEquals(token, state().getLong("job"))
         assertEquals(2, state().getInt("leases"))
 
+        // push_protocol deliberately pulls before freezing candidates; preserve that baseline.
+        val beforeStop = state()
+        val beforeStopFixture = evidence()
+        progress("before-stop", JSONObject().put("native", beforeStop).put("fixture", beforeStopFixture))
+
         // API36 publishes `stop`; the observer proves delivery before any cancellation claim.
         // USER applies retry backoff here; PREEMPT may immediately restart the same job.
         shell("cmd jobscheduler stop -u 0 -s ${JobParameters.STOP_REASON_USER} ${context.packageName} $JOB_ID")
@@ -138,15 +144,37 @@ class RuntimeLifecycleTest {
         if (!retained) failures.add("Busy admission consumed the scheduler retry")
         if (!tornDown) failures.add("Delivered stop did not cancel native work or release its lease")
         assertTrue(failures.joinToString("; "), failures.isEmpty())
-        assertEquals(1, state().getInt("unsynced"))
-        assertFalse(state().getBoolean("downloaded"))
-        assertEquals(0, evidence().getInt("feeds"))
-        assertEquals(0, evidence().getInt("returnedReplies"))
+        assertQuiescent(token, beforeStop, beforeStopFixture)
+        // Observe beyond several service completion polls while the response stays held.
+        SystemClock.sleep(QUIET_OBSERVATION_MS)
+        assertQuiescent(token, beforeStop, beforeStopFixture)
+        progress("quiescent", JSONObject().put("native", state()).put("fixture", evidence()))
 
         // Retry the already retained wakeup, without schedule() repairing a lost job.
         scheduler.cancel(JOB_ID)
         control("release")
         forceRun(BUSY_JOB_ID)
+        await { ProbeJobEvidence.snapshot(BUSY_JOB_ID).getLong("token") != RuntimeProbe.NO_LEASE }
+        val retryToken = ProbeJobEvidence.snapshot(BUSY_JOB_ID).getLong("token")
+        assertNotEquals(token, retryToken)
+        return retryToken
+    }
+
+    private fun assertQuiescent(token: Long, beforeStop: JSONObject, beforeStopFixture: JSONObject) {
+        val snapshot = state()
+        assertTrue(snapshot.isNull("job"))
+        assertEquals(token, snapshot.getLong("completed"))
+        assertEquals(1, snapshot.getInt("leases"))
+        assertEquals(1, snapshot.getInt("unsynced"))
+        assertEquals(0, snapshot.getInt("windows"))
+        assertFalse(snapshot.getBoolean("failed"))
+        assertEquals(beforeStop.getBoolean("downloaded"), snapshot.getBoolean("downloaded"))
+
+        val fixture = evidence()
+        assertEquals(0, fixture.getInt("returnedReplies"))
+        for (counter in listOf("feeds", "operations", "requests", "heldReplies")) {
+            assertEquals("Work continued after stop: $counter", beforeStopFixture.getInt(counter), fixture.getInt(counter))
+        }
     }
 
     private fun schedule(scheduler: JobScheduler, id: Int) {
@@ -247,6 +275,7 @@ class RuntimeLifecycleTest {
         // Finish well before the real client's 30-second HTTP timeout.
         const val STOP_TEARDOWN_TIMEOUT_MS = 3_000L
         const val FIXTURE_TIMEOUT_MS = 2_000
+        const val QUIET_OBSERVATION_MS = 500L
         const val PROBE_PROGRESS_STATUS = 2
     }
 }
