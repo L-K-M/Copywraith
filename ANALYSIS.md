@@ -63,6 +63,11 @@ preserves frozen requests and unresolved deletions. The 61-test protocol harness
 includes the original 46 cases and a real timeout after server commit. Recovery
 UI remains unimplemented.
 
+`b68acf4` adds transactional capture receipts, frozen knowledge epochs and
+conservative observation quarantine. All 84 protocol/admission harness tests
+pass, retaining the earlier 61. Android adapters and independent source review
+remain; blob-bearing captures stay quarantined pending safe publication.
+
 Android FULL background sync with a persistent notification is selected:
 - `3832a44` shares one private storage/sync core. Host registry tests and Android
   cross-compilation pass; shared Arcs alone prove no lifecycle behavior.
@@ -81,8 +86,8 @@ Android FULL background sync with a persistent notification is selected:
   Binder parceling.
 
 Remaining release gates:
-- Transactional ingress receipts, frozen registration authority, conservative
-  observation quarantine, and explicit capture-again recovery.
+- Review and wire transactional ingress, listener registration/rotation,
+  conservative observation handling, and explicit capture-again recovery.
 - A genuine monitoring foreground service, separate quota-respecting jobs for
   full protocol exchanges, and truthful permission/notification lifecycle.
   Neither a notification nor Shizuku removes Android execution restrictions.
