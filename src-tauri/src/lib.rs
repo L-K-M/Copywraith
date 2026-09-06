@@ -174,17 +174,7 @@ pub fn run() {
             #[cfg(target_os = "android")]
             if storage.get_settings().shizuku_clipboard_enabled {
                 use copywraith_share_target::ShareTargetExt;
-                let settings = storage.get_settings();
-                let config = copywraith_share_target::ShizukuClipboardConfig {
-                    server_url_primary: settings.server_url_primary,
-                    server_url_fallback: settings.server_url_fallback,
-                    api_key: settings.api_key,
-                };
-
-                if let Err(e) = app_handle
-                    .share_target()
-                    .start_shizuku_clipboard_listener(config)
-                {
+                if let Err(e) = app_handle.share_target().start_shizuku_clipboard_listener() {
                     log::debug!("Shizuku clipboard listener not started: {}", e);
                 }
             }

@@ -57,20 +57,16 @@ impl<R: Runtime> ShareTarget<R> {
         }
     }
 
-    pub fn start_shizuku_clipboard_listener(
-        &self,
-        config: ShizukuClipboardConfig,
-    ) -> tauri::Result<ShizukuClipboardStatus> {
+    pub fn start_shizuku_clipboard_listener(&self) -> tauri::Result<ShizukuClipboardStatus> {
         #[cfg(target_os = "android")]
         {
             self.handle
-                .run_mobile_plugin("startShizukuClipboardListener", config)
+                .run_mobile_plugin("startShizukuClipboardListener", ())
                 .map_err(Into::into)
         }
 
         #[cfg(not(target_os = "android"))]
         {
-            let _ = config;
             Ok(ShizukuClipboardStatus::unavailable(
                 "Shizuku is only available on Android.",
             ))
@@ -105,13 +101,6 @@ impl<R: Runtime> ShareTarget<R> {
 #[derive(Debug, serde::Deserialize)]
 pub struct PendingShareStatus {
     pub staged: bool,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ShizukuClipboardConfig {
-    pub server_url_primary: String,
-    pub server_url_fallback: String,
-    pub api_key: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -22,12 +22,6 @@ import java.io.FileOutputStream
 import java.util.UUID
 import rikka.shizuku.Shizuku
 
-class ShizukuStartArgs {
-  var server_url_primary: String? = null
-  var server_url_fallback: String? = null
-  var api_key: String? = null
-}
-
 @TauriPlugin
 class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   private var shizukuService: IShizukuClipboardService? = null
@@ -37,7 +31,6 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   private var shizukuBackendUid: Int? = null
   private var lastShizukuText: String? = null
   private var lastShizukuTextAt: Long = 0L
-  private var pendingShizukuConfig = ShizukuStartArgs()
 
   private val shizukuCallback = object : IShizukuClipboardCallback.Stub() {
     override fun onClipboardText(text: String?) {
@@ -69,14 +62,8 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
         return
       }
       try {
-        boundService.start(
-          shizukuCallback,
-          activity.packageName,
-          pendingShizukuConfig.server_url_primary.orEmpty(),
-          pendingShizukuConfig.server_url_fallback.orEmpty(),
-          pendingShizukuConfig.api_key.orEmpty()
-        )
-        updateShizukuStatus("listening", "Shizuku clipboard listener is running.")
+        // Only the observer can confirm registration, not a successful bind.
+        boundService.start(shizukuCallback)
       } catch (e: Exception) {
         updateShizukuStatus("error", "Failed to start Shizuku listener: ${e.message ?: e.javaClass.simpleName}")
       }
@@ -137,11 +124,6 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun startShizukuClipboardListener(invoke: Invoke) {
-    pendingShizukuConfig = try {
-      invoke.parseArgs(ShizukuStartArgs::class.java)
-    } catch (_: Exception) {
-      ShizukuStartArgs()
-    }
     shizukuRequested = true
     val started = startShizukuListenerIfReady(requestPermission = true)
     val result = shizukuStatusObject()
@@ -165,7 +147,7 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun readShizukuClipboard(invoke: Invoke) {
     val text = try {
-      shizukuService?.readCurrentText(activity.packageName).orEmpty()
+      shizukuService?.readCurrentText().orEmpty()
     } catch (e: Exception) {
       updateShizukuStatus("error", "Failed to read Shizuku clipboard: ${e.message ?: e.javaClass.simpleName}")
       ""
@@ -199,11 +181,8 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
       }
       shizukuBackendUid = Shizuku.getUid()
       if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-        if (shizukuRequested && shizukuService != null) {
-          updateShizukuStatus("listening", "Shizuku clipboard listener is running.")
-        } else {
-          updateShizukuStatus("available", "Shizuku permission granted; listener is disabled.")
-        }
+        if (shizukuRequested && shizukuService != null) return
+        updateShizukuStatus("available", "Shizuku permission granted; listener is disabled.")
       } else {
         updateShizukuStatus("permission_required", "Grant Shizuku permission to enable the listener.")
       }
@@ -236,10 +215,7 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
         updateShizukuStatus("unsupported", "Shizuku user services require Shizuku v10 or newer.")
         return false
       }
-      if (shizukuService != null) {
-        updateShizukuStatus("listening", "Shizuku clipboard listener is already running.")
-        return true
-      }
+      if (shizukuService != null) return shizukuState == "listening"
 
       updateShizukuStatus("starting", "Starting Shizuku clipboard listener.")
       Shizuku.bindUserService(shizukuUserServiceArgs(), shizukuConnection)
@@ -435,6 +411,7 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   private companion object {
     const val MAX_SHARED_FILE_BYTES = 64L * 1024L * 1024L
     const val SHIZUKU_PERMISSION_REQUEST_CODE = 3742
-    const val SHIZUKU_USER_SERVICE_VERSION = 1
+    // Retire the old daemon, which independently uploaded legacy requests.
+    const val SHIZUKU_USER_SERVICE_VERSION = 2
   }
 }

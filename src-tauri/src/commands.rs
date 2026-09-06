@@ -888,15 +888,8 @@ pub async fn set_shizuku_clipboard_enabled(
     #[cfg(target_os = "android")]
     {
         use copywraith_share_target::ShareTargetExt;
-        let settings = state.storage.get_settings();
-        let config = copywraith_share_target::ShizukuClipboardConfig {
-            server_url_primary: settings.server_url_primary,
-            server_url_fallback: settings.server_url_fallback,
-            api_key: settings.api_key,
-        };
-
         let status = if enabled {
-            app.share_target().start_shizuku_clipboard_listener(config)
+            app.share_target().start_shizuku_clipboard_listener()
         } else {
             app.share_target().stop_shizuku_clipboard_listener()
         }
