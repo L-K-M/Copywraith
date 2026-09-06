@@ -32,22 +32,25 @@ ownership, including for text. The dedicated service initializes its process
 leader as shell before publishing its Binder. This changes no Shizuku daemon or
 host credentials. It is not a claim that every pre-existing thread loses root.
 
-Changing a worker's UID is insufficient: the Android Binder driver obtains the
-sender UID from the process leader. Startup outside that leader fails closed.
+Older Binder kernels use the process leader's UID; newer kernels use the sending
+thread's effective UID. Initialize the leader, then prepare every IPC sender,
+including pre-existing Binder workers. Startup outside that leader fails closed.
 The calling app's UID selects the Android user; API 24–28 cannot select another
 user through this interface. Virtual-device clipboard selection is not implemented.
 
 Primary sources:
 - [ClipboardService ownership and access checks](https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/services/core/java/com/android/server/clipboard/ClipboardService.java).
-- [Binder sender identity](https://android.googlesource.com/kernel/common/+/refs/heads/android14-6.1/drivers/android/binder.c).
+- Binder sender identity: [Android 14/6.1](https://android.googlesource.com/kernel/common/+/refs/heads/android14-6.1/drivers/android/binder.c) uses `task_euid(proc->tsk)`;
+  [Android 16/6.12](https://android.googlesource.com/kernel/common/+/refs/heads/android16-6.12/drivers/android/binder.c) uses `current_euid()`.
 - [Shizuku main-thread construction, then Binder handoff](https://github.com/RikkaApps/Shizuku/blob/master/starter/src/main/java/moe/shizuku/starter/ServiceStarter.java).
 - [Shizuku service construction](https://github.com/RikkaApps/Shizuku-API/blob/master/server-shared/src/main/java/rikka/shizuku/server/UserService.java).
 
 ## Evidence limits
 
-Three old marshalling regressions failed before extraction. Seven Robolectric
-tests now cover layouts, rich payload decoding, ambiguous registration and failed
-cleanup. Layouts are modeled, not executed on every Android release.
+Three old marshalling regressions failed before extraction. Eight Robolectric
+tests cover layouts, rich payload decoding, ambiguous registration, failed cleanup
+and per-call sender preparation. Preparing only once fails the sender-context
+mutation test. These model contracts, not OS credential changes or every release.
 
 `scripts/test-android-clipboard.sh <debug-apk>` exercises actual root/shell Binder
 reads and callbacks in a disposable emulator. It requires an explicit

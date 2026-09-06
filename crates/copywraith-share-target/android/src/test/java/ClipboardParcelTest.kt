@@ -90,7 +90,7 @@ class ClipboardParcelTest {
         }
         assertEquals("Unexpected arguments for API $api call $code", 0, data.dataAvail())
       }
-      val driver = ClipboardDriver(remote, api, TEST_USER)
+      val driver = ClipboardDriver(remote, api, TEST_USER) { }
       driver.readPrimaryClip()
       driver.startObserving { }
       driver.close()
@@ -153,14 +153,30 @@ class ClipboardParcelTest {
   }
 
   @Test
+  fun senderContextIsEstablishedForEveryTransaction() {
+    var prepared = false
+    var calls = 0
+    val remote = receiver { _, _, _ ->
+      assertEquals("Caller context must be refreshed before IPC", true, prepared)
+      prepared = false
+      calls++
+    }
+    val driver = ClipboardDriver(remote, Build.VERSION.SDK_INT, TEST_USER) { prepared = true }
+    driver.readPrimaryClip()
+    driver.startObserving { }
+    driver.close()
+    assertEquals(3, calls)
+  }
+
+  @Test
   fun unverifiedAndroidVersionsDoNotGuessATransaction() {
     val remote = receiver { _, _, _ -> fail("Unverified transaction") }
     assertThrows(UnsupportedOperationException::class.java) {
-      ClipboardDriver(remote, Build.VERSION_CODES.BAKLAVA + 1, TEST_USER)
+      ClipboardDriver(remote, Build.VERSION_CODES.BAKLAVA + 1, TEST_USER) { }
     }
   }
 
-  private fun driver(remote: IBinder) = ClipboardDriver(remote, Build.VERSION.SDK_INT, TEST_USER)
+  private fun driver(remote: IBinder) = ClipboardDriver(remote, Build.VERSION.SDK_INT, TEST_USER) { }
 
   // Model the AIDL receiver, independent of the driver's private protocol table.
   private fun receiver(check: (Int, Parcel, Parcel) -> Unit): IBinder = object : Binder() {

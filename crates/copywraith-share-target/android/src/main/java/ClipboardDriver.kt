@@ -13,7 +13,8 @@ import android.system.Os
 internal class ClipboardDriver(
   private val clipboard: IBinder,
   apiLevel: Int,
-  private val userId: Int
+  private val userId: Int,
+  private val prepareSender: () -> Unit
 ) : AutoCloseable {
   private enum class Call { Read, Observe, Remove }
 
@@ -86,6 +87,7 @@ internal class ClipboardDriver(
   }
 
   private fun <T> transact(call: Call, receiver: IBinder? = null, decode: (Parcel) -> T): T {
+    prepareSender()
     val data = Parcel.obtain()
     val reply = Parcel.obtain()
     try {
@@ -115,6 +117,7 @@ internal class ClipboardDriver(
     fun preparePrivilegedProcess() {
       if (processIdentityPrepared) return
       if (Os.getuid() == Process.SHELL_UID) {
+        prepareSendingThread()
         processIdentityPrepared = true
         return
       }
@@ -122,12 +125,21 @@ internal class ClipboardDriver(
         "Clipboard identity must be initialized by the privileged process leader."
       }
 
-      // Binder attributes transactions to the process leader. A worker-thread
-      // UID change cannot satisfy ClipboardService's package ownership check.
-      @Suppress("DEPRECATION") // Deprecated for unprivileged apps, not this root user service.
-      Os.setuid(Process.SHELL_UID)
-      check(Os.getuid() == Process.SHELL_UID) { "Clipboard shell identity was not established." }
+      // Older Binder kernels attribute transactions to the process leader.
+      prepareSendingThread()
       processIdentityPrepared = true
+    }
+
+    private fun prepareSendingThread() {
+      // Newer kernels use the sending thread; pre-existing Binder workers may
+      // still have root credentials after the process leader changed identity.
+      if (Os.getuid() == Process.ROOT_UID) {
+        @Suppress("DEPRECATION") // This runs in a privileged user service, not an ordinary app.
+        Os.setuid(Process.SHELL_UID)
+      }
+      check(Os.getuid() == Process.SHELL_UID && Os.geteuid() == Process.SHELL_UID) {
+        "Clipboard shell identity was not established."
+      }
     }
 
     fun connect(ownerUid: Int): ClipboardDriver {
@@ -144,7 +156,7 @@ internal class ClipboardDriver(
       val binder = manager.getDeclaredMethod("getService", String::class.java)
         .invoke(null, "clipboard") as? IBinder
         ?: throw IllegalStateException("Android clipboard service is unavailable.")
-      return ClipboardDriver(binder, Build.VERSION.SDK_INT, userId)
+      return ClipboardDriver(binder, Build.VERSION.SDK_INT, userId, ::prepareSendingThread)
     }
   }
 }
