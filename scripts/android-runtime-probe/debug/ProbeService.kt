@@ -11,11 +11,15 @@ import java.util.concurrent.Executors
 
 class ProbeService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
-    private var lease = 0L
+    private var lease = RuntimeProbe.NO_LEASE
 
     override fun onCreate() {
         super.onCreate()
         lease = RuntimeProbe.acquireService()
+        if (lease == RuntimeProbe.NO_LEASE) {
+            stopSelf()
+            return
+        }
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(NotificationChannel(CHANNEL, "Runtime test", NotificationManager.IMPORTANCE_LOW))
@@ -23,7 +27,13 @@ class ProbeService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL) else Notification.Builder(this)
         startForeground(NOTIFICATION_ID, builder.setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("Copywraith runtime test").build())
-        executor.execute { RuntimeProbe.initialize(applicationInfo.dataDir) }
+        executor.execute {
+            try {
+                RuntimeProbe.initialize(applicationInfo.dataDir)
+            } catch (_: IllegalStateException) {
+                stopSelf()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_NOT_STICKY
@@ -32,7 +42,9 @@ class ProbeService : Service() {
     override fun onDestroy() {
         // Drain initialization before releasing the service's exit protection.
         val endingLease = lease
-        executor.execute { RuntimeProbe.releaseService(endingLease) }
+        if (endingLease != RuntimeProbe.NO_LEASE) {
+            executor.execute { RuntimeProbe.releaseService(endingLease) }
+        }
         executor.shutdown()
         super.onDestroy()
     }

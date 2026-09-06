@@ -28,6 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: x86_64-linux-android
+      - uses: android-actions/setup-android@v4
       - name: Install build dependencies on the disposable runner
         run: |
           sudo apt-get update
@@ -35,6 +36,8 @@ jobs:
           sdkmanager 'platforms;android-36' 'ndk;28.2.13676358'
           echo "NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
           npm ci
+      - name: Test probe assertions and runner safety
+        run: node --test scripts/android-runtime-probe/tests/*.test.mjs
       - name: Test leases and protocol cancellation
         run: cargo test --locked -p copywraith-server --test mobile_core --test android_runtime
       - name: Build app, instrumentation, and plugin tests
@@ -48,7 +51,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: node scripts/android-runtime-probe/run.mjs
+          script: ANDROID_SERIAL=emulator-5554 node scripts/android-runtime-probe/run.mjs
       - uses: actions/upload-artifact@v6
         if: always()
         with:

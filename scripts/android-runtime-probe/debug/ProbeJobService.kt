@@ -12,8 +12,12 @@ class ProbeJobService : JobService() {
     private data class Run(val parameters: JobParameters, val token: Long)
 
     override fun onStartJob(parameters: JobParameters): Boolean {
-        val token = RuntimeProbe.startJob(applicationInfo.dataDir)
-        if (token == 0L) return false
+        val token = try {
+            RuntimeProbe.startJob(applicationInfo.dataDir)
+        } catch (_: IllegalStateException) {
+            return false
+        }
+        if (token == RuntimeProbe.NO_LEASE) return false
         val current = Run(parameters, token)
         run = current
         poll(current)

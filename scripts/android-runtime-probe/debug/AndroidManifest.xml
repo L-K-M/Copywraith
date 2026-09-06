@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application android:name=".ProbeApplication">
-        <service android:name=".ProbeService" android:exported="true" android:foregroundServiceType="dataSync" />
+        <service android:name=".ProbeService" android:exported="true" android:permission="android.permission.DUMP" android:foregroundServiceType="dataSync" />
         <service android:name=".ProbeJobService" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 </manifest>

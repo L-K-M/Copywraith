@@ -19,11 +19,13 @@ import org.junit.runner.RunWith
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class RuntimeLifecycleTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
+    private val proofScript = instrumentation.context.assets.open("ui-proof.js").bufferedReader().use { it.readText() }
 
     @Test fun coldServiceDestroyExchangeReopen() {
         val pid = Process.myPid()
@@ -50,7 +52,10 @@ class RuntimeLifecycleTest {
             .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY).setMinimumLatency(JOB_DELAY_MS).build()
         assertEquals(JobScheduler.RESULT_SUCCESS, scheduler.schedule(job))
         shell("cmd jobscheduler run -f ${context.packageName} $JOB_ID")
-        await { state().getLong("completed") > 0L && state().getBoolean("downloaded") }
+        await {
+            val snapshot = state()
+            snapshot.getLong("completed") > 0L && snapshot.getBoolean("downloaded") && snapshot.getInt("leases") == 1
+        }
         assertEquals(0, state().getInt("windows"))
         assertEquals(1, state().getInt("leases"))
         val connection = URL("$ENDPOINT/probe/evidence").openConnection() as HttpURLConnection
@@ -87,20 +92,13 @@ class RuntimeLifecycleTest {
 
     private fun functional(ui: ActivityScenario<MainActivity>, expected: String = "") {
         val ready = AtomicBoolean()
+        val token = JSONObject.quote(UUID.randomUUID().toString())
+        val expectedJson = JSONObject.quote(expected)
         await {
             ui.onActivity { activity ->
                 val webview = findWebView(activity.window.decorView) ?: return@onActivity
-                val expectedJson = JSONObject.quote(expected)
-                webview.evaluateJavascript("""
-                    (async () => {
-                      const invoke = window.__TAURI_INTERNALS__.invoke;
-                      const platform = await invoke('get_platform');
-                      const entries = await invoke('get_entries', {limit:100, offset:0, starredOnly:false, search:null});
-                      document.documentElement.dataset.probe = String(platform === 'android' && document.body.innerText.length > 0 &&
-                        ($expectedJson === '' || JSON.stringify(entries).includes($expectedJson)));
-                    })().catch(() => { document.documentElement.dataset.probe = 'false'; });
-                """.trimIndent(), null)
-                webview.evaluateJavascript("document.documentElement.dataset.probe === 'true'") { ready.set(it == "true") }
+                webview.evaluateJavascript("$proofScript\nwindow.runtimeProbe.start($token, $expectedJson);", null)
+                webview.evaluateJavascript("window.runtimeProbe.ready($token)") { ready.set(it == "true") }
             }
             ready.get()
         }

@@ -11,10 +11,29 @@ pub(crate) enum LeaseKind {
     Job,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExitDecision {
+    Prevent,
+    Commit,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum ExitState {
+    #[default]
+    Accepting,
+    Committed,
+}
+
+#[derive(Default)]
+struct Lifecycle {
+    leases: HashMap<u64, LeaseKind>,
+    exit: ExitState,
+}
+
 #[derive(Default)]
 pub(crate) struct MobileRuntime {
     next_id: AtomicU64,
-    leases: Mutex<HashMap<u64, LeaseKind>>,
+    lifecycle: Mutex<Lifecycle>,
     job: Mutex<Option<Job>>,
     completed: AtomicU64,
 }
@@ -31,26 +50,42 @@ pub(crate) struct Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.owner.leases.lock().unwrap().remove(&self.id);
+        self.owner.lifecycle.lock().unwrap().leases.remove(&self.id);
     }
 }
 
 impl MobileRuntime {
-    pub(crate) fn acquire(self: &Arc<Self>, kind: LeaseKind) -> Lease {
+    pub(crate) fn acquire(self: &Arc<Self>, kind: LeaseKind) -> Option<Lease> {
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if lifecycle.exit == ExitState::Committed {
+            return None;
+        }
+
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
-        self.leases.lock().unwrap().insert(id, kind);
-        Lease {
+        lifecycle.leases.insert(id, kind);
+        Some(Lease {
             owner: self.clone(),
             id,
-        }
+        })
     }
 
+    /// Serialize hard exit with acquisition; committed exit permanently closes admission.
+    pub(crate) fn decide_exit(&self) -> ExitDecision {
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if !lifecycle.leases.is_empty() {
+            return ExitDecision::Prevent;
+        }
+        lifecycle.exit = ExitState::Committed;
+        ExitDecision::Commit
+    }
+
+    /// Inspection only. ExitRequested must use decide_exit instead.
     pub(crate) fn prevents_exit(&self) -> bool {
-        !self.leases.lock().unwrap().is_empty()
+        !self.lifecycle.lock().unwrap().leases.is_empty()
     }
 
     pub(crate) fn lease_count(&self) -> usize {
-        self.leases.lock().unwrap().len()
+        self.lifecycle.lock().unwrap().leases.len()
     }
 
     pub(crate) fn completed(&self) -> u64 {
@@ -75,7 +110,7 @@ impl MobileRuntime {
             return None;
         }
 
-        let lease = self.acquire(LeaseKind::Job);
+        let lease = self.acquire(LeaseKind::Job)?;
         let id = lease.id;
         let (cancel, stopped) = oneshot::channel();
         *slot = Some(Job {
@@ -123,15 +158,60 @@ impl Drop for JobGuard {
         if slot.as_ref().map(|job| job.id) != Some(self.id) {
             return;
         }
-        self.lease.take();
         *slot = None;
         self.owner.completed.store(self.id, Ordering::SeqCst);
+        drop(slot);
+        // Publish completion and release bookkeeping before allowing final exit.
+        self.lease.take();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn commits_exit(owner: &MobileRuntime) -> bool {
+        owner.decide_exit() == ExitDecision::Commit
+    }
+
+    #[test]
+    fn committed_exit_rejects_late_service_acquisition() {
+        let owner = Arc::new(MobileRuntime::default());
+        drop(owner.acquire(LeaseKind::Service));
+        assert!(commits_exit(&owner));
+        let late = owner.acquire(LeaseKind::Service);
+        assert!(late.is_none());
+        assert_eq!(owner.lease_count(), 0, "exit already committed");
+    }
+
+    #[tokio::test]
+    async fn committed_exit_rejects_late_job_work() {
+        let owner = Arc::new(MobileRuntime::default());
+        drop(owner.acquire(LeaseKind::Service));
+        assert!(commits_exit(&owner));
+        let worked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker = worked.clone();
+        let job = owner.start_job(&tokio::runtime::Handle::current(), async move {
+            worker.store(true, Ordering::SeqCst);
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !worked.load(Ordering::SeqCst),
+            "work began after committed exit"
+        );
+        assert!(job.is_none());
+        assert_eq!(owner.lease_count(), 0);
+    }
+
+    #[test]
+    fn held_lease_prevents_exit_and_inspection_does_not_commit() {
+        let owner = Arc::new(MobileRuntime::default());
+        assert!(!owner.prevents_exit());
+        let lease = owner.acquire(LeaseKind::Service);
+        assert!(!commits_exit(&owner));
+        drop(lease);
+        assert!(commits_exit(&owner));
+    }
 
     #[test]
     fn service_lease_covers_failed_initialization_and_teardown() {

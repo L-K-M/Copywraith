@@ -2,6 +2,7 @@ package ch.lkmc.copywraith
 
 // Debug-only native boundary; loading the library does not launch Tauri.
 internal object RuntimeProbe {
+    const val NO_LEASE = 0L
     init { System.loadLibrary("copywraith_tauri_lib") }
     @JvmStatic external fun acquireService(): Long
     @JvmStatic external fun releaseService(id: Long)

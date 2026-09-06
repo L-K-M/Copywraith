@@ -8,7 +8,10 @@ for (const sourceSet of ['debug', 'androidTest']) {
     const destination = path.join(root, 'src', sourceSet);
     fs.mkdirSync(path.join(destination, 'java/ch/lkmc/copywraith'), {recursive: true});
     for (const file of fs.readdirSync(path.join(fixtures, sourceSet))) {
-        const target = file.endsWith('.kt') ? path.join(destination, 'java/ch/lkmc/copywraith', file) : path.join(destination, file);
+        let target = path.join(destination, file);
+        if (file.endsWith('.kt')) target = path.join(destination, 'java/ch/lkmc/copywraith', file);
+        if (file.endsWith('.js')) target = path.join(destination, 'assets', file);
+        fs.mkdirSync(path.dirname(target), {recursive: true});
         fs.copyFileSync(path.join(fixtures, sourceSet, file), target);
     }
 }

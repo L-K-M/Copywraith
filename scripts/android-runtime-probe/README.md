@@ -42,14 +42,21 @@ has no parcel tests, so parent integration must supply those tests.
 
 ## Run
 
-Use a disposable API 33+ x86_64 device/emulator with working WebView and no
-Copywraith installation. The runner refuses an existing installation. Select
-one device with `ANDROID_SERIAL` if needed. It installs both APKs, forwards the
+Use a disposable API 33+ x86_64 emulator with working WebView and no
+Copywraith installation. Set `ANDROID_SERIAL=emulator-5554` explicitly (or the
+selected emulator serial). The runner verifies emulator identity before mutation. It installs both APKs, forwards the
 loopback fixture port, runs instrumentation, and removes its installations.
 
 ```sh
-node scripts/android-runtime-probe/run.mjs
+ANDROID_SERIAL=emulator-5554 node scripts/android-runtime-probe/run.mjs
 ```
+
+Existing reverse mappings at tcp:18763 are refused. Cleanup removes only a
+successfully reserved mapping that still targets the fixture port. Commands have
+15-second timeouts; instrumentation has a five-minute timeout. Tests can override
+these with `ANDROID_PROBE_COMMAND_TIMEOUT_MS` and
+`ANDROID_PROBE_INSTRUMENTATION_TIMEOUT_MS`. Partial command failures and fixture
+startup logs are retained without collecting unrelated device logs.
 
 Evidence is written to `artifacts/android-runtime/`. Success requires the
 instrumentation runner's `OK (1 test)`, not merely adb's exit status.
@@ -86,3 +93,16 @@ UI evidence therefore covers rendering and real read IPC, not those three action
 
 Use an isolated checkout: the generated debug overlay requires the probe feature
 until that generated Android project is removed and regenerated for normal builds.
+
+ExitRequested commits its decision under the acquisition lock. Once exit commits,
+service and job acquisition return no lease; Kotlin stops/declines that work.
+Inspection alone does not close admission. The service-held instrumentation
+scenario does not exercise this final-exit race; deterministic Rust tests do.
+
+UI checks use a new UUID per call and publish success only after that call’s IPC
+replies. Expected downloaded text must appear in rendered body text. The shared
+JavaScript asset is tested directly under Node, including stale-success rejection.
+
+```sh
+node --test scripts/android-runtime-probe/tests/*.test.mjs
+```

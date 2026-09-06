@@ -1,6 +1,6 @@
 //! Debug-only JNI boundary. Loading this library never starts Tauri or Wry.
 use crate::mobile_core::{shared_core, MobileCore};
-use crate::mobile_runtime::{Lease, LeaseKind, MobileRuntime};
+use crate::mobile_runtime::{ExitDecision, Lease, LeaseKind, MobileRuntime};
 use jni::{
     objects::{JClass, JString},
     sys::{jint, jlong, jstring},
@@ -17,6 +17,7 @@ use std::{
 use tauri::Manager;
 
 const WINDOW_LABEL: &str = "popup";
+const NO_LEASE: jlong = 0;
 static OWNER: OnceLock<Arc<MobileRuntime>> = OnceLock::new();
 static EXECUTOR: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 static SERVICES: OnceLock<Mutex<HashMap<u64, Lease>>> = OnceLock::new();
@@ -104,7 +105,11 @@ fn reconcile() {
 
 pub(crate) fn event(_app: &tauri::AppHandle, event: &tauri::RunEvent) {
     match event {
-        tauri::RunEvent::ExitRequested { api, .. } if owner().prevents_exit() => api.prevent_exit(),
+        tauri::RunEvent::ExitRequested { api, .. }
+            if owner().decide_exit() == ExitDecision::Prevent =>
+        {
+            api.prevent_exit()
+        }
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Destroyed,
             ..
@@ -130,7 +135,9 @@ extern "system" fn Java_ch_lkmc_copywraith_RuntimeProbe_acquireService(
     _env: JNIEnv,
     _class: JClass,
 ) -> jlong {
-    let lease = owner().acquire(LeaseKind::Service);
+    let Some(lease) = owner().acquire(LeaseKind::Service) else {
+        return NO_LEASE;
+    };
     let id = SERVICE_ID.fetch_add(1, Ordering::SeqCst) as u64;
     SERVICES
         .get_or_init(Default::default)
@@ -194,7 +201,9 @@ extern "system" fn Java_ch_lkmc_copywraith_RuntimeProbe_startJob(
     path: JString,
 ) -> jlong {
     // Executor creation itself must also be protected from final-window exit.
-    let _startup = owner().acquire(LeaseKind::Job);
+    let Some(_startup) = owner().acquire(LeaseKind::Job) else {
+        return NO_LEASE;
+    };
     let result = (|| {
         let path = PathBuf::from(env.get_string(&path)?.to_string_lossy().into_owned());
         // Initialization is inside the job reservation and off Android's main thread.
