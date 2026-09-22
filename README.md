@@ -1,5 +1,8 @@
 # Copywraith
 
+> [!IMPORTANT]
+> LLM disclosure: This codebase was written with substantial help from large language models: AI coding agents working from the [`AGENTS.md`](AGENTS.md) brief in this repo.
+
 Copywraith is a local-first clipboard manager with an optional sync server for durable, searchable clipboard history across devices.
 
 **Latest release:** [Download](https://github.com/L-K-M/Copywraith/releases/latest)
