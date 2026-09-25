@@ -204,7 +204,8 @@ const PASSWORD_MANAGER_MARKER: (&str, &[u8]) = (
     "ExcludeClipboardContentFromMonitorProcessing",
     &[0, 0, 0, 0],
 );
-#[cfg(target_os = "linux")]
+// Mirrors the adapter: every other desktop target uses the X11/Wayland marker.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const PASSWORD_MANAGER_MARKER: (&str, &[u8]) = ("x-kde-passwordManagerHint", b"secret");
 
 #[test]
