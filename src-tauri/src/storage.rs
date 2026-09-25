@@ -305,7 +305,7 @@ impl LocalStorage {
 
     /// Insert an entry pulled from the server in a single transaction.
     ///
-    /// The naive path (`insert_entry` + `set_starred` + `mark_synced`) issues
+    /// The naive path (`insert_entry` + `set_starred` + marking it synced) issues
     /// three separate implicit transactions, each of which fsyncs. During a bulk
     /// pull that disk time dominates everything else, so the three writes are
     /// committed together here instead.
@@ -621,10 +621,38 @@ impl LocalStorage {
         Ok(entries)
     }
 
-    pub fn mark_synced(&self, id: &str) -> anyhow::Result<()> {
+    /// Mark an entry synced, but only if it still has the `updated_at` that was
+    /// pushed.
+    ///
+    /// Every local mutation that needs pushing (a star toggle) moves
+    /// `updated_at`. If the row changed while its push was in flight, the
+    /// server has an older state; acknowledging it would drop the newer local
+    /// change from the push queue for good. Returns whether the row was marked.
+    pub fn mark_synced_if_unchanged(
+        &self,
+        id: &str,
+        pushed_updated_at: chrono::DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
         let db = self.db.lock().unwrap();
+        let current: Option<String> = db
+            .query_row(
+                "SELECT updated_at FROM entries WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        // Compare parsed instants, not strings, so a stored timestamp in a
+        // different but equivalent RFC 3339 form still matches.
+        let unchanged = current
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+            .is_some_and(|value| value == pushed_updated_at);
+        if !unchanged {
+            return Ok(false);
+        }
+
         db.execute("UPDATE entries SET synced = 1 WHERE id = ?1", params![id])?;
-        Ok(())
+        Ok(true)
     }
 
     pub fn get_settings(&self) -> Settings {
@@ -821,6 +849,49 @@ mod tests {
             text_plain: Some(text.to_string()),
             ..ClipboardFlavors::default()
         }
+    }
+
+    #[test]
+    fn a_push_acknowledgement_only_applies_to_the_state_that_was_pushed() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("starred twice");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+
+        // The first push is still in flight when the user toggles again.
+        let pushed = storage.get_entry(&entry.id).unwrap().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        storage.toggle_star(&entry.id).unwrap();
+
+        assert!(!storage
+            .mark_synced_if_unchanged(&entry.id, pushed.updated_at)
+            .unwrap());
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 1);
+
+        let latest = storage.get_entry(&entry.id).unwrap().unwrap();
+        assert!(storage
+            .mark_synced_if_unchanged(&entry.id, latest.updated_at)
+            .unwrap());
+        assert!(storage.get_unsynced_entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_push_acknowledgement_for_a_deleted_entry_is_ignored() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("deleted mid-push");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        storage.delete_entry(&entry.id).unwrap();
+
+        assert!(!storage
+            .mark_synced_if_unchanged(&entry.id, entry.updated_at)
+            .unwrap());
     }
 
     #[test]

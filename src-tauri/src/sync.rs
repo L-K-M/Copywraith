@@ -129,6 +129,9 @@ struct EndpointHeartbeat {
 
 pub struct SyncClient {
     http: reqwest::Client,
+    /// Wakes the periodic sync loop early, e.g. after a local change that
+    /// should reach the server without waiting for the next interval.
+    wake: tokio::sync::Notify,
     pull_state: Mutex<PullState>,
     last_responding_endpoint: Mutex<Option<EndpointHeartbeat>>,
 }
@@ -150,12 +153,27 @@ impl SyncClient {
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             http,
+            wake: tokio::sync::Notify::new(),
             pull_state: Mutex::new(PullState {
                 initialized: watermark.is_some(),
                 watermark,
             }),
             last_responding_endpoint: Mutex::new(None),
         }
+    }
+
+    /// Ask the sync loop to run a pass now instead of at its next interval.
+    ///
+    /// The loop pushes unsynced rows one at a time, reading each row's current
+    /// state, so repeated requests can neither reorder nor duplicate pushes.
+    pub fn request_sync(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Wait until `request_sync` is called. A request made while no one is
+    /// waiting is remembered, so the next wait returns immediately.
+    pub async fn sync_requested(&self) {
+        self.wake.notified().await;
     }
 
     fn note_responding_endpoint(&self, endpoint: &ServerEndpoint) {
@@ -269,8 +287,15 @@ impl SyncClient {
             .await;
 
         if synced {
-            if let Err(e) = storage.mark_synced(&entry.id) {
-                log::error!("Failed to mark entry as synced: {}", e);
+            match storage.mark_synced_if_unchanged(&entry.id, entry.updated_at) {
+                Ok(true) => {}
+                Ok(false) => {
+                    log::debug!(
+                        "Entry {} changed while it was being pushed; it stays queued",
+                        entry.id
+                    );
+                }
+                Err(e) => log::error!("Failed to mark entry as synced: {}", e),
             }
         }
     }
@@ -829,5 +854,25 @@ fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
             base_url.trim_end_matches('/'),
             maybe_relative.trim_start_matches('/'),
         )
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_sync_request_made_before_the_loop_waits_is_not_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        let client = SyncClient::new(&storage);
+
+        // The loop may be mid-pass when a star is toggled; the request must
+        // still cut its next sleep short.
+        client.request_sync();
+
+        tokio::time::timeout(Duration::from_secs(1), client.sync_requested())
+            .await
+            .expect("a pending sync request wakes the loop immediately");
     }
 }

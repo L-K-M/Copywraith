@@ -870,7 +870,10 @@ fn start_sync_loop(
         let mut current_interval = BASE_INTERVAL_SECS;
 
         loop {
-            tokio::time::sleep(Duration::from_secs(current_interval)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(current_interval)) => {}
+                _ = sync_client.sync_requested() => {}
+            }
 
             // Push local unsynced entries first
             sync_client.sync_unsynced_entries(&storage).await;
