@@ -252,7 +252,7 @@ pub async fn paste_entry_plaintext(
 
     #[cfg(desktop)]
     {
-        if let Some(plaintext) = entry.best_plain_text() {
+        if let Some(plaintext) = entry.plain_text_for_paste() {
             paste::write_and_paste_text(&app, &plaintext);
         }
     }
@@ -284,7 +284,7 @@ fn write_to_clipboard_mobile(
     }
 
     let text = if force_plaintext {
-        entry.best_plain_text()
+        entry.plain_text_for_paste()
     } else {
         let flavors = entry.resolved_flavors();
         flavors
