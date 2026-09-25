@@ -970,10 +970,24 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 
 #[tauri::command]
 pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    let previous = state.storage.get_settings();
     state
         .storage
         .save_settings(&settings)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Against a different server the old watermark would hide every entry
+    // older than it. Re-walking is safe because ingestion is idempotent.
+    //
+    // Keep the reset after the save. A pull starting in between may use the
+    // old watermark once, but its write-back fails the generation check. With
+    // the reset first, a pull in between could re-walk the old server and
+    // install its watermark against the new one, with no reset left to clear it.
+    if sync::server_endpoints_changed(&previous, &settings) {
+        state.sync_client.reset_pull_cursor(&state.storage);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
