@@ -26,6 +26,14 @@ pub fn start_monitoring(
                     return;
                 }
             }
+            // Paused: do not even read the clipboard.
+            if state
+                .capture_pause
+                .lock()
+                .is_ok_and(|pause| pause.is_paused_at(chrono::Utc::now()))
+            {
+                return;
+            }
             let clipboard = callback_app.state::<NativeClipboard>();
             handle_clipboard_change(&callback_app, &clipboard, &storage, &sync_client);
         },

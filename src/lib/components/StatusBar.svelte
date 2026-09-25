@@ -5,6 +5,7 @@
 	import { entries, starredOnly } from '$lib/util/clipboardStore';
 	import { isMobile, platform } from '$lib/util/platform';
 	import { setSyncEndpointStatus, syncEndpointStatus } from '$lib/util/syncStatusStore';
+	import CapturePauseControl from './CapturePauseControl.svelte';
 
 	let {
 		progressVisible = false,
@@ -197,6 +198,9 @@
 		</span>
 	{/if}
 	<div class="sync-status-wrap">
+		{#if !$isMobile}
+			<CapturePauseControl />
+		{/if}
 		<button
 			type="button"
 			class="status-endpoint"
@@ -279,6 +283,9 @@
 
 	.sync-status-wrap {
 		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 6px;
 		justify-self: end;
 		min-width: 0;
 	}

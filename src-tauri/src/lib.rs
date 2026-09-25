@@ -19,6 +19,8 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
     pub storage: Arc<storage::LocalStorage>,
     pub sync_client: Arc<sync::SyncClient>,
+    /// The clipboard monitor ignores changes while this is paused.
+    pub capture_pause: std::sync::Mutex<models::CapturePause>,
     #[cfg(desktop)]
     pub last_focused_app: std::sync::Mutex<Option<String>>,
     #[cfg(desktop)]
@@ -98,6 +100,7 @@ pub fn run() {
             let state = AppState {
                 storage: storage.clone(),
                 sync_client: sync_client.clone(),
+                capture_pause: std::sync::Mutex::new(models::CapturePause::default()),
                 #[cfg(desktop)]
                 last_focused_app: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
@@ -200,6 +203,9 @@ pub fn run() {
             commands::set_shizuku_clipboard_enabled,
             commands::get_platform,
             commands::hide_popup,
+            commands::get_capture_pause,
+            commands::pause_capture,
+            commands::resume_capture,
             window_activity::is_window_active,
         ])
         .build(tauri::generate_context!())
