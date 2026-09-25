@@ -107,6 +107,11 @@ fn handle_clipboard_change(
             return;
         }
         ClipboardPayload::Flavors(flavors) => flavors,
+        ClipboardPayload::Private => {
+            // Never log the content or its source app: both can identify a secret.
+            log::debug!("Skipping clipboard content marked private by its source");
+            return;
+        }
         ClipboardPayload::Empty => return,
     };
     if !flavors.is_empty() {
