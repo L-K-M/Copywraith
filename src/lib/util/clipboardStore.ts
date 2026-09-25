@@ -211,6 +211,32 @@ export async function pasteSelectedEntry() {
 	await pasteEntry(selectedId);
 }
 
+/** The selected entry, unless a reload is about to replace the list. */
+export function selectedEntry(): ClipboardEntry | null {
+	if (get(isLoading)) return null;
+
+	const selectedId = get(selectedEntryId);
+	return get(entries).find((entry) => entry.id === selectedId) ?? null;
+}
+
+export function selectEdge(edge: 'first' | 'last') {
+	if (get(isLoading)) return;
+
+	const list = get(entries);
+	if (list.length === 0) return;
+	selectedEntryId.set((edge === 'first' ? list[0] : list[list.length - 1]).id);
+}
+
+/** Paste the entry at `index` in the visible list (Mod+1 is index 0). */
+export async function pasteEntryAt(index: number) {
+	if (get(isLoading)) return;
+
+	const entry = get(entries)[index];
+	if (!entry) return;
+	selectedEntryId.set(entry.id);
+	await pasteEntry(entry.id);
+}
+
 export async function toggleStar(id: string) {
 	try {
 		const newStarred = await TauriService.toggleStar(id);

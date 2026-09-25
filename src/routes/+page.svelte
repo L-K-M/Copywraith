@@ -17,8 +17,16 @@
 		pasteSelectedEntry,
 		selectFirstEntry,
 		entries,
-		starredOnly
+		starredOnly,
+		filterText,
+		selectedEntry,
+		selectEdge,
+		pasteEntryAt,
+		pasteEntryPlaintext,
+		toggleStar,
+		deleteEntry
 	} from '$lib/util/clipboardStore';
+	import { isModKey, resolveShortcut, type ShortcutAction } from '$lib/util/keyboard';
 	import { notify } from '$lib/util/notifications';
 	import { TauriService } from '$lib/tauri';
 
@@ -33,6 +41,8 @@
 	type ProgressTone = 'normal' | 'success' | 'error';
 
 	let isWindowShaded = $state(false);
+	// While Cmd (macOS) or Ctrl is held, the first rows show their quick-paste digit.
+	let quickKeysVisible = $state(false);
 	let showSettings = $state(false);
 	let errorMessage = $state('');
 	let filterBar: FilterBar | undefined = $state();
@@ -150,6 +160,7 @@
 		// Desktop-only: Listen for popup show event to set starred filter mode
 		if (!mobile) {
 			unlistenPopupShow = await listen<boolean>('popup-show', (event) => {
+				quickKeysVisible = false;
 				starredOnly.set(event.payload);
 				selectFirstEntry({ forceReselect: true });
 				loadEntries({ forceSelectFirst: true });
@@ -414,6 +425,40 @@
 		return Promise.race([promise.finally(() => clearTimeout(timeoutId)), timeout]);
 	}
 
+	function runShortcut(action: ShortcutAction) {
+		const entry = selectedEntry();
+		switch (action.type) {
+			case 'quick-paste':
+				void pasteEntryAt(action.index);
+				return;
+			case 'move':
+				moveSelection(action.delta);
+				return;
+			case 'select-edge':
+				selectEdge(action.edge);
+				return;
+			case 'focus-filter':
+				filterBar?.focus();
+				return;
+		}
+
+		if (!entry) return;
+		switch (action.type) {
+			case 'paste-plaintext':
+				void pasteEntryPlaintext(entry.id);
+				return;
+			case 'toggle-star':
+				void toggleStar(entry.id);
+				return;
+			case 'delete':
+				void deleteEntry(entry.id);
+				return;
+			case 'preview':
+				previewEntryId = entry.id;
+				return;
+		}
+	}
+
 	function handleGlobalKeydown(e: KeyboardEvent) {
 		// Skip keyboard shortcuts on mobile
 		if ($isMobile) return;
@@ -448,6 +493,23 @@
 			return;
 		}
 
+		if (isModKey(e.key, $platform)) quickKeysVisible = true;
+
+		// List shortcuts act on the history, not on an open dialog.
+		const shortcut =
+			e.defaultPrevented || showSettings || previewEntryId
+				? null
+				: resolveShortcut(e, {
+						platform: $platform,
+						inTextField: isInputTarget,
+						filterEmpty: !$filterText
+					});
+		if (shortcut) {
+			e.preventDefault();
+			runShortcut(shortcut);
+			return;
+		}
+
 		if (isInputTarget) {
 			return;
 		}
@@ -466,12 +528,18 @@
 
 		if (e.key === 'Enter') {
 			e.preventDefault();
-			pasteSelectedEntry();
+			if (!e.repeat) pasteSelectedEntry();
 		}
 	}
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window
+	onkeydown={handleGlobalKeydown}
+	onkeyup={(e) => {
+		if (isModKey(e.key, $platform)) quickKeysVisible = false;
+	}}
+	onblur={() => (quickKeysVisible = false)}
+/>
 
 <div
 	class="window-frame s7-root"
@@ -505,7 +573,7 @@
 
 		<main class="app-content">
 			<FilterBar bind:this={filterBar} onsettings={handleSettingsOpen} />
-			<EntryList onpreview={(entry) => { previewEntryId = entry.id; }} />
+			<EntryList {quickKeysVisible} onpreview={(entry) => { previewEntryId = entry.id; }} />
 			<StatusBar
 				progressVisible={mobileSyncProgressVisible}
 				progressValue={mobileSyncProgressValue}
