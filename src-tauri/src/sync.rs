@@ -1140,10 +1140,72 @@ fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
     }
 }
 
+/// Helpers for the tests below that run a fake server on a real socket, so
+/// they exercise reqwest's actual request and response handling.
+#[cfg(test)]
+mod test_support {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    /// Read one request, head and body, and return its head. Stops early if
+    /// the client closes the connection.
+    pub(super) async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        let mut data = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = match socket.read(&mut buffer).await {
+                Ok(0) | Err(_) => return String::from_utf8_lossy(&data).into_owned(),
+                Ok(read) => read,
+            };
+            data.extend_from_slice(&buffer[..read]);
+
+            let Some(head_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&data[..head_end]).into_owned();
+            let body_len = head
+                .to_ascii_lowercase()
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:")?.trim().parse().ok())
+                .unwrap_or(0);
+            if data.len() >= head_end + 4 + body_len {
+                return head;
+            }
+        }
+    }
+
+    /// A complete JSON response that closes the connection.
+    pub(super) fn json_response(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Temporary storage whose settings point at `primary` and `fallback`.
+    pub(super) fn storage_with_servers(
+        primary: &str,
+        fallback: &str,
+    ) -> (tempfile::TempDir, LocalStorage) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        storage
+            .save_settings(&Settings {
+                server_url_primary: primary.to_string(),
+                server_url_fallback: fallback.to_string(),
+                api_key: "configured password".to_string(),
+                ..Settings::default()
+            })
+            .unwrap();
+        (dir, storage)
+    }
+}
+
 #[cfg(test)]
 mod compression_tests {
+    use super::test_support::{read_request, storage_with_servers};
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     /// `{"entries":[],"total":0,"has_more":false}`, gzip-compressed.
     const GZIPPED_EMPTY_PAGE: &[u8] = &[
@@ -1158,13 +1220,7 @@ mod compression_tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut head = Vec::new();
-            let mut buffer = [0u8; 4096];
-            while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = socket.read(&mut buffer).await.unwrap();
-                assert!(read > 0, "client closed before sending complete headers");
-                head.extend_from_slice(&buffer[..read]);
-            }
+            let head = read_request(&mut socket).await;
             let mut response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                 GZIPPED_EMPTY_PAGE.len()
@@ -1172,18 +1228,10 @@ mod compression_tests {
             .into_bytes();
             response.extend_from_slice(GZIPPED_EMPTY_PAGE);
             socket.write_all(&response).await.unwrap();
-            String::from_utf8_lossy(&head).to_ascii_lowercase()
+            head.to_ascii_lowercase()
         });
 
-        let dir = tempfile::tempdir().unwrap();
-        let storage = LocalStorage::new(dir.path()).unwrap();
-        storage
-            .save_settings(&Settings {
-                server_url_primary: url,
-                api_key: "password".to_string(),
-                ..Settings::default()
-            })
-            .unwrap();
+        let (_dir, storage) = storage_with_servers(&url, "");
 
         // The fake server answers one request; a second would hang, not fail.
         let result = tokio::time::timeout(
@@ -1208,10 +1256,11 @@ mod compression_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::{json_response, read_request, storage_with_servers};
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     const EMPTY_PAGE: &str = r#"{"entries":[],"total":0,"has_more":false}"#;
 
@@ -1229,10 +1278,7 @@ mod tests {
                 tokio::spawn(async move {
                     read_request(&mut socket).await;
                     counter.fetch_add(1, Ordering::SeqCst);
-                    let response = format!(
-                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
+                    let response = json_response(status, body);
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.shutdown().await;
                 });
@@ -1242,52 +1288,12 @@ mod tests {
         (url, requests)
     }
 
-    /// Consume the request head and body so the client sees a clean response.
-    async fn read_request(socket: &mut tokio::net::TcpStream) {
-        let mut data = Vec::new();
-        let mut buffer = [0u8; 8192];
-        loop {
-            let read = match socket.read(&mut buffer).await {
-                Ok(0) | Err(_) => return,
-                Ok(read) => read,
-            };
-            data.extend_from_slice(&buffer[..read]);
-
-            let Some(head_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
-                continue;
-            };
-            let head = String::from_utf8_lossy(&data[..head_end]).to_ascii_lowercase();
-            let body_len = head
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length:"))
-                .and_then(|value| value.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            if data.len() >= head_end + 4 + body_len {
-                return;
-            }
-        }
-    }
-
     /// A URL on which nothing is listening.
     async fn closed_port_url() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         drop(listener);
         url
-    }
-
-    fn storage_with_servers(primary: &str, fallback: &str) -> (tempfile::TempDir, LocalStorage) {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = LocalStorage::new(dir.path()).unwrap();
-        storage
-            .save_settings(&Settings {
-                server_url_primary: primary.to_string(),
-                server_url_fallback: fallback.to_string(),
-                api_key: "configured password".to_string(),
-                ..Settings::default()
-            })
-            .unwrap();
-        (dir, storage)
     }
 
     fn queue_text(storage: &LocalStorage, text: &str) {
@@ -1506,9 +1512,10 @@ mod tests {
 
 #[cfg(test)]
 mod probe_tests {
+    use super::test_support::{json_response, read_request, storage_with_servers};
     use super::*;
     use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     /// A fake server holding `history` (newest first) that pages it the way
     /// the real server does, and records each requested page size.
@@ -1524,7 +1531,8 @@ mod probe_tests {
                 let history = history.clone();
                 let recorded = recorded.clone();
                 tokio::spawn(async move {
-                    let target = read_request_target(&mut socket).await;
+                    let head = read_request(&mut socket).await;
+                    let target = head.split_whitespace().nth(1).unwrap();
                     let url = reqwest::Url::parse(&format!("http://fake{target}")).unwrap();
                     let query = |name: &str| {
                         url.query_pairs()
@@ -1561,11 +1569,7 @@ mod probe_tests {
                         total: history.len() as u64,
                         has_more: older.len() > limit as usize,
                     };
-                    let body = serde_json::to_string(&page).unwrap();
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
+                    let response = json_response("200 OK", &serde_json::to_string(&page).unwrap());
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.shutdown().await;
                 });
@@ -1573,19 +1577,6 @@ mod probe_tests {
         });
 
         (base, limits)
-    }
-
-    /// Read a GET request's head and return its request target.
-    async fn read_request_target(socket: &mut tokio::net::TcpStream) -> String {
-        let mut data = Vec::new();
-        let mut buffer = [0u8; 4096];
-        while !data.windows(4).any(|window| window == b"\r\n\r\n") {
-            let read = socket.read(&mut buffer).await.unwrap();
-            assert!(read > 0, "client closed before sending a request");
-            data.extend_from_slice(&buffer[..read]);
-        }
-        let head = String::from_utf8_lossy(&data);
-        head.split_whitespace().nth(1).unwrap().to_string()
     }
 
     /// `count` text entries, newest first, one minute apart.
@@ -1609,15 +1600,7 @@ mod probe_tests {
         url: &str,
         watermark: Option<&ClipboardEntry>,
     ) -> (tempfile::TempDir, LocalStorage) {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = LocalStorage::new(dir.path()).unwrap();
-        storage
-            .save_settings(&Settings {
-                server_url_primary: url.to_string(),
-                api_key: "password".to_string(),
-                ..Settings::default()
-            })
-            .unwrap();
+        let (dir, storage) = storage_with_servers(url, "");
         if let Some(entry) = watermark {
             storage
                 .save_sync_watermark(&entry.updated_at.to_rfc3339(), &entry.id)
@@ -1717,8 +1700,9 @@ mod wake_tests {
 
 #[cfg(test)]
 mod cursor_reset_tests {
+    use super::test_support::{json_response, read_request, storage_with_servers};
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     fn settings(primary: &str, fallback: &str) -> Settings {
         Settings {
@@ -1769,13 +1753,7 @@ mod cursor_reset_tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut head = Vec::new();
-            let mut buffer = [0u8; 4096];
-            while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = socket.read(&mut buffer).await.unwrap();
-                assert!(read > 0, "client closed before sending a request");
-                head.extend_from_slice(&buffer[..read]);
-            }
+            read_request(&mut socket).await;
             received.send(()).unwrap();
             release.await.unwrap();
 
@@ -1787,11 +1765,7 @@ mod cursor_reset_tests {
                 total: 1,
                 has_more: false,
             };
-            let body = serde_json::to_string(&page).unwrap();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
+            let response = json_response("200 OK", &serde_json::to_string(&page).unwrap());
             socket.write_all(response.as_bytes()).await.unwrap();
         });
         url
@@ -1802,9 +1776,7 @@ mod cursor_reset_tests {
         let (received, request_arrived) = tokio::sync::oneshot::channel();
         let (release, held) = tokio::sync::oneshot::channel();
         let url = held_page_server(received, held).await;
-        let dir = tempfile::tempdir().unwrap();
-        let storage = LocalStorage::new(dir.path()).unwrap();
-        storage.save_settings(&settings(&url, "")).unwrap();
+        let (_dir, storage) = storage_with_servers(&url, "");
         let client = SyncClient::new(&storage);
 
         let pull = client.pull_new_entries(&storage);
