@@ -831,3 +831,69 @@ fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
         )
     }
 }
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// `{"entries":[],"total":0,"has_more":false}`, gzip-compressed.
+    const GZIPPED_EMPTY_PAGE: &[u8] = &[
+        31, 139, 8, 0, 0, 0, 0, 0, 2, 3, 171, 86, 74, 205, 43, 41, 202, 76, 45, 86, 178, 138, 142,
+        213, 81, 42, 201, 47, 73, 204, 81, 178, 50, 208, 81, 202, 72, 44, 142, 207, 205, 47, 74,
+        85, 178, 74, 75, 204, 41, 78, 173, 5, 0, 227, 50, 241, 134, 41, 0, 0, 0,
+    ];
+
+    #[tokio::test]
+    async fn the_client_asks_for_and_decodes_gzip_responses() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before sending complete headers");
+                head.extend_from_slice(&buffer[..read]);
+            }
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                GZIPPED_EMPTY_PAGE.len()
+            )
+            .into_bytes();
+            response.extend_from_slice(GZIPPED_EMPTY_PAGE);
+            socket.write_all(&response).await.unwrap();
+            String::from_utf8_lossy(&head).to_ascii_lowercase()
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        storage
+            .save_settings(&Settings {
+                server_url_primary: url,
+                api_key: "password".to_string(),
+                ..Settings::default()
+            })
+            .unwrap();
+
+        // The fake server answers one request; a second would hang, not fail.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            SyncClient::new(&storage).pull_new_entries(&storage),
+        )
+        .await
+        .expect("the pull finishes after one request")
+        .unwrap();
+
+        let request_head = server.await.unwrap();
+        assert!(
+            request_head
+                .lines()
+                .any(|line| line.starts_with("accept-encoding:") && line.contains("gzip")),
+            "request did not offer gzip:\n{request_head}"
+        );
+        // Only a successfully decoded and parsed page reports online.
+        assert_eq!(result.endpoint_status.state, "online");
+    }
+}
