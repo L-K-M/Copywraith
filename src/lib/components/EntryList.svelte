@@ -12,7 +12,12 @@
 	import { DataTable } from '@lkmc/system7-ui';
 	import EntryRow from './EntryRow.svelte';
 
-	let { onpreview }: { onpreview?: (entry: ClipboardEntry) => void } = $props();
+	import { QUICK_PASTE_SLOTS } from '$lib/util/keyboard';
+
+	let {
+		onpreview,
+		quickKeysVisible = false
+	}: { onpreview?: (entry: ClipboardEntry) => void; quickKeysVisible?: boolean } = $props();
 
 	/*
 	 * These widths are the single source of truth: DataTable renders them as a
@@ -91,6 +96,7 @@
 				{entry}
 				isFirst={index === 0}
 				selected={$selectedEntryId === entry.id}
+				quickKey={quickKeysVisible && index < QUICK_PASTE_SLOTS ? index + 1 : null}
 				onselect={selectEntry}
 				{onpreview}
 			/>

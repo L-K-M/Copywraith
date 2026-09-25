@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::routing::get;
 use axum::Router;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -86,38 +88,9 @@ async fn main() -> anyhow::Result<()> {
         crypto: Mutex::new(crypto_state),
     });
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     // Resolve UI dist directory: check env var, then common relative paths
     let ui_dir = resolve_ui_dir();
-
-    let app = if let Some(ref dist_path) = ui_dir {
-        tracing::info!("Serving admin UI from {}", dist_path.display());
-        let index_file = dist_path.join("index.html");
-        Router::new()
-            .route("/swagger-ui", get(swagger_ui))
-            .route("/swagger-ui/", get(swagger_ui))
-            .route("/api-docs/openapi.json", get(openapi_json))
-            .nest("/api", api::router())
-            .fallback_service(ServeDir::new(dist_path).fallback(ServeFile::new(index_file)))
-            .layer(cors)
-            .layer(TraceLayer::new_for_http())
-            .with_state(state)
-    } else {
-        tracing::warn!("Admin UI dist directory not found; serving fallback page");
-        Router::new()
-            .route("/", get(fallback_ui))
-            .route("/swagger-ui", get(swagger_ui))
-            .route("/swagger-ui/", get(swagger_ui))
-            .route("/api-docs/openapi.json", get(openapi_json))
-            .nest("/api", api::router())
-            .layer(cors)
-            .layer(TraceLayer::new_for_http())
-            .with_state(state)
-    };
+    let app = build_app(state, ui_dir.as_deref());
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -142,6 +115,46 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn build_app(state: Arc<AppState>, ui_dir: Option<&std::path::Path>) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    let router = Router::new()
+        .route("/swagger-ui", get(swagger_ui))
+        .route("/swagger-ui/", get(swagger_ui))
+        .route("/api-docs/openapi.json", get(openapi_json))
+        .nest("/api", api::router());
+
+    let router = if let Some(dist_path) = ui_dir {
+        tracing::info!("Serving admin UI from {}", dist_path.display());
+        let index_file = dist_path.join("index.html");
+        router.fallback_service(ServeDir::new(dist_path).fallback(ServeFile::new(index_file)))
+    } else {
+        tracing::warn!("Admin UI dist directory not found; serving fallback page");
+        router.route("/", get(fallback_ui))
+    };
+
+    router
+        .layer(compression_layer())
+        .layer(cors)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+/// Gzip for API and admin UI responses, negotiated per request.
+///
+/// Entry lists carry every text flavor in full and clients poll them, so they
+/// are what this is for. Images (skipped by the default predicate) and file
+/// blobs (`application/octet-stream`, often archives or PDFs of up to 64 MiB)
+/// are usually already compressed, so gzipping them only costs CPU.
+fn compression_layer() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new().compress_when(
+        DefaultPredicate::new().and(NotForContentType::const_new("application/octet-stream")),
+    )
 }
 
 /// Try to find the built UI dist directory.
@@ -180,4 +193,79 @@ async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
 /// Swagger UI page (loads assets from unpkg CDN).
 async fn swagger_ui() -> axum::response::Html<&'static str> {
     axum::response::Html(SWAGGER_UI_HTML)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn test_app() -> (tempfile::TempDir, Router) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState {
+            storage: Storage::new(dir.path()).unwrap(),
+            crypto: Mutex::new(CryptoState::load(dir.path()).unwrap()),
+        });
+        (dir, build_app(state, None))
+    }
+
+    async fn content_encoding(accept_encoding: Option<&str>) -> Option<String> {
+        let (_dir, app) = test_app();
+        let mut request = Request::get("/api-docs/openapi.json");
+        if let Some(value) = accept_encoding {
+            request = request.header(header::ACCEPT_ENCODING, value);
+        }
+
+        let response = app
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .map(|value| value.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn responses_are_gzipped_for_clients_that_accept_it() {
+        assert_eq!(
+            content_encoding(Some("gzip")).await.as_deref(),
+            Some("gzip")
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_stay_plain_for_clients_that_do_not() {
+        assert_eq!(content_encoding(None).await, None);
+    }
+
+    #[tokio::test]
+    async fn file_blobs_are_not_recompressed() {
+        let app = Router::new()
+            .route(
+                "/blob",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "application/octet-stream")],
+                        vec![b'x'; 4096],
+                    )
+                }),
+            )
+            .layer(compression_layer());
+
+        let response = app
+            .oneshot(
+                Request::get("/blob")
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+    }
 }

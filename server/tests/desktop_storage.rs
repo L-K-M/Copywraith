@@ -33,7 +33,10 @@ fn legacy_desktop_database_preserves_ids_and_sync_state() {
         .unwrap();
     assert!(new.id.parse::<ulid::Ulid>().is_ok());
     assert_ne!(new.id, legacy.id);
-    db.mark_synced(&legacy.id).unwrap();
+    // A timestamp written by an older version must still match what it parses to.
+    assert!(db
+        .mark_synced_if_unchanged(&legacy.id, old.updated_at)
+        .unwrap());
     drop(db);
     let db = LocalStorage::new(dir.path()).unwrap();
     assert_eq!(db.get_entry(&legacy.id).unwrap().unwrap().id, legacy.id);

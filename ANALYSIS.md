@@ -3,12 +3,11 @@
 Backlog last rebuilt 2026-09-25 against `a4dc499` (0.3.1). This is the
 maintained backlog — the single document to start from when picking up work.
 
-> **Currency note.** Sixteen PRs (#147–#162) implementing the 2026-09-25 review
-> are **open and awaiting maintainer review — none is merged.** The items they
-> address have been moved out of the backlog into the Outcome ledger, under
-> *Open PRs from the 2026-09-25 review*. If one of those PRs is rejected, its
-> item returns to the backlog as described there. Deferred follow-ups from their
-> review rounds are already backlog items below.
+> **Currency note.** The sixteen PRs (#147–#162) implementing the 2026-09-25
+> review are **merged to `main` through the integration PR #164**, and the six
+> Dependabot updates of that week through #163. Their outcomes are in the
+> Outcome ledger under *Integrated — #164*. Deferred follow-ups from their
+> review rounds are backlog items below.
 >
 > **Line numbers.** References in entries citing `tmp.md` are as of
 > `a4dc499`. References carried over from `opus.md` (`9ca8179`) or `sol.md`
@@ -62,22 +61,22 @@ clipboard suite runs on Linux (under xvfb), macOS and Windows CI.
 Copywraith has a sound local-first shape and a distinctive interface. As of
 2026-09-25 the highest-value remaining work is:
 
-1. **Sync convergence.** #114 fixed SYNC-A1/A2 and part of A5; the open PRs
-   #149 (one-entry probe, immediate first pass), #150 (gzip), #157 (size-aware
-   timeouts), #148 (honest error states) and #154 (cursor reset on server
-   change) remove most steady-state waste and several silent failure modes.
+1. **Sync convergence.** #114 fixed SYNC-A1/A2 and part of A5; #149 (one-entry
+   probe, immediate first pass), #150 (gzip), #157 (size-aware timeouts), #148
+   (honest error states) and #154 (cursor reset on server change), merged in
+   #164, remove most steady-state waste and several silent failure modes.
    **SYNC-A3 is still the one that matters**: a timed-out `sync_now` discards
    all pull-watermark progress, so a large history may never converge. No PR
    addresses it; it needs a resumable cursor.
 2. **Test coverage of the sync protocol.** Still the single highest-leverage
-   missing engineering work. The open PRs add unit and mock-socket tests for
-   their own paths, but nothing exercises client and server end to end.
+   missing engineering work. The 2026-09-25 PRs added unit and mock-socket
+   tests for their own paths, but nothing exercises client and server end to
+   end.
 3. **Delete propagation.** #95 was rejected; there are still no tombstones
    anywhere, so a local delete can be undone by a cursor reset (which #154 now
    triggers on server change) or a later server update. Tracked in **#113**.
-4. **Review queue.** Sixteen PRs await review. #148, #149, #153, #154 and #157
-   all touch the sync loop and the tail of `src-tauri/src/sync.rs`; see the
-   merge-order note in the Outcome ledger.
+
+No PR from the 2026-09-25 review is pending; see the Outcome ledger.
 
 ### Verification baseline
 
@@ -89,6 +88,20 @@ On `a4dc499` (2026-09-25, from `tmp.md`):
 | `cargo test --workspace` | Pass (50 core, 15 server-side desktop, 11 server, 39 tauri, others) |
 | `npm run test:frontend` | Pass, **except 1 failure when run by an AI agent** (TOOL-01, fixed by #160) |
 | Android, macOS, Plasma runtime | Not run (no devices in the review environment) |
+
+On the #164 integration head (2026-09-25), locally:
+
+| Check | Result |
+|---|---|
+| `cargo fmt`, `cargo clippy -D warnings` | Pass |
+| `cargo test --workspace` | Pass: 53 core, 21 server, 16 desktop storage, 81 tauri, 7 native clipboard plus 4 X11 tests under `xvfb-run` |
+| Popup `npm run check`, `check:ts6`, `build` | Pass, 0 errors, 0 warnings |
+| `npm run test:frontend` | 63/63, including under an AI agent |
+| Admin UI svelte-check (TS7, TS6), vitest, build | Pass, 39/39 |
+| Python tooling tests | Pass |
+| #151 Kotlin share-plugin functions | Compile against the `android-35` platform jar (extracted into a harness; the full plugin was not built) |
+| Docker build context (#162) | Exported with BuildKit: 1.7 MB, no data, `.env`, `node_modules`, `dist`, `target` or tests; the server checks with `--locked` from exactly the files the Dockerfile copies |
+| Android, macOS, Plasma runtime | Not run |
 
 Historical baseline on `9ca8179`, before and after the 2026-07-25 PRs:
 
@@ -133,7 +146,7 @@ measurements in `opus.md` §1; steady-state cost in `tmp.md` SYNC-N1.
 - Partial **SYNC-A5** — the duplicated text parsing and unbounded `full_text` in
   the list projection (PERF-01/02) also cut Android list-load cost.
 
-### Addressed by open PRs (awaiting merge)
+### Fixed by the 2026-09-25 PRs (merged in #164)
 
 - **SYNC-N1** steady-state polling (newest 100 full entries every 5 s per
   client, ~400 AES-GCM decrypts per poll) — #149 probes with `limit=1` first.
@@ -155,9 +168,12 @@ measurements in `opus.md` §1; steady-state cost in `tmp.md` SYNC-N1.
 - **Problem:** cancellation discards the watermark. Ingested rows survive, but
   the next pass re-walks from the top of the server list. **If every rescan
   exceeds 35 s, sync cannot finish** — each attempt repeats the scan and reports
-  `pulled: 0`. #157 (pending) scales per-request deadlines up to 600 s per page,
+  `pulled: 0`. #157 scales per-request deadlines up to 600 s per page,
   but the Sync Now path still wraps everything in the fixed 35 s, so a
-  legitimately slow, size-scaled download is still cancelled.
+  legitimately slow, size-scaled download is still cancelled. Since #149
+  serializes pulls, the 35 s also covers waiting for a pull the sync loop has
+  already started, so a manual sync during a long loop pull reports a timeout
+  while the loop is still making progress.
 - **Fix:** (1) make progress durable per page: add an ascending
   `updated_after=(ts,id)` cursor to `GET /api/entries` so the walk runs forward
   and every committed page advances the watermark (`tmp.md` SYNC-N1 "later
@@ -165,7 +181,8 @@ measurements in `opus.md` §1; steady-state cost in `tmp.md` SYNC-N1.
   pending top watermark plus the lowest handled boundary and resume there.
   (2) Report a partial pass as progress ("pulled N, more pending"), not failure.
   (3) Replace the 35 s outer timeout with no-progress cancellation (abort only
-  when no page or blob completes within the 30 s stall window #157 uses).
+  when no page or blob completes within the 30 s stall window #157 uses), and
+  start it only once the manual pull holds `pull_lock`.
 - **Verify:** mock-server test with 5 pages and an artificial per-page delay so
   the total exceeds the outer deadline: the first call persists a watermark past
   the initial one, the second call completes without re-fetching page 1.
@@ -273,7 +290,7 @@ Refs: `sol.md` SYNC-02/05/06/07/10; `tmp.md` SYNC-N5, SYNC-N6.
     `updated_at = now` on client and server.
   - a remote star apply stamps local `now()` into `updated_at` (SYNC-N6), so
     the same entry carries different timestamps on different devices.
-- **Already in open PRs:** #153 applies a push acknowledgement only if the row
+- **Already merged (#164):** #153 applies a push acknowledgement only if the row
   is unchanged (`mark_synced_if_unchanged`, one transaction) — the revision
   check for one path; #148 pauses a push batch on 401/403.
 - **Fix:**
@@ -291,7 +308,10 @@ Refs: `sol.md` SYNC-02/05/06/07/10; `tmp.md` SYNC-N5, SYNC-N6.
      `content_hash`** (see *Review corrections*).
   5. Track per-entry permanent and retryable failures durably (attempts, last
      error, class, `next_attempt_at` with exponential backoff) so one bad row
-     cannot monopolise the loop (`tmp.md` SYNC-N3 fix).
+     cannot monopolise the loop (`tmp.md` SYNC-N3 fix). Push metadata-only
+     changes such as stars ahead of blob uploads: since #153 a star waits for
+     the loop's oldest-first batch, and under #157's size-scaled deadlines one
+     large pending blob can hold that batch for minutes.
   6. Advance the pull watermark only over a successfully handled contiguous
      range (also the fix for SYNC-A3).
 - **Verify:** tests for (a) recopy on device A appears at the top on the server;
@@ -305,12 +325,12 @@ Refs: `sol.md` SYNC-02/05/06/07/10; `tmp.md` SYNC-N5, SYNC-N6.
 Refs: `sol.md` OPS-04.
 
 **Still the highest-leverage missing work in the repo.** Client storage and
-list projection have unit tests and the open PRs add mock-socket tests, but no
+list projection have unit tests and the 2026-09-25 PRs added mock-socket tests, but no
 test runs the real client against the real server; everything in *Android sync
 latency* and BUG-01 would have been caught by one.
 
 - **Where:** new `server/tests/sync_e2e.rs` (the crate already hosts
-  desktop-backend tests). Once #150 merges, the server router is built by
+  desktop-backend tests). Since #150, the server router is built by
   `build_app`, so the test can serve it on an ephemeral port over a temp data
   dir and point a `SyncClient` at it.
 - **Cover:**
@@ -341,7 +361,7 @@ SYNC-N3.
   (~×1.33) exceeds the server's 64 MiB body limit. `ClipboardPayload::Image` has
   **no cap at all**; a large-display screenshot re-encoded to PNG can exceed it
   too (CAP-N4). The failed row retries every 5 s, re-reading and re-encoding the
-  blob, and can allocate several copies. #157 (pending) removes the
+  blob, and can allocate several copies. #157 removed the
   whole-request timeout that made large blobs fail on slow links; size limits
   remain.
 - **Fix:**
@@ -508,13 +528,27 @@ Refs: `sol.md` SERVER-07; `opus.md` BUG-08 (overstated).
 
 - **Where:** `server/src/api.rs` `/api/health`; `metadata` table in
   `server/src/storage.rs`; watermark storage in `src-tauri/src/sync.rs`.
-- **Problem:** #154 (pending) resets the cursor when a URL changes, but a server
+- **Problem:** #154 resets the cursor when a URL changes, but a server
   wiped, restored or replaced behind an unchanged URL keeps the old
   `(updated_at, id)` watermark, so its older entries are never pulled.
 - **Fix:** generate a random per-database `server_id` at first start, return it
   from `/api/health`, store it with the watermark, and reset when it differs.
 - **Verify:** e2e test: wipe server data dir, restart on the same port, sync →
   all entries pulled.
+
+#### Validate push responses (found in the #164 review)
+
+- **Where:** `src-tauri/src/sync.rs` `push_entry_with_fallback`.
+- **Problem:** any 2xx answer marks the entry synced without reading the body.
+  A captive portal or a non-Copywraith server that answers `POST
+  /api/entries` with `200` and an HTML page makes entries look synced that
+  never reached the server, and they are never pushed again. The pull path
+  already reports an unreadable 2xx as `error` (#148). Pre-existing; not
+  introduced by the 2026-09-25 PRs.
+- **Fix:** parse the created-entry JSON; on failure return
+  `Rejection::UnreadableResponse` and keep the entry queued.
+- **Verify:** a fake server answering `200` with HTML leaves the entry
+  unsynced and reports `error`.
 
 #### Honest sync-status follow-ups (after #148)
 
@@ -714,8 +748,8 @@ Refs: `sol.md` MAC-10, ANDROID-18, SERVER-10.
 
 #### Per-app capture/sync exclusion
 
-- **Problem:** `source_app` is tracked but unused for exclusion. Pause is in
-  #161 (pending); per-app rules and an incognito mode remain.
+- **Problem:** `source_app` is tracked but unused for exclusion. Pause shipped
+  in #161; per-app rules and an incognito mode remain.
 - **Fix:** exclusion list in Settings matched against `source_app`/bundle ID
   before storing.
 - **Verify:** capture test with an excluded source → no row.
@@ -1081,11 +1115,14 @@ MAC-13, ANDROID-13/14; `tmp.md` UX-N2 remainder, UX-N3, UX-N5, UX-N6.
 #### Remaining keyboard coverage (UX-N2 remainder)
 
 - **Where:** `src/routes/+page.svelte:417-471`, `FilterBar.svelte:46-72`.
-- **Problem:** #158 (pending) adds Mod+1..9, Mod+S, Mod+Backspace,
-  Shift/Alt+Enter and PageUp/Down. Still missing: `Cmd+P`/`Space` preview from
-  the filter field, `Home`/`End`, `Cmd+F` refocus filter, `Delete`,
-  type-to-filter, a `?` cheat sheet and status-bar hints, quick-paste numerals
-  shown while `Cmd` is held.
+- **Problem:** #158 added Mod+1..9 (with the digits shown while Mod is held),
+  Mod+S, Mod+Y preview, Mod+F filter focus, Mod+Backspace, Shift/Alt+Enter,
+  PageUp/Down, Home/End and a status-bar hint with a full tooltip. Still
+  missing: a plain `Delete` key, type-to-filter and a `?` cheat sheet. The
+  window handler's Enter paste also fires while a status-bar button has focus
+  (the sync status, Pause and its menu items), so Enter cannot activate them;
+  list shortcuts still act while the Pause menu is open; and the menu stays
+  open when the popup is shown again.
 - **Fix:** extend #158's shared handler for the filter field and the list.
 - **Verify:** extend #158's `scripts/tests` keyboard cases.
 
@@ -1253,7 +1290,7 @@ OPS-N8, OPS-N11, OPS-N12, DOC-N1; PR follow-ups.
   capabilities and amd64/arm64 output; it runs as root with no `USER` today.
   Set umask 077 or `user:` in compose (OPS-N6). Verify: `docker run --rm
   <image> id -u` is not 0.
-- **Narrow the Docker build context further.** #162 (pending) re-excludes data,
+- **Narrow the Docker build context further.** #162 re-excludes data,
   env, dist, target and tests; `tmp.md` OPS-N1 also recommends allow-listing
   files and narrowing `COPY server/ server/` (`Dockerfile:20`). Verify with
   `moby/patternmatcher` or `docker build --no-cache` plus a context listing.
@@ -1263,7 +1300,7 @@ OPS-N8, OPS-N11, OPS-N12, DOC-N1; PR follow-ups.
 - **Redeploy** builds before stopping, fails on health mismatch, supports
   rollback and real port variables.
 
-### Small follow-ups from the open PRs
+### Small follow-ups from the 2026-09-25 PRs
 
 - **IMMEDIATE transaction for `mark_synced_if_unchanged` (#153).** Where:
   `src-tauri/src/storage.rs`. Under a second instance the deferred transaction
@@ -1350,9 +1387,8 @@ Ideas that fit the idiom (no dark mode, no type-scale change):
   feature that makes a clipboard manager sticky.
 - **Pinned snippets with aliases.** Starred entries are already first-class;
   naming them turns the app into a text expander for free.
-- **Quick-paste by number** — implemented in #158 (pending) as Mod+1..9;
-  showing the numerals in the first nine rows while `Cmd` is held (the macOS
-  menu idiom) remains.
+- **Quick-paste by number** — shipped in #158 as Mod+1..9, with the numerals
+  shown in the first nine rows while Mod is held.
 - **Type and source filters** in the client, with **search operators** parsed
   from the filter text: `is:starred`, `type:image`, `app:Safari`,
   `before:2026-09-01`. The admin UI has a content-type dropdown; the client,
@@ -1377,7 +1413,7 @@ Ideas that fit the idiom (no dark mode, no type-scale change):
 The spooky identity is under-exploited. These are cheap and give the app a
 personality no competitor has:
 
-- **The ghost sleeps (pause capture)** — implemented in #161 (pending): pause
+- **The ghost sleeps (pause capture)** — shipped in #161: pause
   for 5 min / 1 h / until resumed, "zzz Paused 4m" in the status bar; pairs with
   SEC-N1. Tray items remain (see *Tray pause toggle*, *Menu-bar presence*).
 - **Séance Log** — a sync history where each event has a playful name
@@ -1530,12 +1566,14 @@ Disposition of every PR from the 2026-07-25 and 2026-09-25 reviews. This
 supersedes any status claim earlier in this document, in `opus.md`, or in
 `tmp.md`.
 
-### Open PRs from the 2026-09-25 review (awaiting merge)
+### Integrated — #164 (2026-09-25 review)
 
-**None of these is merged.** Each was reviewed in rounds; the columns record
+All sixteen PRs merged to `main` through #164, each as its own merge commit so
+its history and review record stay attached. A cross-PR review found no
+duplicates: each fixes a different finding, and they overlap only in the files
+they touch. None was rejected. Each was reviewed in rounds; the columns record
 what survived review and what was declined, deferred or refuted, with reasons.
-If a PR is rejected, move its IDs back into the backlog (the original evidence
-is in `tmp.md`); deferred follow-ups are already backlog items.
+Deferred follow-ups are backlog items.
 
 | PR | Fixes | Kept after review | Declined / deferred / refuted, and why |
 |---|---|---|---|
@@ -1554,19 +1592,48 @@ is in `tmp.md`); deferred follow-ups are already backlog items.
 | #159 | CAP-N5 (plaintext paste trims) | Plaintext paste no longer trims (prefers untrimmed text). | Nits declined. |
 | #160 | TOOL-01 (tooling test fails under an AI agent) | `--output human` pinned for svelte-check. | Env-scrub hardening declined (the flag suffices). |
 | #161 | Idea "The ghost sleeps" | Pause capture 5 min / 1 h / until resumed; status-bar "zzz Paused 4m"; Escape closes only the menu (caught on the window in the capture phase, since WebKit does not focus clicked buttons); unparsable end time shows plain "zzz Paused". | **Deferred:** Linux tray pause toggle; tray/menu-bar item on all platforms. |
-| #162 | OPS-N1 (`.dockerignore` re-includes live data, `auth.json`, `node_modules`) | Re-exclude data, env, dist, target and tests after the re-includes. | **Declined:** `.env.example` exception (root not re-included; Dockerfile never reads it); anchoring `dist` (UI is built in the image). |
+| #162 | OPS-N1 (`.dockerignore` re-includes live data, `auth.json`, `node_modules`) | Re-exclude data, env, dist, target and tests after the re-includes. In #164, also `server/data` (the server's default `./data` when run from `server/`) and `auth.json` and `copywraith.db*` by name, after a context export showed a server run from `server/` still leaked both. | **Declined:** `.env.example` exception (root not re-included; Dockerfile never reads it); anchoring `dist` (UI is built in the image). |
 
-**Merge order.** #148, #149, #153, #154 and #157 all touch the sync loop and
-the tail of `src-tauri/src/sync.rs`; merged in sequence they need small conflict
-resolutions. #155 and #159 both touch the `native_clipboard`/`models` paste
-paths. A low-conflict order: independent PRs first (#160, #162, #147, #152,
-#151, #156, #150, #158, #161), then the sync group one at a time, then #155
-before #159.
+**How they were combined.** Merged in the order #160, #162, #147, #152, #151,
+#156, #150, #158, #161, then #148, #149, #153, #154, #157, then #155 and #159.
+Every conflict was two PRs editing the same spot, and each resolution keeps
+both changes:
+
+- #148, #149, #153, #154 and #157 each appended a test module to
+  `src-tauri/src/sync.rs`; all are kept.
+- #149 moved the loop's sleep after the pass and #153 made it wakeable; the
+  wakeable sleep now sits after the pass, so the first sync still starts at
+  launch and a star toggle still cuts the wait short.
+- #148's `PushOutcome` check wraps #153's `mark_synced_if_unchanged`, and
+  #157's size-scaled push deadline joins #148's rejection tracking in
+  `push_entry_with_fallback`.
+- #147's privacy-marker helpers and #155's file-URI helpers were added at the
+  same place in `native_clipboard.rs`; both are kept.
+- #150 and #152 both add `tower` as a server dev-dependency; one entry remains.
+
+One semantic fix: #150's gzip test compared the endpoint state with the string
+`"online"`, which stops compiling once #148 makes the state a `SyncState` enum.
+It now compares against `SyncState::Online`. The four sync test modules that
+ran a fake server each had their own request reader, response writer and
+temp-storage setup; one shared `test_support` module now serves all of them.
 
 **Not addressed by any PR** (still in the backlog): SEC-N2, SEC-N3, SEC-N4,
 SEC-N5, SYNC-N5, SYNC-N6, SYNC-N7, SRV-N2, SRV-N3, SRV-N4, CAP-N3, CAP-N4,
 CAP-N6, CAP-N7, UX-N3..N6, ADM-N2..N11, AND-N2..N6, AND-N8..N10, OPS-N2..N12,
 DOC-N1, and the resumable pull (SYNC-A3).
+
+### Integrated — #163 (dependencies)
+
+The six Dependabot PRs of 2026-09-13/20, each as its own merge commit:
+actions/setup-java 6.0.1 (#140), argon2 0.6.0 (#142), vite 8.3.0 in
+`server/ui` (#143) and the popup (#144), vitest 5.0.1 (#145) and @types/node
+26.6.1 (#146). #143 and #145 conflicted in `server/ui`; the lockfile was
+regenerated with npm to hold exactly the versions both chose. The legacy
+`auth.json` fixture still unlocks under argon2 0.6, so existing server
+passwords keep working. #144's lockfile drops `esbuild`, an optional vite peer
+that nothing installs. vitest 5 requires Node 22.12 or later, so CI, the
+release workflow and the Docker UI stage moved from Node 20 (end of life since
+April 2026) to Node 22, and `server/ui`'s `engines` now matches vitest's range.
 
 ### Integrated — #114 (features)
 
@@ -1671,8 +1738,8 @@ replacement. Delete propagation remains unshipped and tracked in **#113**.
 
 ## Shipped
 
-Work completed and merged to `main`. Listed so it is not reimplemented. Nothing
-from the 2026-09-25 review has merged yet; see the Outcome ledger.
+Work completed and merged to `main`. Listed so it is not reimplemented. Scope,
+corrections and limitations are in the Outcome ledger.
 
 ### After 2026-07-25 (0.3.x)
 
@@ -1685,7 +1752,14 @@ These postdate `opus.md`.
 Then the integration PRs: **#110** (15 compatible dependency updates),
 **#114** (the six reviewed feature PRs), **#117** (coordinated dependency
 migrations) and **#118** (native KDE shortcuts). All kept the tree at 0.3.1.
-Scope, corrections and limitations are in the Outcome ledger.
+
+Then the 2026-09-25 review: **#163** (six Dependabot updates) and **#164**
+(the sixteen PRs #147–#162: private-marker skipping, honest sync status, the
+one-entry probe, gzip, Android share hardening, header-safe passwords,
+optimistic starring, cursor reset on server change, multi-file copies and
+decoded file URIs, a one-time server backfill, size-aware deadlines, popup
+keyboard shortcuts, whitespace-preserving plain paste, the agent-safe tooling
+test, pause capture and a trimmed Docker context). Still 0.3.1.
 
 ### Earlier (merged before 2026-07-25)
 

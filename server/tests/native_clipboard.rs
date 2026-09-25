@@ -196,6 +196,65 @@ fn stored_gif_remains_decodable() {
     );
 }
 
+/// The marker each platform's password managers actually publish.
+#[cfg(target_os = "macos")]
+const PASSWORD_MANAGER_MARKER: (&str, &[u8]) = ("org.nspasteboard.ConcealedType", b"secret");
+#[cfg(target_os = "windows")]
+const PASSWORD_MANAGER_MARKER: (&str, &[u8]) = (
+    "ExcludeClipboardContentFromMonitorProcessing",
+    &[0, 0, 0, 0],
+);
+// Mirrors the adapter: every other desktop target uses the X11/Wayland marker.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const PASSWORD_MANAGER_MARKER: (&str, &[u8]) = ("x-kde-passwordManagerHint", b"secret");
+
+#[test]
+#[ignore = "requires an isolated native clipboard (Xvfb on Linux)"]
+fn content_marked_private_by_its_source_is_not_read() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    const SECRET: &str = "correct-horse-battery-staple";
+    let (marker, marker_value) = PASSWORD_MANAGER_MARKER;
+
+    peer.set(vec![
+        ClipboardContent::Text(SECRET.into()),
+        ClipboardContent::Other(marker.into(), marker_value.to_vec()),
+    ])
+    .unwrap();
+    assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Private));
+
+    // The same text without the marker is ordinary content.
+    peer.set_text(SECRET.into()).unwrap();
+    let ClipboardPayload::Flavors(flavors) = adapter.read().unwrap() else {
+        panic!("unmarked text must still be captured")
+    };
+    assert_eq!(flavors.text_plain.as_deref(), Some(SECRET));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "requires an isolated native clipboard"]
+fn windows_clipboard_history_opt_out_is_honoured() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    const HISTORY_FORMAT: &str = "CanIncludeInClipboardHistory";
+
+    for (value, private) in [(0u32, true), (1u32, false)] {
+        peer.set(vec![
+            ClipboardContent::Text("history opt-out".into()),
+            ClipboardContent::Other(HISTORY_FORMAT.into(), value.to_le_bytes().to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(
+            matches!(adapter.read().unwrap(), ClipboardPayload::Private),
+            private,
+            "CanIncludeInClipboardHistory = {value}"
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires an isolated X11 clipboard (Xvfb)"]
@@ -273,4 +332,38 @@ fn unreadable_native_format_preserves_usable_payloads() {
     );
     peer.set_text(" ".into()).unwrap();
     assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Empty));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 clipboard (Xvfb)"]
+fn file_manager_uris_are_decoded_and_written_back_encoded() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("My Screenshot #1.png");
+    std::fs::write(&file, PNG).unwrap();
+    let path = file.to_string_lossy().into_owned();
+    let encoded = path.replace(' ', "%20").replace('#', "%23");
+
+    // File managers publish percent-encoded text/uri-list entries.
+    peer.set_files(vec![format!("file://{encoded}")]).unwrap();
+    let ClipboardPayload::Files(files) = adapter.read().unwrap() else {
+        panic!("expected files")
+    };
+    assert_eq!(files, std::slice::from_ref(&path));
+
+    // Pasting writes a valid URI again, for new decoded rows and for rows
+    // stored encoded before decoding existed.
+    for stored in [&path, &encoded] {
+        adapter.write_files(std::slice::from_ref(stored)).unwrap();
+        let native = peer.get_files().unwrap();
+        assert_eq!(native.len(), 1);
+        assert!(!native[0].contains(' '), "{native:?}");
+        let ClipboardPayload::Files(files) = adapter.read().unwrap() else {
+            panic!("expected files")
+        };
+        assert_eq!(files, std::slice::from_ref(&path), "stored as {stored:?}");
+    }
 }

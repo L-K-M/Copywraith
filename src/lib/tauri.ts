@@ -1,6 +1,7 @@
 import { addPluginListener, invoke, type PluginListener } from '@tauri-apps/api/core';
 import type { ClipboardEntry, Settings, ShortcutStatus } from './types';
 import type { SyncEndpointStatusInput } from './util/syncStatusStore';
+import type { CapturePauseStatus } from './util/capturePause';
 
 export interface SyncNowResult {
 	pulled: number;
@@ -45,6 +46,19 @@ export class TauriService {
 			starredOnly: options?.starred_only ?? false,
 			search: options?.search ?? null
 		});
+	}
+
+	static async getCapturePause(): Promise<CapturePauseStatus> {
+		return await invoke('get_capture_pause');
+	}
+
+	/** Pause capture for `minutes`, or until resumed when `minutes` is null. */
+	static async pauseCapture(minutes: number | null): Promise<CapturePauseStatus> {
+		return await invoke('pause_capture', { minutes });
+	}
+
+	static async resumeCapture(): Promise<CapturePauseStatus> {
+		return await invoke('resume_capture');
 	}
 
 	static async toggleStar(id: string): Promise<boolean> {

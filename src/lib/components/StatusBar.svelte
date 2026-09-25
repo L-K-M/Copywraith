@@ -3,8 +3,9 @@
 	import { onMount } from 'svelte';
 	import { TauriService } from '$lib/tauri';
 	import { entries, starredOnly } from '$lib/util/clipboardStore';
-	import { isMobile } from '$lib/util/platform';
+	import { isMobile, platform } from '$lib/util/platform';
 	import { setSyncEndpointStatus, syncEndpointStatus } from '$lib/util/syncStatusStore';
+	import CapturePauseControl from './CapturePauseControl.svelte';
 
 	let {
 		progressVisible = false,
@@ -17,6 +18,21 @@
 	} = $props();
 
 	let entryCount = $derived($entries.length);
+	let mod = $derived($platform === 'macos' ? '⌘' : 'Ctrl+');
+	let shortcutHint = $derived(
+		`Enter paste · ${$platform === 'macos' ? '⇧' : 'Shift+'}Enter plain · ${mod}1–9 quick paste · ${mod}S star`
+	);
+	let shortcutHelp = $derived(
+		[
+			'Click or Enter: paste',
+			`${$platform === 'macos' ? 'Option' : 'Alt'}+click, Shift+Enter or ${$platform === 'macos' ? 'Option' : 'Alt'}+Enter: paste as plain text`,
+			`${mod}1 to ${mod}9: paste that row`,
+			`${mod}S: star or unstar`,
+			`${mod}Y: preview`,
+			`${mod}Backspace: delete (with an empty filter)`,
+			`↑/↓, Page Up/Down: move · ${mod}F: filter`
+		].join('\n')
+	);
 	let starredLabel = $derived($starredOnly ? ' (starred)' : '');
 	let showSyncDetails = $state(false);
 	let configuredLocalUrl: string | null = $state(null);
@@ -47,6 +63,8 @@
 		if (status.state === 'checking') return 'Sync: checking...';
 		if (status.state === 'disabled') return 'Sync: off';
 		if (status.state === 'unreachable') return 'Sync: unreachable';
+		if (status.state === 'unauthorized') return 'Sync: password rejected';
+		if (status.state === 'error') return 'Sync: server error';
 
 		const host = formatEndpointHost(status.url);
 		const role = formatRole(status.role);
@@ -65,6 +83,14 @@
 
 		if (status.state === 'unreachable') {
 			return 'Configured servers are unreachable';
+		}
+
+		if (status.state === 'unauthorized') {
+			return 'The server rejected the password in Settings';
+		}
+
+		if (status.state === 'error') {
+			return 'The server answered with an error';
 		}
 
 		return 'Checking sync endpoint';
@@ -142,7 +168,11 @@
 				lastSyncSummary =
 					result.endpoint_status.state === 'disabled'
 						? 'Sync is disabled. Configure a server in Settings.'
-						: 'Sync did not complete. See the message above.';
+						: result.endpoint_status.state === 'unauthorized'
+							? 'The server rejected the password. Update it in Settings.'
+							: result.endpoint_status.state === 'error'
+								? 'The server answered with an error. See the message above.'
+								: 'Sync did not complete. See the message above.';
 				return;
 			}
 
@@ -173,21 +203,26 @@
 			<ProgressBar value={progressValue} max={100} height={8} ariaLabel="Mobile sync progress" />
 		</div>
 	{:else}
-		<span class="status-hint">
+		<span class="status-hint" title={$isMobile ? undefined : shortcutHelp}>
 			{#if $isMobile}
 				Tap to copy
 			{:else}
-				Click to paste &middot; Opt+Click plaintext &middot; ↑/↓ select &middot; Enter paste
+				{shortcutHint}
 			{/if}
 		</span>
 	{/if}
 	<div class="sync-status-wrap">
+		{#if !$isMobile}
+			<CapturePauseControl />
+		{/if}
 		<button
 			type="button"
 			class="status-endpoint"
 			class:online={$syncEndpointStatus.state === 'online'}
 			class:disabled={$syncEndpointStatus.state === 'disabled'}
-			class:unreachable={$syncEndpointStatus.state === 'unreachable'}
+			class:unreachable={$syncEndpointStatus.state === 'unreachable' ||
+				$syncEndpointStatus.state === 'error'}
+			class:unauthorized={$syncEndpointStatus.state === 'unauthorized'}
 			class:checking={$syncEndpointStatus.state === 'checking'}
 			title={endpointTooltip}
 			aria-expanded={showSyncDetails}
@@ -264,6 +299,9 @@
 
 	.sync-status-wrap {
 		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 6px;
 		justify-self: end;
 		min-width: 0;
 	}
@@ -294,6 +332,12 @@
 	.status-endpoint.unreachable {
 		border-color: #b35a00;
 		background: #fff3e6;
+	}
+
+	.status-endpoint.unauthorized {
+		border-color: #a01717;
+		background: #fdeaea;
+		font-weight: bold;
 	}
 
 	.status-endpoint.checking {

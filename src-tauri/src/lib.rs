@@ -19,6 +19,8 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
     pub storage: Arc<storage::LocalStorage>,
     pub sync_client: Arc<sync::SyncClient>,
+    /// The clipboard monitor ignores changes while this is paused.
+    pub capture_pause: std::sync::Mutex<models::CapturePause>,
     #[cfg(desktop)]
     pub last_focused_app: std::sync::Mutex<Option<String>>,
     #[cfg(desktop)]
@@ -98,6 +100,7 @@ pub fn run() {
             let state = AppState {
                 storage: storage.clone(),
                 sync_client: sync_client.clone(),
+                capture_pause: std::sync::Mutex::new(models::CapturePause::default()),
                 #[cfg(desktop)]
                 last_focused_app: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
@@ -200,6 +203,9 @@ pub fn run() {
             commands::set_shizuku_clipboard_enabled,
             commands::get_platform,
             commands::hide_popup,
+            commands::get_capture_pause,
+            commands::pause_capture,
+            commands::resume_capture,
             window_activity::is_window_active,
         ])
         .build(tauri::generate_context!())
@@ -870,8 +876,6 @@ fn start_sync_loop(
         let mut current_interval = BASE_INTERVAL_SECS;
 
         loop {
-            tokio::time::sleep(Duration::from_secs(current_interval)).await;
-
             // Push local unsynced entries first
             sync_client.sync_unsynced_entries(&storage).await;
 
@@ -885,7 +889,9 @@ fn start_sync_loop(
                         log::info!("Applied {} updates from server", result.pulled);
                     }
 
-                    if result.endpoint_status.state == "unreachable" {
+                    // Back off on any failure. A rejected password in
+                    // particular costs the server an Argon2id run per request.
+                    if result.endpoint_status.state.is_failure() {
                         current_interval = (current_interval * 2).min(MAX_INTERVAL_SECS);
                     } else {
                         current_interval = BASE_INTERVAL_SECS;
@@ -896,7 +902,7 @@ fn start_sync_loop(
                     let _ = app.emit(
                         "sync-endpoint-status",
                         sync::SyncEndpointStatus {
-                            state: "unreachable".to_string(),
+                            state: sync::SyncState::Unreachable,
                             role: None,
                             url: None,
                             message: Some(e.to_string()),
@@ -906,6 +912,14 @@ fn start_sync_loop(
                     // Exponential backoff on failure, capped at MAX_INTERVAL_SECS
                     current_interval = (current_interval * 2).min(MAX_INTERVAL_SECS);
                 }
+            }
+
+            // Sleep after the pass, not before it: the first sync starts at
+            // launch instead of after a guaranteed idle interval. A sync
+            // request (e.g. a star toggle) cuts the wait short.
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(current_interval)) => {}
+                _ = sync_client.sync_requested() => {}
             }
         }
     });

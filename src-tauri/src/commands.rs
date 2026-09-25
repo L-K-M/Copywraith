@@ -183,9 +183,11 @@ pub async fn get_entry_image(
 pub async fn toggle_star(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     let starred = state.storage.toggle_star(&id).map_err(|e| e.to_string())?;
 
-    if let Some(entry) = state.storage.get_entry(&id).map_err(|e| e.to_string())? {
-        state.sync_client.sync_entry(&entry, &state.storage).await;
-    }
+    // The toggle left the row unsynced. Waiting for the push here held the
+    // star button for a network round trip, and for the connect timeout of
+    // every endpoint when the server was unreachable. The sync loop pushes it
+    // instead, in order with any further toggles.
+    state.sync_client.request_sync();
 
     Ok(starred)
 }
@@ -252,7 +254,7 @@ pub async fn paste_entry_plaintext(
 
     #[cfg(desktop)]
     {
-        if let Some(plaintext) = entry.best_plain_text() {
+        if let Some(plaintext) = entry.plain_text_for_paste() {
             paste::write_and_paste_text(&app, &plaintext);
         }
     }
@@ -284,7 +286,7 @@ fn write_to_clipboard_mobile(
     }
 
     let text = if force_plaintext {
-        entry.best_plain_text()
+        entry.plain_text_for_paste()
     } else {
         let flavors = entry.resolved_flavors();
         flavors
@@ -697,17 +699,9 @@ fn import_pending_file_share(
             Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
         )
     } else {
-        let display_name = item
-            .file_name
-            .as_deref()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("shared-file")
-            });
+        let display_name = shared_file_display_name(item.file_name.as_deref(), path);
         let flavors = ClipboardFlavors {
-            file_list: Some(vec![display_name.to_string()]),
+            file_list: Some(vec![display_name]),
             ..ClipboardFlavors::default()
         };
         let blob_hash = copywraith_core::content::hash_bytes(&bytes);
@@ -725,6 +719,39 @@ fn import_pending_file_share(
         let _ = std::fs::remove_file(path);
     }
     result
+}
+
+/// The name recorded for a file shared from another Android app.
+///
+/// `DISPLAY_NAME` comes from the sending app's content provider and becomes the
+/// entry's file list, which a desktop paste turns into a `file://` path. Only a
+/// final path component is kept, so a hostile name such as
+/// `/Users/alice/.ssh/id_rsa` cannot aim a desktop paste at a real file.
+#[cfg(any(target_os = "android", test))]
+fn shared_file_display_name(raw: Option<&str>, stored_path: &std::path::Path) -> String {
+    raw.and_then(|name| name.rsplit(['/', '\\']).next())
+        .map(str::trim)
+        .filter(|name| {
+            !name.is_empty()
+                && *name != "."
+                && *name != ".."
+                && !name.chars().any(|c| c.is_control() || is_bidi_override(c))
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            stored_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("shared-file")
+                .to_string()
+        })
+}
+
+/// Bidirectional overrides can make `photo\u{202E}gpj.exe` display as
+/// `photoexe.jpg`, disguising a file's real extension.
+#[cfg(any(target_os = "android", test))]
+fn is_bidi_override(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 #[tauri::command]
@@ -822,7 +849,7 @@ pub async fn sync_now(
                     sync::SyncEndpointStatus::unreachable_endpoint(endpoint, e.to_string())
                 })
                 .unwrap_or_else(|| sync::SyncEndpointStatus {
-                    state: "unreachable".to_string(),
+                    state: sync::SyncState::Unreachable,
                     role: None,
                     url: None,
                     message: Some(e.to_string()),
@@ -943,10 +970,24 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 
 #[tauri::command]
 pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    let previous = state.storage.get_settings();
     state
         .storage
         .save_settings(&settings)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Against a different server the old watermark would hide every entry
+    // older than it. Re-walking is safe because ingestion is idempotent.
+    //
+    // Keep the reset after the save. A pull starting in between may use the
+    // old watermark once, but its write-back fails the generation check. With
+    // the reset first, a pull in between could re-walk the old server and
+    // install its watermark against the new one, with no reset left to clear it.
+    if sync::server_endpoints_changed(&previous, &settings) {
+        state.sync_client.reset_pull_cursor(&state.storage);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1000,6 +1041,55 @@ pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Event emitted whenever capture is paused or resumed.
+const CAPTURE_PAUSE_CHANGED: &str = "capture-pause-changed";
+
+#[tauri::command]
+pub async fn get_capture_pause(
+    state: State<'_, AppState>,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    let pause = *state.capture_pause.lock().map_err(|e| e.to_string())?;
+    Ok(pause.status_at(chrono::Utc::now()))
+}
+
+/// Pause capture for `minutes`, or until resumed when `minutes` is `None`.
+#[tauri::command]
+pub async fn pause_capture(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    minutes: Option<u32>,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    use crate::models::CapturePause;
+
+    let pause = match minutes {
+        Some(0) => return Err("A pause needs at least one minute".to_string()),
+        Some(minutes) => {
+            CapturePause::Until(chrono::Utc::now() + chrono::Duration::minutes(minutes.into()))
+        }
+        None => CapturePause::Indefinite,
+    };
+    set_capture_pause(&app, &state, pause)
+}
+
+#[tauri::command]
+pub async fn resume_capture(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    set_capture_pause(&app, &state, crate::models::CapturePause::Active)
+}
+
+fn set_capture_pause(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    pause: crate::models::CapturePause,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    *state.capture_pause.lock().map_err(|e| e.to_string())? = pause;
+    let status = pause.status_at(chrono::Utc::now());
+    let _ = app.emit(CAPTURE_PAUSE_CHANGED, &status);
+    Ok(status)
 }
 
 #[cfg(test)]
@@ -1083,6 +1173,42 @@ mod tests {
         assert_eq!(truncate_chars("short", 100), None);
         assert_eq!(truncate_chars("exact", 5), None);
         assert_eq!(truncate_chars("abcdef", 3).as_deref(), Some("abc..."));
+    }
+
+    #[test]
+    fn shared_file_names_keep_only_their_final_component() {
+        use super::shared_file_display_name;
+        let stored = std::path::Path::new("/data/pending-shares/files/1-uuid-report.pdf");
+
+        assert_eq!(
+            shared_file_display_name(Some("report.pdf"), stored),
+            "report.pdf"
+        );
+        assert_eq!(
+            shared_file_display_name(Some("/Users/alice/.ssh/id_rsa"), stored),
+            "id_rsa"
+        );
+        assert_eq!(
+            shared_file_display_name(Some("C:\\Users\\bob\\secret.txt"), stored),
+            "secret.txt"
+        );
+        for unusable in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("folder/"),
+            Some(".."),
+            Some("a/.."),
+            Some("report\u{0}.pdf"),
+            Some("bad\nname.txt"),
+            Some("photo\u{202E}gpj.exe"),
+        ] {
+            assert_eq!(
+                shared_file_display_name(unusable, stored),
+                "1-uuid-report.pdf",
+                "{unusable:?}"
+            );
+        }
     }
 
     #[test]

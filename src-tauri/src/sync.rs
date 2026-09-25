@@ -9,9 +9,99 @@ use serde::Serialize;
 
 use crate::{models::Settings, storage::LocalStorage};
 
+/// Where the most recent sync attempt ended up, as shown in the status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncState {
+    Checking,
+    Disabled,
+    Online,
+    /// No configured server could be reached.
+    Unreachable,
+    /// A server answered but refused the configured password.
+    Unauthorized,
+    /// A server answered with an error status or an unreadable reply.
+    Error,
+}
+
+impl SyncState {
+    /// States that mean sync is not working and the loop should back off.
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::Unreachable | Self::Unauthorized | Self::Error)
+    }
+}
+
+/// Why a server that did answer refused or failed a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rejection {
+    /// HTTP 401: the password is wrong or missing.
+    Unauthorized,
+    /// HTTP 403: the Copywraith server answers this until a password is set up.
+    Forbidden,
+    /// Any other non-success status.
+    Status(reqwest::StatusCode),
+    /// A success status whose body is not a Copywraith response.
+    UnreadableResponse,
+}
+
+impl Rejection {
+    fn from_status(status: reqwest::StatusCode) -> Self {
+        match status {
+            reqwest::StatusCode::UNAUTHORIZED => Self::Unauthorized,
+            reqwest::StatusCode::FORBIDDEN => Self::Forbidden,
+            other => Self::Status(other),
+        }
+    }
+
+    /// Credential problems fail every request the same way. Retrying the rest
+    /// of a batch cannot succeed, and each attempt costs the server a full
+    /// Argon2id password verification.
+    fn is_credential_problem(self) -> bool {
+        matches!(self, Self::Unauthorized | Self::Forbidden)
+    }
+
+    /// Whether this rejection explains a failure better than `earlier`, one
+    /// from another endpoint. A credential refusal does, because it is what
+    /// the user must fix and what pauses a push batch; otherwise the first
+    /// endpoint's answer stands.
+    fn outranks(self, earlier: Self) -> bool {
+        self.is_credential_problem() && !earlier.is_credential_problem()
+    }
+
+    /// The more telling of this rejection and an `earlier` one, if any.
+    fn outrank(self, earlier: Option<Self>) -> Self {
+        match earlier {
+            Some(earlier) if !self.outranks(earlier) => earlier,
+            _ => self,
+        }
+    }
+}
+
+/// How pushing one entry ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushOutcome {
+    Synced,
+    Rejected(Rejection),
+    /// No configured endpoint accepted a connection.
+    Unreachable,
+    /// A connection was made but the request did not complete, for example
+    /// because a large upload timed out. Specific to this entry.
+    Failed,
+}
+
+/// How fetching one page of remote entries ended.
+enum PageFetch {
+    Page(FetchEntriesResult),
+    Rejected {
+        endpoint: ServerEndpoint,
+        rejection: Rejection,
+    },
+    Unreachable,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncEndpointStatus {
-    pub state: String,
+    pub state: SyncState,
     pub role: Option<String>,
     pub url: Option<String>,
     pub message: Option<String>,
@@ -53,7 +143,7 @@ pub struct ServerEndpoint {
 impl SyncEndpointStatus {
     fn disabled() -> Self {
         Self {
-            state: "disabled".to_string(),
+            state: SyncState::Disabled,
             role: None,
             url: None,
             message: Some("No server URL is configured in Settings.".to_string()),
@@ -63,7 +153,7 @@ impl SyncEndpointStatus {
 
     pub fn unreachable_endpoint(endpoint: &ServerEndpoint, message: impl Into<String>) -> Self {
         Self {
-            state: "unreachable".to_string(),
+            state: SyncState::Unreachable,
             role: Some(endpoint.role.as_str().to_string()),
             url: Some(endpoint.url.clone()),
             message: Some(message.into()),
@@ -71,9 +161,38 @@ impl SyncEndpointStatus {
         }
     }
 
+    fn rejected(endpoint: &ServerEndpoint, rejection: Rejection) -> Self {
+        let (state, message) = match rejection {
+            Rejection::Unauthorized => (
+                SyncState::Unauthorized,
+                "The server rejected the password. Check it in Settings.".to_string(),
+            ),
+            Rejection::Forbidden => (
+                SyncState::Unauthorized,
+                "The server refused access (HTTP 403). A new server needs a password set up in its admin page first.".to_string(),
+            ),
+            Rejection::Status(status) => (
+                SyncState::Error,
+                format!("The server answered with HTTP {status}."),
+            ),
+            Rejection::UnreadableResponse => (
+                SyncState::Error,
+                "The server's reply could not be read. Check that the URL points to a Copywraith server.".to_string(),
+            ),
+        };
+
+        Self {
+            state,
+            role: Some(endpoint.role.as_str().to_string()),
+            url: Some(endpoint.url.clone()),
+            message: Some(message),
+            checked_at: Some(now_rfc3339()),
+        }
+    }
+
     fn online(endpoint: &ServerEndpoint) -> Self {
         Self {
-            state: "online".to_string(),
+            state: SyncState::Online,
             role: Some(endpoint.role.as_str().to_string()),
             url: Some(endpoint.url.clone()),
             message: Some("Last sync check completed successfully.".to_string()),
@@ -87,7 +206,7 @@ fn checking_status_for_endpoint(
     message: impl Into<String>,
 ) -> SyncEndpointStatus {
     SyncEndpointStatus {
-        state: "checking".to_string(),
+        state: SyncState::Checking,
         role: endpoint.map(|endpoint| endpoint.role.as_str().to_string()),
         url: endpoint.map(|endpoint| endpoint.url.clone()),
         message: Some(message.into()),
@@ -113,7 +232,60 @@ pub fn checking_status_for_configured_endpoint(
     checking_status_for_endpoint(endpoint, message)
 }
 
+/// How long a transfer may make no progress before it is abandoned.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Deadline for any request that does not set its own.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Deadline for fetching one page of entries. Pages carry every text flavor
+/// for up to 100 rows, so a page of large rich-text copies can reach tens of
+/// megabytes; ten minutes covers about 75 MB at the 1 Mbit/s floor rate. A
+/// stalled page still ends after `STALL_TIMEOUT`.
+const PAGE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Largest blob a client creates (an Android share). Used as the download size
+/// when a server does not report one.
+const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Deadline for a request that moves `payload_bytes` over the network.
+///
+/// A fixed 30 s deadline made any blob that needs longer than that on the
+/// user's link unsyncable: the push timed out and was retried every pass, and
+/// a timed-out download counted as an ingest error that pinned the pull
+/// watermark. The deadline now allows the payload at a deliberately slow floor
+/// rate, so only a transfer far slower than any working link times out.
+fn transfer_timeout(payload_bytes: u64) -> Duration {
+    const BASE: Duration = Duration::from_secs(30);
+    // 1 Mbit/s.
+    const FLOOR_BYTES_PER_SEC: u64 = 128 * 1024;
+    // Download sizes come from the server; a garbage value must not produce
+    // an effectively endless deadline.
+    const MAX: Duration = Duration::from_secs(3600);
+    (BASE + Duration::from_secs(payload_bytes / FLOOR_BYTES_PER_SEC)).min(MAX)
+}
+
+/// Approximate request body size of a push: the base64 blob plus text.
+fn push_payload_bytes(req: &CreateEntryRequest) -> u64 {
+    let flavor_bytes = req.flavors.as_ref().map_or(0, |flavors| {
+        [&flavors.text_plain, &flavors.text_html, &flavors.text_rtf]
+            .into_iter()
+            .flatten()
+            .map(String::len)
+            .sum::<usize>()
+    });
+    let bytes = req.blob_base64.as_ref().map_or(0, String::len)
+        + req.text_content.as_ref().map_or(0, String::len)
+        + flavor_bytes;
+    bytes as u64
+}
+
+/// Lock order: `pull_state` is always taken before any storage call made
+/// while holding it (watermark writes, resets). Never the other way round.
 struct PullState {
+    /// Bumped by every cursor reset. A pull that started before a reset must
+    /// not write back a watermark from the server it was talking to.
+    generation: u64,
     initialized: bool,
     /// Newest `(updated_at, id)` we have fully pulled. Entries at or below this
     /// key are considered already synced. Comparing the full key (rather than a
@@ -127,9 +299,27 @@ struct EndpointHeartbeat {
     observed_at: Instant,
 }
 
+/// Page size for walking remote history.
+const PAGE_SIZE: u32 = 100;
+
+/// Page size of the first request once a watermark exists.
+///
+/// The sync loop polls every few seconds. Asking for a full page each time
+/// transferred the newest 100 entries, every text flavor in full, even when
+/// nothing had changed. One entry is enough to learn whether anything is newer
+/// than the watermark; only then does the walk continue with full pages.
+const PROBE_PAGE_SIZE: u32 = 1;
+
 pub struct SyncClient {
     http: reqwest::Client,
+    /// Wakes the periodic sync loop early, e.g. after a local change that
+    /// should reach the server without waiting for the next interval.
+    wake: tokio::sync::Notify,
     pull_state: Mutex<PullState>,
+    /// Serializes pulls. The periodic loop, manual sync and the mobile resume
+    /// refresh can all start one; running them side by side only walks the same
+    /// pages twice.
+    pull_lock: tokio::sync::Mutex<()>,
     last_responding_endpoint: Mutex<Option<EndpointHeartbeat>>,
 }
 
@@ -143,19 +333,41 @@ impl SyncClient {
                 .ok()
                 .map(|dt| (dt.with_timezone(&Utc), id))
         });
+        // The client-wide deadline is only a default: pushes, pages and blob
+        // downloads each set their own, sized to what they transfer (see
+        // `transfer_timeout`), and a per-request timeout replaces this one.
+        // The read timeout ends any download that stops making progress.
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .read_timeout(STALL_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             http,
+            wake: tokio::sync::Notify::new(),
             pull_state: Mutex::new(PullState {
+                generation: 0,
                 initialized: watermark.is_some(),
                 watermark,
             }),
+            pull_lock: tokio::sync::Mutex::new(()),
             last_responding_endpoint: Mutex::new(None),
         }
+    }
+
+    /// Ask the sync loop to run a pass now instead of at its next interval.
+    ///
+    /// The loop pushes unsynced rows one at a time, reading each row's current
+    /// state, so repeated requests can neither reorder nor duplicate pushes.
+    pub fn request_sync(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Wait until `request_sync` is called. A request made while no one is
+    /// waiting is remembered, so the next wait returns immediately.
+    pub async fn sync_requested(&self) {
+        self.wake.notified().await;
     }
 
     fn note_responding_endpoint(&self, endpoint: &ServerEndpoint) {
@@ -167,12 +379,13 @@ impl SyncClient {
     }
 
     pub fn reset_pull_cursor(&self, storage: &LocalStorage) {
-        {
-            let mut state = self.pull_state.lock().unwrap();
-            state.initialized = false;
-            state.watermark = None;
-        }
+        let mut state = self.pull_state.lock().unwrap();
+        state.generation += 1;
+        state.initialized = false;
+        state.watermark = None;
 
+        // Cleared under the lock so an in-flight pull cannot persist its
+        // watermark between the in-memory reset and this delete.
         if let Err(e) = storage.clear_sync_watermark() {
             log::warn!("Failed to clear sync watermark: {}", e);
         }
@@ -213,8 +426,22 @@ impl SyncClient {
         }
 
         for entry in entries {
-            self.push_entry(&entry, storage, &server_urls, &settings.api_key)
-                .await;
+            match self
+                .push_entry(&entry, storage, &server_urls, &settings.api_key)
+                .await
+            {
+                PushOutcome::Rejected(rejection) if rejection.is_credential_problem() => {
+                    log::warn!("Server rejected the sync credentials; pausing this push batch");
+                    return;
+                }
+                PushOutcome::Unreachable => {
+                    // Every remaining entry would wait out the same connect
+                    // timeout on every endpoint before failing too.
+                    log::debug!("No sync server reachable; pausing this push batch");
+                    return;
+                }
+                PushOutcome::Synced | PushOutcome::Rejected(_) | PushOutcome::Failed => {}
+            }
         }
     }
 
@@ -235,7 +462,7 @@ impl SyncClient {
         storage: &LocalStorage,
         server_urls: &[ServerEndpoint],
         api_key: &str,
-    ) {
+    ) -> PushOutcome {
         let flavors = entry.resolved_flavors();
 
         let content_hash = flavors.payload_hash(entry.content_type, entry.blob_hash.as_deref());
@@ -264,20 +491,32 @@ impl SyncClient {
             content_hash,
         };
 
-        let synced = self
+        let outcome = self
             .push_entry_with_fallback(server_urls, api_key, &req, &entry.id)
             .await;
 
-        if synced {
-            if let Err(e) = storage.mark_synced(&entry.id) {
-                log::error!("Failed to mark entry as synced: {}", e);
+        if outcome == PushOutcome::Synced {
+            match storage.mark_synced_if_unchanged(&entry.id, entry.updated_at) {
+                Ok(true) => {}
+                Ok(false) => {
+                    log::debug!(
+                        "Entry {} changed while it was being pushed; it stays queued",
+                        entry.id
+                    );
+                }
+                Err(e) => log::error!("Failed to mark entry as synced: {}", e),
             }
         }
+
+        outcome
     }
 
     pub async fn pull_new_entries(&self, storage: &LocalStorage) -> anyhow::Result<PullSyncResult> {
-        const PAGE_SIZE: u32 = 100;
+        let _pull_guard = self.pull_lock.lock().await;
 
+        // Taken before the settings are read: a reset that lands after this
+        // point may already have switched servers, and must win.
+        let generation = self.pull_state.lock().unwrap().generation;
         let settings = storage.get_settings();
         let mut server_urls = configured_server_urls(&settings);
         if server_urls.is_empty() {
@@ -295,6 +534,11 @@ impl SyncClient {
         };
 
         let mut before_cursor: Option<(String, String)> = None;
+        let mut page_size = if initialized && watermark.is_some() {
+            PROBE_PAGE_SIZE
+        } else {
+            PAGE_SIZE
+        };
         let mut pulled = 0usize;
         // Newest (updated_at, id) observed this pass. Promoted to the watermark
         // once the pass finishes without a blocking ingest error.
@@ -303,31 +547,43 @@ impl SyncClient {
         let mut active_endpoint: Option<ServerEndpoint> = None;
 
         loop {
-            let Some(fetch_result) = self
+            let fetch_result = match self
                 .fetch_entries_page_with_fallback(
                     &server_urls,
                     &api_key,
-                    PAGE_SIZE,
+                    page_size,
                     before_cursor
                         .as_ref()
                         .map(|(updated_at, id)| (updated_at.as_str(), id.as_str())),
                 )
-                .await?
-            else {
-                let endpoint_status = self.recent_responding_status().unwrap_or_else(|| {
-                    let attempted = server_urls
-                        .first()
-                        .expect("server_urls is non-empty after sync config check");
-                    SyncEndpointStatus::unreachable_endpoint(
-                        attempted,
-                        "No configured server endpoint responded while pulling entries.",
-                    )
-                });
+                .await
+            {
+                PageFetch::Page(result) => result,
+                PageFetch::Rejected {
+                    endpoint,
+                    rejection,
+                } => {
+                    return Ok(PullSyncResult {
+                        pulled,
+                        endpoint_status: SyncEndpointStatus::rejected(&endpoint, rejection),
+                    });
+                }
+                PageFetch::Unreachable => {
+                    let endpoint_status = self.recent_responding_status().unwrap_or_else(|| {
+                        let attempted = server_urls
+                            .first()
+                            .expect("server_urls is non-empty after sync config check");
+                        SyncEndpointStatus::unreachable_endpoint(
+                            attempted,
+                            "No configured server endpoint responded while pulling entries.",
+                        )
+                    });
 
-                return Ok(PullSyncResult {
-                    pulled,
-                    endpoint_status,
-                });
+                    return Ok(PullSyncResult {
+                        pulled,
+                        endpoint_status,
+                    });
+                }
             };
 
             let page = fetch_result.page;
@@ -392,6 +648,8 @@ impl SyncClient {
                 last_entry.entry.updated_at.to_rfc3339(),
                 last_entry.entry.id.clone(),
             ));
+            // The probe found something new; fetch the rest in full pages.
+            page_size = PAGE_SIZE;
         }
 
         // Advance the watermark to the newest entry we saw, but only when the
@@ -399,8 +657,9 @@ impl SyncClient {
         // next time) and only forward (never move the watermark backwards, e.g.
         // if the previous newest entry was deleted on the server).
         if let Some((updated_at, id)) = newest_seen.filter(|_| !had_ingest_error) {
-            let advanced = {
-                let mut state = self.pull_state.lock().unwrap();
+            let mut state = self.pull_state.lock().unwrap();
+            // A reset during this pass (e.g. the server URL changed) wins.
+            if state.generation == generation {
                 let should_advance = match state.watermark.as_ref() {
                     Some((wm_updated_at, wm_id)) => {
                         (updated_at, id.as_str()) > (*wm_updated_at, wm_id.as_str())
@@ -409,16 +668,13 @@ impl SyncClient {
                 };
                 if should_advance {
                     state.watermark = Some((updated_at, id.clone()));
+                    // Persisted under the lock so a concurrent reset cannot
+                    // interleave with this write.
+                    if let Err(e) = storage.save_sync_watermark(&updated_at.to_rfc3339(), &id) {
+                        log::warn!("Failed to persist sync watermark: {}", e);
+                    }
                 }
                 state.initialized = true;
-                should_advance
-            };
-
-            // Persist outside the in-memory lock so it survives app restarts.
-            if advanced {
-                if let Err(e) = storage.save_sync_watermark(&updated_at.to_rfc3339(), &id) {
-                    log::warn!("Failed to persist sync watermark: {}", e);
-                }
             }
         }
 
@@ -448,10 +704,14 @@ impl SyncClient {
         api_key: &str,
         req: &CreateEntryRequest,
         entry_id: &str,
-    ) -> bool {
+    ) -> PushOutcome {
+        let timeout = transfer_timeout(push_payload_bytes(req));
+        let mut rejection: Option<Rejection> = None;
+        let mut connected = false;
+
         for (index, endpoint) in server_urls.iter().enumerate() {
             let url = format!("{}/api/entries", endpoint.url);
-            let mut request = self.http.post(&url).json(req);
+            let mut request = self.http.post(&url).json(req).timeout(timeout);
 
             if !api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
@@ -459,11 +719,13 @@ impl SyncClient {
 
             match request.send().await {
                 Ok(response) => {
-                    self.note_responding_endpoint(endpoint);
-
+                    connected = true;
                     if response.status().is_success() {
-                        return true;
+                        self.note_responding_endpoint(endpoint);
+                        return PushOutcome::Synced;
                     }
+
+                    rejection = Some(Rejection::from_status(response.status()).outrank(rejection));
 
                     if index + 1 < server_urls.len() {
                         log::debug!(
@@ -482,6 +744,9 @@ impl SyncClient {
                     }
                 }
                 Err(e) => {
+                    // A connect failure or a request that could not even be built
+                    // never reached a server.
+                    connected |= !(e.is_connect() || e.is_builder());
                     if index + 1 < server_urls.len() {
                         log::debug!(
                             "Failed syncing entry {} via {}: {} (trying fallback)",
@@ -501,7 +766,11 @@ impl SyncClient {
             }
         }
 
-        false
+        match rejection {
+            Some(rejection) => PushOutcome::Rejected(rejection),
+            None if connected => PushOutcome::Failed,
+            None => PushOutcome::Unreachable,
+        }
     }
 
     async fn fetch_entries_page_with_fallback(
@@ -510,7 +779,9 @@ impl SyncClient {
         api_key: &str,
         page_size: u32,
         before_cursor: Option<(&str, &str)>,
-    ) -> anyhow::Result<Option<FetchEntriesResult>> {
+    ) -> PageFetch {
+        let mut first_rejection: Option<(ServerEndpoint, Rejection)> = None;
+
         for (index, endpoint) in server_urls.iter().enumerate() {
             let mut url = match reqwest::Url::parse(&format!("{}/api/entries", endpoint.url)) {
                 Ok(url) => url,
@@ -533,7 +804,7 @@ impl SyncClient {
                 }
             }
 
-            let mut request = self.http.get(url);
+            let mut request = self.http.get(url).timeout(PAGE_TIMEOUT);
             if !api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
             }
@@ -554,9 +825,14 @@ impl SyncClient {
                 }
             };
 
-            self.note_responding_endpoint(endpoint);
-
             if !response.status().is_success() {
+                let rejection = Rejection::from_status(response.status());
+                if first_rejection
+                    .as_ref()
+                    .is_none_or(|(_, earlier)| rejection.outranks(*earlier))
+                {
+                    first_rejection = Some((endpoint.clone(), rejection));
+                }
                 if index + 1 < server_urls.len() {
                     log::debug!(
                         "Server {} returned {} when pulling entries; trying fallback",
@@ -575,10 +851,13 @@ impl SyncClient {
 
             match response.json::<ListEntriesResponse>().await {
                 Ok(page) => {
-                    return Ok(Some(FetchEntriesResult {
+                    // Only a usable answer counts as the server responding;
+                    // a 401 or an HTML error page must not read as "online".
+                    self.note_responding_endpoint(endpoint);
+                    return PageFetch::Page(FetchEntriesResult {
                         page,
                         endpoint_index: index,
-                    }))
+                    });
                 }
                 Err(e) => {
                     log::warn!(
@@ -586,11 +865,19 @@ impl SyncClient {
                         endpoint.url,
                         e
                     );
+                    first_rejection
+                        .get_or_insert_with(|| (endpoint.clone(), Rejection::UnreadableResponse));
                 }
             }
         }
 
-        Ok(None)
+        match first_rejection {
+            Some((endpoint, rejection)) => PageFetch::Rejected {
+                endpoint,
+                rejection,
+            },
+            None => PageFetch::Unreachable,
+        }
     }
 
     async fn ingest_remote_entry(
@@ -690,6 +977,7 @@ impl SyncClient {
     ) -> anyhow::Result<Option<Vec<u8>>> {
         let mut last_error: Option<anyhow::Error> = None;
         let mut saw_definitive_unavailable = false;
+        let timeout = transfer_timeout(remote.entry.blob_size.unwrap_or(MAX_BLOB_BYTES));
 
         for (index, endpoint) in server_urls.iter().enumerate() {
             let blob_url = remote
@@ -700,7 +988,7 @@ impl SyncClient {
                     format!("{}/api/entries/{}/blob", endpoint.url, remote.entry.id)
                 });
 
-            let mut request = self.http.get(&blob_url);
+            let mut request = self.http.get(&blob_url).timeout(timeout);
             if !api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
             }
@@ -795,6 +1083,26 @@ fn resolved_remote_flavors(entry: &ClipboardEntry) -> ClipboardFlavors {
         .merge_legacy(entry.content_type, entry.text_content.as_deref())
 }
 
+/// Whether two settings point at different sets of servers.
+///
+/// The pull watermark is a position in one server's history, so it must not
+/// survive a switch to another server. Swapping the local and VPN URLs, or
+/// editing whitespace and trailing slashes, keeps the same servers.
+///
+/// The password is not compared: a server is single-user with one history,
+/// so a new password for the same server does not move the history.
+pub fn server_endpoints_changed(before: &Settings, after: &Settings) -> bool {
+    let urls = |settings: &Settings| {
+        let mut urls: Vec<String> = configured_server_urls(settings)
+            .into_iter()
+            .map(|endpoint| endpoint.url)
+            .collect();
+        urls.sort();
+        urls
+    };
+    urls(before) != urls(after)
+}
+
 fn configured_server_urls(settings: &Settings) -> Vec<ServerEndpoint> {
     let mut urls: Vec<ServerEndpoint> = Vec::new();
 
@@ -829,5 +1137,710 @@ fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
             base_url.trim_end_matches('/'),
             maybe_relative.trim_start_matches('/'),
         )
+    }
+}
+
+/// Helpers for the tests below that run a fake server on a real socket, so
+/// they exercise reqwest's actual request and response handling.
+#[cfg(test)]
+mod test_support {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    /// Read one request, head and body, and return its head. Stops early if
+    /// the client closes the connection.
+    pub(super) async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        let mut data = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = match socket.read(&mut buffer).await {
+                Ok(0) | Err(_) => return String::from_utf8_lossy(&data).into_owned(),
+                Ok(read) => read,
+            };
+            data.extend_from_slice(&buffer[..read]);
+
+            let Some(head_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&data[..head_end]).into_owned();
+            let body_len = head
+                .to_ascii_lowercase()
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:")?.trim().parse().ok())
+                .unwrap_or(0);
+            if data.len() >= head_end + 4 + body_len {
+                return head;
+            }
+        }
+    }
+
+    /// A complete JSON response that closes the connection.
+    pub(super) fn json_response(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Temporary storage whose settings point at `primary` and `fallback`.
+    pub(super) fn storage_with_servers(
+        primary: &str,
+        fallback: &str,
+    ) -> (tempfile::TempDir, LocalStorage) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        storage
+            .save_settings(&Settings {
+                server_url_primary: primary.to_string(),
+                server_url_fallback: fallback.to_string(),
+                api_key: "configured password".to_string(),
+                ..Settings::default()
+            })
+            .unwrap();
+        (dir, storage)
+    }
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::test_support::{read_request, storage_with_servers};
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// `{"entries":[],"total":0,"has_more":false}`, gzip-compressed.
+    const GZIPPED_EMPTY_PAGE: &[u8] = &[
+        31, 139, 8, 0, 0, 0, 0, 0, 2, 3, 171, 86, 74, 205, 43, 41, 202, 76, 45, 86, 178, 138, 142,
+        213, 81, 42, 201, 47, 73, 204, 81, 178, 50, 208, 81, 202, 72, 44, 142, 207, 205, 47, 74,
+        85, 178, 74, 75, 204, 41, 78, 173, 5, 0, 227, 50, 241, 134, 41, 0, 0, 0,
+    ];
+
+    #[tokio::test]
+    async fn the_client_asks_for_and_decodes_gzip_responses() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let head = read_request(&mut socket).await;
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                GZIPPED_EMPTY_PAGE.len()
+            )
+            .into_bytes();
+            response.extend_from_slice(GZIPPED_EMPTY_PAGE);
+            socket.write_all(&response).await.unwrap();
+            head.to_ascii_lowercase()
+        });
+
+        let (_dir, storage) = storage_with_servers(&url, "");
+
+        // The fake server answers one request; a second would hang, not fail.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            SyncClient::new(&storage).pull_new_entries(&storage),
+        )
+        .await
+        .expect("the pull finishes after one request")
+        .unwrap();
+
+        let request_head = server.await.unwrap();
+        assert!(
+            request_head
+                .lines()
+                .any(|line| line.starts_with("accept-encoding:") && line.contains("gzip")),
+            "request did not offer gzip:\n{request_head}"
+        );
+        // Only a successfully decoded and parsed page reports online.
+        assert_eq!(result.endpoint_status.state, SyncState::Online);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{json_response, read_request, storage_with_servers};
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+
+    const EMPTY_PAGE: &str = r#"{"entries":[],"total":0,"has_more":false}"#;
+
+    /// A minimal HTTP/1.1 server that answers every request with one fixed
+    /// response and counts the requests it received.
+    async fn fake_server(status: &'static str, body: &'static str) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    read_request(&mut socket).await;
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let response = json_response(status, body);
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        (url, requests)
+    }
+
+    /// A URL on which nothing is listening.
+    async fn closed_port_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        url
+    }
+
+    fn queue_text(storage: &LocalStorage, text: &str) {
+        let flavors = ClipboardFlavors {
+            text_plain: Some(text.to_string()),
+            ..ClipboardFlavors::default()
+        };
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .expect("a new entry is queued");
+    }
+
+    async fn pull_state(primary: &str, fallback: &str) -> SyncEndpointStatus {
+        let (_dir, storage) = storage_with_servers(primary, fallback);
+        let client = SyncClient::new(&storage);
+        client
+            .pull_new_entries(&storage)
+            .await
+            .unwrap()
+            .endpoint_status
+    }
+
+    #[tokio::test]
+    async fn a_rejected_password_is_reported_instead_of_online() {
+        let (url, _) = fake_server("401 Unauthorized", r#"{"error":"Unauthorized"}"#).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Unauthorized);
+        assert!(status.message.unwrap().contains("password"));
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_server_is_reported_as_needing_setup() {
+        let (url, _) = fake_server("403 Forbidden", r#"{"error":"Password not configured"}"#).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Unauthorized);
+        assert!(status.message.unwrap().contains("admin page"));
+    }
+
+    #[tokio::test]
+    async fn a_credential_rejection_outranks_another_endpoints_error() {
+        let (failing, _) = fake_server("500 Internal Server Error", "{}").await;
+        let (refusing, _) = fake_server("401 Unauthorized", "{}").await;
+
+        for (primary, fallback) in [(&failing, &refusing), (&refusing, &failing)] {
+            let status = pull_state(primary, fallback).await;
+            assert_eq!(status.state, SyncState::Unauthorized);
+            assert_eq!(status.url.as_deref(), Some(refusing.as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_push_batch_pauses_when_any_endpoint_refuses_the_password() {
+        let (failing, failing_requests) = fake_server("500 Internal Server Error", "{}").await;
+        let (refusing, refusing_requests) = fake_server("401 Unauthorized", "{}").await;
+        let (_dir, storage) = storage_with_servers(&failing, &refusing);
+        for text in ["first", "second", "third"] {
+            queue_text(&storage, text);
+        }
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        assert_eq!(failing_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(refusing_requests.load(Ordering::SeqCst), 1);
+        // Pausing leaves the whole queue for the next successful sync.
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn sync_states_serialize_to_the_strings_the_frontend_knows() {
+        // Must match KNOWN_STATES in src/lib/util/syncStatusStore.ts, which
+        // folds anything else into "unreachable".
+        for (state, expected) in [
+            (SyncState::Checking, "checking"),
+            (SyncState::Disabled, "disabled"),
+            (SyncState::Online, "online"),
+            (SyncState::Unreachable, "unreachable"),
+            (SyncState::Unauthorized, "unauthorized"),
+            (SyncState::Error, "error"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_reported_with_its_status() {
+        let (url, _) = fake_server("500 Internal Server Error", r#"{"error":"boom"}"#).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Error);
+        assert!(status.message.unwrap().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_is_not_a_copywraith_response_is_an_error() {
+        let (url, _) = fake_server("200 OK", "<html>captive portal</html>").await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Error);
+    }
+
+    #[tokio::test]
+    async fn a_usable_page_is_online() {
+        let (url, _) = fake_server("200 OK", EMPTY_PAGE).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Online);
+    }
+
+    #[tokio::test]
+    async fn a_rejection_outranks_an_unreachable_fallback() {
+        let (url, _) = fake_server("401 Unauthorized", "{}").await;
+        let closed = closed_port_url().await;
+
+        // The server that answered says why sync fails; the dead endpoint
+        // cannot, whichever order they are configured in.
+        assert_eq!(
+            pull_state(&closed, &url).await.state,
+            SyncState::Unauthorized
+        );
+        assert_eq!(
+            pull_state(&url, &closed).await.state,
+            SyncState::Unauthorized
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_listening_is_unreachable() {
+        let closed = closed_port_url().await;
+
+        assert_eq!(pull_state(&closed, "").await.state, SyncState::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn a_push_batch_stops_at_the_first_credential_rejection() {
+        let (url, requests) = fake_server("401 Unauthorized", "{}").await;
+        let (_dir, storage) = storage_with_servers(&url, "");
+        for text in ["first", "second", "third"] {
+            queue_text(&storage, text);
+        }
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        // Every further request would cost the server an Argon2id run and
+        // could not succeed with the same password.
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_push_batch_continues_past_entry_specific_rejections() {
+        let (url, requests) = fake_server("413 Payload Too Large", "{}").await;
+        let (_dir, storage) = storage_with_servers(&url, "");
+        for text in ["first", "second", "third"] {
+            queue_text(&storage, text);
+        }
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_successful_push_marks_the_entry_synced() {
+        let (url, requests) = fake_server("201 Created", "{}").await;
+        let (_dir, storage) = storage_with_servers(&url, "");
+        queue_text(&storage, "accepted");
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(storage.get_unsynced_entries().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pushing_with_no_server_listening_is_unreachable() {
+        let closed = closed_port_url().await;
+        let (_dir, storage) = storage_with_servers(&closed, "");
+        queue_text(&storage, "stranded");
+        let entry = storage.get_unsynced_entries().unwrap().remove(0);
+        let client = SyncClient::new(&storage);
+        let endpoints = configured_server_urls(&storage.get_settings());
+
+        let outcome = client.push_entry(&entry, &storage, &endpoints, "pw").await;
+
+        assert_eq!(outcome, PushOutcome::Unreachable);
+    }
+
+    #[test]
+    fn only_failure_states_back_off() {
+        assert!(SyncState::Unreachable.is_failure());
+        assert!(SyncState::Unauthorized.is_failure());
+        assert!(SyncState::Error.is_failure());
+        assert!(!SyncState::Online.is_failure());
+        assert!(!SyncState::Disabled.is_failure());
+        assert!(!SyncState::Checking.is_failure());
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::test_support::{json_response, read_request, storage_with_servers};
+    use super::*;
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+
+    /// A fake server holding `history` (newest first) that pages it the way
+    /// the real server does, and records each requested page size.
+    async fn history_server(history: Vec<ClipboardEntry>) -> (String, Arc<Mutex<Vec<u32>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let limits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = limits.clone();
+        let history = Arc::new(history);
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let history = history.clone();
+                let recorded = recorded.clone();
+                tokio::spawn(async move {
+                    let head = read_request(&mut socket).await;
+                    let target = head.split_whitespace().nth(1).unwrap();
+                    let url = reqwest::Url::parse(&format!("http://fake{target}")).unwrap();
+                    let query = |name: &str| {
+                        url.query_pairs()
+                            .find(|(key, _)| key == name)
+                            .map(|(_, value)| value.into_owned())
+                    };
+                    let limit: u32 = query("limit").unwrap().parse().unwrap();
+                    recorded.lock().unwrap().push(limit);
+
+                    let cursor = query("before_updated_at").map(|updated_at| {
+                        let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+                            .unwrap()
+                            .with_timezone(&Utc);
+                        (updated_at, query("before_id").unwrap())
+                    });
+                    let older: Vec<&ClipboardEntry> = history
+                        .iter()
+                        .filter(|entry| match &cursor {
+                            Some((updated_at, id)) => {
+                                (entry.updated_at, entry.id.as_str()) < (*updated_at, id.as_str())
+                            }
+                            None => true,
+                        })
+                        .collect();
+                    let page = ListEntriesResponse {
+                        entries: older
+                            .iter()
+                            .take(limit as usize)
+                            .map(|entry| EntryResponse {
+                                entry: (*entry).clone(),
+                                blob_url: None,
+                            })
+                            .collect(),
+                        total: history.len() as u64,
+                        has_more: older.len() > limit as usize,
+                    };
+                    let response = json_response("200 OK", &serde_json::to_string(&page).unwrap());
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        (base, limits)
+    }
+
+    /// `count` text entries, newest first, one minute apart.
+    fn history(count: usize) -> Vec<ClipboardEntry> {
+        let oldest = DateTime::parse_from_rfc3339("2026-09-01T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        (0..count)
+            .rev()
+            .map(|index| {
+                let mut entry = ClipboardEntry::new_text(format!("entry {index}"));
+                entry.id = format!("01JQZ0R00000000000000{index:05}");
+                entry.created_at = oldest + chrono::Duration::minutes(index as i64);
+                entry.updated_at = entry.created_at;
+                entry
+            })
+            .collect()
+    }
+
+    fn storage_for(
+        url: &str,
+        watermark: Option<&ClipboardEntry>,
+    ) -> (tempfile::TempDir, LocalStorage) {
+        let (dir, storage) = storage_with_servers(url, "");
+        if let Some(entry) = watermark {
+            storage
+                .save_sync_watermark(&entry.updated_at.to_rfc3339(), &entry.id)
+                .unwrap();
+        }
+        (dir, storage)
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_server_costs_one_single_entry_request() {
+        let history = history(150);
+        let newest = history[0].clone();
+        let (url, limits) = history_server(history).await;
+        let (_dir, storage) = storage_for(&url, Some(&newest));
+
+        let result = SyncClient::new(&storage)
+            .pull_new_entries(&storage)
+            .await
+            .unwrap();
+
+        assert_eq!(result.pulled, 0);
+        assert_eq!(*limits.lock().unwrap(), [PROBE_PAGE_SIZE]);
+    }
+
+    #[tokio::test]
+    async fn new_entries_found_by_the_probe_are_fetched_in_full_pages() {
+        let history = history(150);
+        // Three entries (indexes 0-2) are newer than the watermark.
+        let watermark = history[3].clone();
+        let (url, limits) = history_server(history).await;
+        let (_dir, storage) = storage_for(&url, Some(&watermark));
+
+        let result = SyncClient::new(&storage)
+            .pull_new_entries(&storage)
+            .await
+            .unwrap();
+
+        assert_eq!(result.pulled, 3);
+        assert_eq!(*limits.lock().unwrap(), [PROBE_PAGE_SIZE, PAGE_SIZE]);
+    }
+
+    #[tokio::test]
+    async fn a_first_pull_walks_full_pages_and_the_next_pass_only_probes() {
+        let (url, limits) = history_server(history(150)).await;
+        let (_dir, storage) = storage_for(&url, None);
+        let client = SyncClient::new(&storage);
+
+        assert_eq!(client.pull_new_entries(&storage).await.unwrap().pulled, 150);
+        assert_eq!(client.pull_new_entries(&storage).await.unwrap().pulled, 0);
+
+        assert_eq!(
+            *limits.lock().unwrap(),
+            [PAGE_SIZE, PAGE_SIZE, PROBE_PAGE_SIZE]
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_pulls_run_one_after_the_other() {
+        let (url, limits) = history_server(history(150)).await;
+        let (_dir, storage) = storage_for(&url, None);
+        let client = SyncClient::new(&storage);
+
+        let (first, second) = tokio::join!(
+            client.pull_new_entries(&storage),
+            client.pull_new_entries(&storage)
+        );
+
+        // The second pull starts from the watermark the first one left, so the
+        // history is walked once rather than twice.
+        assert_eq!(first.unwrap().pulled + second.unwrap().pulled, 150);
+        assert_eq!(
+            *limits.lock().unwrap(),
+            [PAGE_SIZE, PAGE_SIZE, PROBE_PAGE_SIZE]
+        );
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_sync_request_made_before_the_loop_waits_is_not_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        let client = SyncClient::new(&storage);
+
+        // The loop may be mid-pass when a star is toggled; the request must
+        // still cut its next sleep short.
+        client.request_sync();
+
+        tokio::time::timeout(Duration::from_secs(1), client.sync_requested())
+            .await
+            .expect("a pending sync request wakes the loop immediately");
+    }
+}
+
+#[cfg(test)]
+mod cursor_reset_tests {
+    use super::test_support::{json_response, read_request, storage_with_servers};
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    fn settings(primary: &str, fallback: &str) -> Settings {
+        Settings {
+            server_url_primary: primary.to_string(),
+            server_url_fallback: fallback.to_string(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_different_server_counts_as_a_change() {
+        let before = settings("http://192.168.1.5:3742", "http://100.64.0.10:3742");
+
+        for after in [
+            settings("http://192.168.1.9:3742", "http://100.64.0.10:3742"),
+            settings("http://192.168.1.5:3742", ""),
+            settings("", ""),
+        ] {
+            assert!(server_endpoints_changed(&before, &after), "{after:?}");
+        }
+    }
+
+    #[test]
+    fn the_same_servers_written_differently_are_not_a_change() {
+        let before = settings("http://192.168.1.5:3742", "http://100.64.0.10:3742");
+
+        for after in [
+            settings("http://192.168.1.5:3742/", " http://100.64.0.10:3742 "),
+            settings("http://100.64.0.10:3742", "http://192.168.1.5:3742"),
+        ] {
+            assert!(!server_endpoints_changed(&before, &after), "{after:?}");
+        }
+
+        // A fallback that repeats the primary is the same single server.
+        assert!(!server_endpoints_changed(
+            &settings("http://192.168.1.5:3742", ""),
+            &settings("http://192.168.1.5:3742", "http://192.168.1.5:3742/"),
+        ));
+    }
+
+    /// One page holding a single entry. Signals `received` once the request
+    /// has arrived and answers only after `release` fires.
+    async fn held_page_server(
+        received: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            received.send(()).unwrap();
+            release.await.unwrap();
+
+            let page = ListEntriesResponse {
+                entries: vec![EntryResponse {
+                    entry: ClipboardEntry::new_text("from the old server".to_string()),
+                    blob_url: None,
+                }],
+                total: 1,
+                has_more: false,
+            };
+            let response = json_response("200 OK", &serde_json::to_string(&page).unwrap());
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_pull_in_flight_during_a_reset_does_not_restore_the_old_watermark() {
+        let (received, request_arrived) = tokio::sync::oneshot::channel();
+        let (release, held) = tokio::sync::oneshot::channel();
+        let url = held_page_server(received, held).await;
+        let (_dir, storage) = storage_with_servers(&url, "");
+        let client = SyncClient::new(&storage);
+
+        let pull = client.pull_new_entries(&storage);
+        let reset_mid_pull = async {
+            // Switch servers while the pull's request is in flight.
+            tokio::time::timeout(Duration::from_secs(5), request_arrived)
+                .await
+                .expect("the pull never sent its request")
+                .unwrap();
+            client.reset_pull_cursor(&storage);
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(pull, reset_mid_pull);
+
+        assert_eq!(result.unwrap().pulled, 1);
+        assert_eq!(storage.get_sync_watermark(), None);
+        assert!(client.pull_state.lock().unwrap().watermark.is_none());
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn small_requests_keep_the_base_deadline() {
+        assert_eq!(transfer_timeout(0), Duration::from_secs(30));
+        assert_eq!(transfer_timeout(100 * 1024), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn large_transfers_get_time_for_their_size() {
+        // The largest Android share: 64 MiB, which is ~85 MiB as base64.
+        let base64_len = (64 * 1024 * 1024) / 3 * 4;
+        let deadline = transfer_timeout(base64_len);
+
+        // At 5 Mbit/s the upload needs about 140 s; the old 30 s deadline
+        // could never be met.
+        assert!(deadline > Duration::from_secs(600), "{deadline:?}");
+    }
+
+    #[test]
+    fn server_supplied_sizes_cannot_make_deadlines_endless() {
+        assert_eq!(transfer_timeout(u64::MAX), Duration::from_secs(3600));
+        assert!(transfer_timeout(MAX_BLOB_BYTES) < Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn push_size_counts_the_blob_and_every_text_field() {
+        let req = CreateEntryRequest {
+            content_type: ContentType::Html,
+            text_content: Some("a".repeat(10)),
+            flavors: Some(ClipboardFlavors {
+                text_plain: Some("b".repeat(20)),
+                text_html: Some("c".repeat(30)),
+                text_rtf: Some("d".repeat(40)),
+                file_list: None,
+            }),
+            blob_base64: Some("e".repeat(50)),
+            source_app: None,
+            starred: Some(false),
+            content_hash: "hash".to_string(),
+        };
+
+        assert_eq!(push_payload_bytes(&req), 150);
     }
 }

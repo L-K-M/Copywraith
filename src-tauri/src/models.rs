@@ -78,3 +78,95 @@ impl Default for ShortcutStatus {
         }
     }
 }
+
+/// Whether clipboard capture is paused ("the ghost sleeps").
+///
+/// Kept in memory only: a restart always resumes capture, so a forgotten
+/// indefinite pause cannot silently stop history for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CapturePause {
+    #[default]
+    Active,
+    Until(chrono::DateTime<chrono::Utc>),
+    Indefinite,
+}
+
+impl CapturePause {
+    pub fn is_paused_at(self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        match self {
+            CapturePause::Active => false,
+            CapturePause::Until(until) => now < until,
+            CapturePause::Indefinite => true,
+        }
+    }
+
+    /// The frontend view at `now`; an expired timed pause reads as active.
+    pub fn status_at(self, now: chrono::DateTime<chrono::Utc>) -> CapturePauseStatus {
+        match self {
+            CapturePause::Until(until) if now < until => CapturePauseStatus {
+                paused: true,
+                until: Some(until.to_rfc3339()),
+            },
+            CapturePause::Indefinite => CapturePauseStatus {
+                paused: true,
+                until: None,
+            },
+            _ => CapturePauseStatus {
+                paused: false,
+                until: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CapturePauseStatus {
+    pub paused: bool,
+    /// When a timed pause ends (RFC 3339); `None` while paused means until resumed.
+    pub until: Option<String>,
+}
+
+#[cfg(test)]
+mod capture_pause_tests {
+    use super::*;
+
+    fn at(value: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn a_timed_pause_ends_by_itself() {
+        let pause = CapturePause::Until(at("2026-09-25T12:05:00Z"));
+
+        assert!(pause.is_paused_at(at("2026-09-25T12:04:59Z")));
+        assert!(!pause.is_paused_at(at("2026-09-25T12:05:00Z")));
+        assert_eq!(
+            pause.status_at(at("2026-09-25T12:06:00Z")),
+            CapturePauseStatus {
+                paused: false,
+                until: None
+            }
+        );
+        assert_eq!(
+            pause.status_at(at("2026-09-25T12:00:00Z")).until.as_deref(),
+            Some("2026-09-25T12:05:00+00:00")
+        );
+    }
+
+    #[test]
+    fn an_indefinite_pause_lasts_until_resumed() {
+        let now = at("2030-01-01T00:00:00Z");
+
+        assert!(CapturePause::Indefinite.is_paused_at(now));
+        assert!(!CapturePause::Active.is_paused_at(now));
+        assert_eq!(
+            CapturePause::Indefinite.status_at(now),
+            CapturePauseStatus {
+                paused: true,
+                until: None
+            }
+        );
+    }
+}

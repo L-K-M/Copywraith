@@ -1,6 +1,16 @@
 import { writable } from 'svelte/store';
 
-export type SyncEndpointState = 'checking' | 'disabled' | 'online' | 'unreachable';
+/** Must match the serialized `SyncState` variants in `src-tauri/src/sync.rs`. */
+const KNOWN_STATES = [
+	'checking',
+	'disabled',
+	'online',
+	'unreachable',
+	'unauthorized',
+	'error'
+] as const;
+
+export type SyncEndpointState = (typeof KNOWN_STATES)[number];
 
 export interface SyncEndpointStatus {
 	state: SyncEndpointState;
@@ -19,11 +29,8 @@ export interface SyncEndpointStatusInput {
 }
 
 function normalizeState(state: string): SyncEndpointState {
-	return state === 'online' ||
-		state === 'disabled' ||
-		state === 'checking' ||
-		state === 'unreachable'
-		? state
+	return (KNOWN_STATES as readonly string[]).includes(state)
+		? (state as SyncEndpointState)
 		: 'unreachable';
 }
 
@@ -31,6 +38,8 @@ function defaultMessage(state: SyncEndpointState): string {
 	if (state === 'checking') return 'A sync check is running or waiting for a backend response.';
 	if (state === 'disabled') return 'No server URL is configured in Settings.';
 	if (state === 'online') return 'The last sync check reached a server endpoint.';
+	if (state === 'unauthorized') return 'The server rejected the password. Check it in Settings.';
+	if (state === 'error') return 'The server answered with an error.';
 	return 'No configured sync endpoint responded successfully.';
 }
 
