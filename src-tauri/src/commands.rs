@@ -822,7 +822,7 @@ pub async fn sync_now(
                     sync::SyncEndpointStatus::unreachable_endpoint(endpoint, e.to_string())
                 })
                 .unwrap_or_else(|| sync::SyncEndpointStatus {
-                    state: "unreachable".to_string(),
+                    state: sync::SyncState::Unreachable,
                     role: None,
                     url: None,
                     message: Some(e.to_string()),

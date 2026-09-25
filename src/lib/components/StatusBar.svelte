@@ -47,6 +47,8 @@
 		if (status.state === 'checking') return 'Sync: checking...';
 		if (status.state === 'disabled') return 'Sync: off';
 		if (status.state === 'unreachable') return 'Sync: unreachable';
+		if (status.state === 'unauthorized') return 'Sync: password rejected';
+		if (status.state === 'error') return 'Sync: server error';
 
 		const host = formatEndpointHost(status.url);
 		const role = formatRole(status.role);
@@ -65,6 +67,14 @@
 
 		if (status.state === 'unreachable') {
 			return 'Configured servers are unreachable';
+		}
+
+		if (status.state === 'unauthorized') {
+			return 'The server rejected the password in Settings';
+		}
+
+		if (status.state === 'error') {
+			return 'The server answered with an error';
 		}
 
 		return 'Checking sync endpoint';
@@ -142,7 +152,9 @@
 				lastSyncSummary =
 					result.endpoint_status.state === 'disabled'
 						? 'Sync is disabled. Configure a server in Settings.'
-						: 'Sync did not complete. See the message above.';
+						: result.endpoint_status.state === 'unauthorized'
+							? 'The server rejected the password. Update it in Settings.'
+							: 'Sync did not complete. See the message above.';
 				return;
 			}
 
@@ -187,7 +199,9 @@
 			class="status-endpoint"
 			class:online={$syncEndpointStatus.state === 'online'}
 			class:disabled={$syncEndpointStatus.state === 'disabled'}
-			class:unreachable={$syncEndpointStatus.state === 'unreachable'}
+			class:unreachable={$syncEndpointStatus.state === 'unreachable' ||
+				$syncEndpointStatus.state === 'error'}
+			class:unauthorized={$syncEndpointStatus.state === 'unauthorized'}
 			class:checking={$syncEndpointStatus.state === 'checking'}
 			title={endpointTooltip}
 			aria-expanded={showSyncDetails}
@@ -294,6 +308,12 @@
 	.status-endpoint.unreachable {
 		border-color: #b35a00;
 		background: #fff3e6;
+	}
+
+	.status-endpoint.unauthorized {
+		border-color: #a01717;
+		background: #fdeaea;
+		font-weight: bold;
 	}
 
 	.status-endpoint.checking {

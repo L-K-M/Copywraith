@@ -885,7 +885,9 @@ fn start_sync_loop(
                         log::info!("Applied {} updates from server", result.pulled);
                     }
 
-                    if result.endpoint_status.state == "unreachable" {
+                    // Back off on any failure. A rejected password in
+                    // particular costs the server an Argon2id run per request.
+                    if result.endpoint_status.state.is_failure() {
                         current_interval = (current_interval * 2).min(MAX_INTERVAL_SECS);
                     } else {
                         current_interval = BASE_INTERVAL_SECS;
@@ -896,7 +898,7 @@ fn start_sync_loop(
                     let _ = app.emit(
                         "sync-endpoint-status",
                         sync::SyncEndpointStatus {
-                            state: "unreachable".to_string(),
+                            state: sync::SyncState::Unreachable,
                             role: None,
                             url: None,
                             message: Some(e.to_string()),

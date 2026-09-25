@@ -1,6 +1,21 @@
 import { writable } from 'svelte/store';
 
-export type SyncEndpointState = 'checking' | 'disabled' | 'online' | 'unreachable';
+export type SyncEndpointState =
+	| 'checking'
+	| 'disabled'
+	| 'online'
+	| 'unreachable'
+	| 'unauthorized'
+	| 'error';
+
+const KNOWN_STATES: readonly SyncEndpointState[] = [
+	'checking',
+	'disabled',
+	'online',
+	'unreachable',
+	'unauthorized',
+	'error'
+];
 
 export interface SyncEndpointStatus {
 	state: SyncEndpointState;
@@ -19,11 +34,8 @@ export interface SyncEndpointStatusInput {
 }
 
 function normalizeState(state: string): SyncEndpointState {
-	return state === 'online' ||
-		state === 'disabled' ||
-		state === 'checking' ||
-		state === 'unreachable'
-		? state
+	return (KNOWN_STATES as readonly string[]).includes(state)
+		? (state as SyncEndpointState)
 		: 'unreachable';
 }
 
@@ -31,6 +43,8 @@ function defaultMessage(state: SyncEndpointState): string {
 	if (state === 'checking') return 'A sync check is running or waiting for a backend response.';
 	if (state === 'disabled') return 'No server URL is configured in Settings.';
 	if (state === 'online') return 'The last sync check reached a server endpoint.';
+	if (state === 'unauthorized') return 'The server rejected the password. Check it in Settings.';
+	if (state === 'error') return 'The server answered with an error.';
 	return 'No configured sync endpoint responded successfully.';
 }
 
