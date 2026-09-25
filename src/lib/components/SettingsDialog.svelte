@@ -64,7 +64,12 @@
 		// silently failing later at sync time.
 		primaryUrlError = validateServerUrl(primaryServerUrl) ?? '';
 		fallbackUrlError = validateServerUrl(fallbackServerUrl) ?? '';
-		apiKeyError = bearerPasswordProblem(apiKey) ?? '';
+		// Servers never accept a password shorter than eight characters, so a
+		// shorter one can only fail later, at sync time. Empty means "not set".
+		apiKeyError =
+			apiKey && apiKey.length < 8
+				? 'Server passwords have at least 8 characters.'
+				: (bearerPasswordProblem(apiKey) ?? '');
 		if (primaryUrlError || fallbackUrlError || apiKeyError) {
 			notify('error', 'Please fix the highlighted fields before saving.');
 			return;
