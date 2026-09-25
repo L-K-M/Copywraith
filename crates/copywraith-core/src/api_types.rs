@@ -61,6 +61,24 @@ fn default_limit() -> u32 {
 
 const MAX_LIMIT: u32 = 200;
 
+/// Explains why `password` cannot serve as the API bearer token, if it cannot.
+///
+/// Clients send the server password in an `Authorization: Bearer` header. HTTP
+/// header values carry only visible ASCII and spaces, and servers strip leading
+/// and trailing whitespace, so any other password would be accepted at setup and
+/// then rejected on every authenticated request, with no way to change it.
+pub fn bearer_password_problem(password: &str) -> Option<&'static str> {
+    if !password.bytes().all(|byte| (b' '..=b'~').contains(&byte)) {
+        return Some(
+            "Passwords can only contain ASCII letters, digits, punctuation and spaces, because clients send them in an HTTP header.",
+        );
+    }
+    if password.starts_with(' ') || password.ends_with(' ') {
+        return Some("Passwords cannot start or end with a space.");
+    }
+    None
+}
+
 /// Clamp a requested limit to the allowed maximum.
 pub fn clamp_limit(limit: u32) -> u32 {
     limit.clamp(1, MAX_LIMIT)
@@ -104,7 +122,28 @@ pub struct ErrorResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::ListEntriesParams;
+    use super::{bearer_password_problem, ListEntriesParams};
+
+    #[test]
+    fn passwords_must_survive_an_authorization_header() {
+        for usable in [
+            "correct horse battery",
+            "p@ss~word!123",
+            "{[(<Punctuation>)]}",
+        ] {
+            assert_eq!(bearer_password_problem(usable), None, "{usable:?}");
+        }
+        for unusable in [
+            "Grüezi-2026",
+            "euro€sign",
+            "password123 ",
+            " password123",
+            "tab\tinside",
+            "line\nbreak",
+        ] {
+            assert!(bearer_password_problem(unusable).is_some(), "{unusable:?}");
+        }
+    }
 
     #[test]
     fn list_entries_masks_sensitive_content_by_default() {

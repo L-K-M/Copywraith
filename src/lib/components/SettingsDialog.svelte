@@ -5,6 +5,7 @@
 	import { notify } from '$lib/util/notifications';
 	import { onMount } from 'svelte';
 	import type { ShortcutStatus } from '$lib/types';
+	import { bearerPasswordProblem } from '$lib/util/password';
 
 	let { onclose }: { onclose: () => void } = $props();
 
@@ -13,6 +14,7 @@
 	let primaryUrlError = $state('');
 	let fallbackUrlError = $state('');
 	let apiKey = $state('');
+	let apiKeyError = $state('');
 	let shortcutTogglePopup = $state('CmdOrCtrl+Shift+V');
 	let shortcutStarredPopup = $state('CmdOrCtrl+Shift+B');
 	let shortcutPastePlaintext = $state('CmdOrCtrl+Shift+Alt+V');
@@ -62,8 +64,9 @@
 		// silently failing later at sync time.
 		primaryUrlError = validateServerUrl(primaryServerUrl) ?? '';
 		fallbackUrlError = validateServerUrl(fallbackServerUrl) ?? '';
-		if (primaryUrlError || fallbackUrlError) {
-			notify('error', 'Please fix the server URL fields before saving.');
+		apiKeyError = bearerPasswordProblem(apiKey) ?? '';
+		if (primaryUrlError || fallbackUrlError || apiKeyError) {
+			notify('error', 'Please fix the highlighted fields before saving.');
 			return;
 		}
 		isSaving = true;
@@ -243,7 +246,12 @@
 				class="s7-input"
 				placeholder="Password from admin UI"
 				bind:value={apiKey}
+				aria-invalid={apiKeyError ? 'true' : undefined}
+				oninput={() => (apiKeyError = '')}
 			/>
+			{#if apiKeyError}
+				<div class="field-error" role="alert">{apiKeyError}</div>
+			{/if}
 			<div class="field-hint">
 				Use the same password configured on the server admin UI. Copywraith sends it as an
 				Authorization: Bearer header.

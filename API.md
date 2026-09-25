@@ -34,6 +34,11 @@ Authorization: Bearer <password>
 
 If no password is configured yet, protected endpoints return `403` until password setup is completed.
 
+Because the password travels in that header, setup and password change accept
+only printable ASCII (letters, digits, punctuation and spaces) with no leading
+or trailing space, and at least 8 characters. Anything else is rejected with
+`400` rather than accepted and then refused on every later request.
+
 ## Endpoint groups
 
 ### System
