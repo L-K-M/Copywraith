@@ -30,3 +30,16 @@
 !src-tauri/Cargo.toml
 !src-tauri/src/
 !src-tauri/src/lib.rs
+
+# Re-including a directory above re-includes everything below it, so runtime
+# data, secrets and build output must be excluded again. Later rules win.
+**/copywraith-data
+**/node_modules
+**/dist
+**/target
+**/.env
+**/.env.*
+server/tests
+crates/*/android
+src-tauri/gen
+**/.svelte-check
