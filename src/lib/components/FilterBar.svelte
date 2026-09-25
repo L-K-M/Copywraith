@@ -59,7 +59,8 @@
 		// Shift/Alt+Enter (paste as plain text) are handled by the popup's shortcuts.
 		if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
 			e.preventDefault();
-			pasteSelectedEntry();
+			// A held Enter must not paste over and over.
+			if (!e.repeat) pasteSelectedEntry();
 			return;
 		}
 

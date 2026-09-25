@@ -528,7 +528,7 @@
 
 		if (e.key === 'Enter') {
 			e.preventDefault();
-			pasteSelectedEntry();
+			if (!e.repeat) pasteSelectedEntry();
 		}
 	}
 </script>
