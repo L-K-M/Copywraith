@@ -53,8 +53,9 @@
 	}
 
 	function handleMenuKeydown(e: KeyboardEvent) {
-		// Close only the menu; Escape elsewhere hides the popup.
-		if (e.key === 'Escape') {
+		// Close only the menu; Escape elsewhere hides the popup. Bound to the
+		// trigger too, which keeps focus after a mouse click opens the menu.
+		if (menuOpen && e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
 			menuOpen = false;
@@ -82,6 +83,7 @@
 			e.stopPropagation();
 			menuOpen = !menuOpen;
 		}}
+		onkeydown={handleMenuKeydown}
 	>
 		{paused ? label : 'Pause'}
 	</button>

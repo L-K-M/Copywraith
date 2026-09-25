@@ -27,7 +27,10 @@ export function pauseLabel(status: CapturePauseStatus, nowMs: number): string {
 	if (!isPausedAt(status, nowMs)) return '';
 	if (status.until === null) return 'zzz Paused';
 
-	const minutesLeft = Math.max(1, Math.ceil((new Date(status.until).getTime() - nowMs) / 60_000));
+	const until = new Date(status.until).getTime();
+	if (Number.isNaN(until)) return 'zzz Paused';
+
+	const minutesLeft = Math.max(1, Math.ceil((until - nowMs) / 60_000));
 	return minutesLeft >= 60
 		? `zzz Paused ${Math.floor(minutesLeft / 60)}h ${String(minutesLeft % 60).padStart(2, '0')}m`
 		: `zzz Paused ${minutesLeft}m`;

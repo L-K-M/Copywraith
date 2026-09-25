@@ -36,6 +36,12 @@ test('a timed pause counts down and ends by itself', () => {
 	assert.equal(pauseLabel(expired, NOW), '');
 });
 
+test('an unreadable end time stays paused without a countdown', () => {
+	const status = { paused: true, until: 'garbage' };
+	assert.equal(isPausedAt(status, NOW), true);
+	assert.equal(pauseLabel(status, NOW), 'zzz Paused');
+});
+
 test('the menu offers short, long and open-ended pauses', () => {
 	assert.deepEqual(PAUSE_CHOICES.map((choice) => choice.minutes), [5, 60, null]);
 });
