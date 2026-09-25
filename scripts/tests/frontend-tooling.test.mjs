@@ -30,7 +30,9 @@ test('TS7 alias reports Svelte type errors and accepts the corrected fixture', a
 
     for (const [value, expectedStatus] of [['"wrong"', typeErrorExitCode], ['42', successExitCode]]) {
       await writeFile(`${workspace}/Probe.svelte`, `<script lang="ts">let value: number = ${value};</script><p>{value}</p>`);
-      const result = spawnSync(process.execPath, [checker, '--workspace', workspace, '--tsconfig', './tsconfig.json', '--tsgo'], { encoding: 'utf8', timeout: checkerTimeoutMs });
+      // Pin the output format: svelte-check switches to machine output when it
+      // detects an AI agent (AI_AGENT, CLAUDECODE), which lacks the summary line.
+      const result = spawnSync(process.execPath, [checker, '--workspace', workspace, '--tsconfig', './tsconfig.json', '--tsgo', '--output', 'human'], { encoding: 'utf8', timeout: checkerTimeoutMs });
       const output = result.stdout + result.stderr;
 
       assert.equal(result.status, expectedStatus, output);
