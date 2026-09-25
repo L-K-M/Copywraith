@@ -725,12 +725,22 @@ fn import_pending_file_share(
 /// entry's file list, which a desktop paste turns into a `file://` path. Only a
 /// final path component is kept, so a hostile name such as
 /// `/Users/alice/.ssh/id_rsa` cannot aim a desktop paste at a real file.
+/// Bidirectional overrides can make `photo\u{202E}gpj.exe` display as
+/// `photoexe.jpg`, disguising a file's real extension.
+#[cfg(any(target_os = "android", test))]
+fn is_bidi_override(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 #[cfg(any(target_os = "android", test))]
 fn shared_file_display_name(raw: Option<&str>, stored_path: &std::path::Path) -> String {
     raw.and_then(|name| name.rsplit(['/', '\\']).next())
         .map(str::trim)
         .filter(|name| {
-            !name.is_empty() && *name != "." && *name != ".." && !name.chars().any(char::is_control)
+            !name.is_empty()
+                && *name != "."
+                && *name != ".."
+                && !name.chars().any(|c| c.is_control() || is_bidi_override(c))
         })
         .map(str::to_string)
         .unwrap_or_else(|| {
@@ -1126,6 +1136,7 @@ mod tests {
             Some("a/.."),
             Some("report\u{0}.pdf"),
             Some("bad\nname.txt"),
+            Some("photo\u{202E}gpj.exe"),
         ] {
             assert_eq!(
                 shared_file_display_name(unusable, stored),
