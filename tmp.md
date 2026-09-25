@@ -98,6 +98,11 @@ The things most worth fixing, in order.
 - **Relation:** new. `ANALYSIS.md` "Local privacy" asks for per-app exclusion;
   this is the standard, zero-configuration half of that.
 
+**Follow-up from PR #147 review:** Windows `CanUploadToCloudClipboard` = 0
+means "local history allowed, no cloud upload". Honouring it properly needs a
+local-only entry flag (capture, never push), not a skip; the privacy-marker PR
+only skips content that forbids recording outright.
+
 ### SEC-N2 (Medium): no CSP, and the master password is readable from the WebView
 
 - **Evidence:** `src-tauri/tauri.conf.json` has `"security": {}` (no `csp`).
