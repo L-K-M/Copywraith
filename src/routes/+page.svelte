@@ -506,7 +506,10 @@
 			return;
 		}
 
-		if (isModKey(e.key, $platform)) quickKeysVisible = true;
+		// The digits only mean something where the list shortcuts apply.
+		if (isModKey(e.key, $platform) && !showSettings && !previewEntryId) {
+			quickKeysVisible = true;
+		}
 
 		// List shortcuts act on the history, not on an open dialog.
 		const shortcut =

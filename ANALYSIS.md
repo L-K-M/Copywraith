@@ -536,6 +536,20 @@ Refs: `sol.md` SERVER-07; `opus.md` BUG-08 (overstated).
 - **Verify:** e2e test: wipe server data dir, restart on the same port, sync →
   all entries pulled.
 
+#### Validate push responses (found in the #164 review)
+
+- **Where:** `src-tauri/src/sync.rs` `push_entry_with_fallback`.
+- **Problem:** any 2xx answer marks the entry synced without reading the body.
+  A captive portal or a non-Copywraith server that answers `POST
+  /api/entries` with `200` and an HTML page makes entries look synced that
+  never reached the server, and they are never pushed again. The pull path
+  already reports an unreadable 2xx as `error` (#148). Pre-existing; not
+  introduced by the 2026-09-25 PRs.
+- **Fix:** parse the created-entry JSON; on failure return
+  `Rejection::UnreadableResponse` and keep the entry queued.
+- **Verify:** a fake server answering `200` with HTML leaves the entry
+  unsynced and reports `error`.
+
 #### Honest sync-status follow-ups (after #148)
 
 - **Where:** `src-tauri/src/sync.rs` status classification;
@@ -1578,7 +1592,7 @@ Deferred follow-ups are backlog items.
 | #159 | CAP-N5 (plaintext paste trims) | Plaintext paste no longer trims (prefers untrimmed text). | Nits declined. |
 | #160 | TOOL-01 (tooling test fails under an AI agent) | `--output human` pinned for svelte-check. | Env-scrub hardening declined (the flag suffices). |
 | #161 | Idea "The ghost sleeps" | Pause capture 5 min / 1 h / until resumed; status-bar "zzz Paused 4m"; Escape closes only the menu (caught on the window in the capture phase, since WebKit does not focus clicked buttons); unparsable end time shows plain "zzz Paused". | **Deferred:** Linux tray pause toggle; tray/menu-bar item on all platforms. |
-| #162 | OPS-N1 (`.dockerignore` re-includes live data, `auth.json`, `node_modules`) | Re-exclude data, env, dist, target and tests after the re-includes. | **Declined:** `.env.example` exception (root not re-included; Dockerfile never reads it); anchoring `dist` (UI is built in the image). |
+| #162 | OPS-N1 (`.dockerignore` re-includes live data, `auth.json`, `node_modules`) | Re-exclude data, env, dist, target and tests after the re-includes. In #164, also `server/data` (the server's default `./data` when run from `server/`) and `auth.json` and `copywraith.db*` by name, after a context export showed a server run from `server/` still leaked both. | **Declined:** `.env.example` exception (root not re-included; Dockerfile never reads it); anchoring `dist` (UI is built in the image). |
 
 **How they were combined.** Merged in the order #160, #162, #147, #152, #151,
 #156, #150, #158, #161, then #148, #149, #153, #154, #157, then #155 and #159.

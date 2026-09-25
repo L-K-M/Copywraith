@@ -34,6 +34,12 @@
 # Re-including a directory above re-includes everything below it, so runtime
 # data, secrets and build output must be excluded again. Later rules win.
 **/copywraith-data
+# The server's default data directory is ./data, so a run from server/
+# creates server/data. Its secrets are also excluded by name, wherever
+# COPYWRAITH_DATA_DIR pointed.
+server/data
+**/auth.json
+**/copywraith.db*
 **/node_modules
 **/dist
 **/target

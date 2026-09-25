@@ -29,10 +29,12 @@
 
 		void listen<CapturePauseStatus>('capture-pause-changed', (event) => {
 			status = event.payload;
-		}).then((stop) => {
-			if (disposed) stop();
-			else unlisten = stop;
-		});
+		})
+			.then((stop) => {
+				if (disposed) stop();
+				else unlisten = stop;
+			})
+			.catch((e) => console.error('Failed to watch the capture pause:', e));
 
 		return () => {
 			disposed = true;
