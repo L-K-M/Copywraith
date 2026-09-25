@@ -9,9 +9,99 @@ use serde::Serialize;
 
 use crate::{models::Settings, storage::LocalStorage};
 
+/// Where the most recent sync attempt ended up, as shown in the status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncState {
+    Checking,
+    Disabled,
+    Online,
+    /// No configured server could be reached.
+    Unreachable,
+    /// A server answered but refused the configured password.
+    Unauthorized,
+    /// A server answered with an error status or an unreadable reply.
+    Error,
+}
+
+impl SyncState {
+    /// States that mean sync is not working and the loop should back off.
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::Unreachable | Self::Unauthorized | Self::Error)
+    }
+}
+
+/// Why a server that did answer refused or failed a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rejection {
+    /// HTTP 401: the password is wrong or missing.
+    Unauthorized,
+    /// HTTP 403: the Copywraith server answers this until a password is set up.
+    Forbidden,
+    /// Any other non-success status.
+    Status(reqwest::StatusCode),
+    /// A success status whose body is not a Copywraith response.
+    UnreadableResponse,
+}
+
+impl Rejection {
+    fn from_status(status: reqwest::StatusCode) -> Self {
+        match status {
+            reqwest::StatusCode::UNAUTHORIZED => Self::Unauthorized,
+            reqwest::StatusCode::FORBIDDEN => Self::Forbidden,
+            other => Self::Status(other),
+        }
+    }
+
+    /// Credential problems fail every request the same way. Retrying the rest
+    /// of a batch cannot succeed, and each attempt costs the server a full
+    /// Argon2id password verification.
+    fn is_credential_problem(self) -> bool {
+        matches!(self, Self::Unauthorized | Self::Forbidden)
+    }
+
+    /// Whether this rejection explains a failure better than `earlier`, one
+    /// from another endpoint. A credential refusal does, because it is what
+    /// the user must fix and what pauses a push batch; otherwise the first
+    /// endpoint's answer stands.
+    fn outranks(self, earlier: Self) -> bool {
+        self.is_credential_problem() && !earlier.is_credential_problem()
+    }
+
+    /// The more telling of this rejection and an `earlier` one, if any.
+    fn outrank(self, earlier: Option<Self>) -> Self {
+        match earlier {
+            Some(earlier) if !self.outranks(earlier) => earlier,
+            _ => self,
+        }
+    }
+}
+
+/// How pushing one entry ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushOutcome {
+    Synced,
+    Rejected(Rejection),
+    /// No configured endpoint accepted a connection.
+    Unreachable,
+    /// A connection was made but the request did not complete, for example
+    /// because a large upload timed out. Specific to this entry.
+    Failed,
+}
+
+/// How fetching one page of remote entries ended.
+enum PageFetch {
+    Page(FetchEntriesResult),
+    Rejected {
+        endpoint: ServerEndpoint,
+        rejection: Rejection,
+    },
+    Unreachable,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncEndpointStatus {
-    pub state: String,
+    pub state: SyncState,
     pub role: Option<String>,
     pub url: Option<String>,
     pub message: Option<String>,
@@ -53,7 +143,7 @@ pub struct ServerEndpoint {
 impl SyncEndpointStatus {
     fn disabled() -> Self {
         Self {
-            state: "disabled".to_string(),
+            state: SyncState::Disabled,
             role: None,
             url: None,
             message: Some("No server URL is configured in Settings.".to_string()),
@@ -63,7 +153,7 @@ impl SyncEndpointStatus {
 
     pub fn unreachable_endpoint(endpoint: &ServerEndpoint, message: impl Into<String>) -> Self {
         Self {
-            state: "unreachable".to_string(),
+            state: SyncState::Unreachable,
             role: Some(endpoint.role.as_str().to_string()),
             url: Some(endpoint.url.clone()),
             message: Some(message.into()),
@@ -71,9 +161,38 @@ impl SyncEndpointStatus {
         }
     }
 
+    fn rejected(endpoint: &ServerEndpoint, rejection: Rejection) -> Self {
+        let (state, message) = match rejection {
+            Rejection::Unauthorized => (
+                SyncState::Unauthorized,
+                "The server rejected the password. Check it in Settings.".to_string(),
+            ),
+            Rejection::Forbidden => (
+                SyncState::Unauthorized,
+                "The server refused access (HTTP 403). A new server needs a password set up in its admin page first.".to_string(),
+            ),
+            Rejection::Status(status) => (
+                SyncState::Error,
+                format!("The server answered with HTTP {status}."),
+            ),
+            Rejection::UnreadableResponse => (
+                SyncState::Error,
+                "The server's reply could not be read. Check that the URL points to a Copywraith server.".to_string(),
+            ),
+        };
+
+        Self {
+            state,
+            role: Some(endpoint.role.as_str().to_string()),
+            url: Some(endpoint.url.clone()),
+            message: Some(message),
+            checked_at: Some(now_rfc3339()),
+        }
+    }
+
     fn online(endpoint: &ServerEndpoint) -> Self {
         Self {
-            state: "online".to_string(),
+            state: SyncState::Online,
             role: Some(endpoint.role.as_str().to_string()),
             url: Some(endpoint.url.clone()),
             message: Some("Last sync check completed successfully.".to_string()),
@@ -87,7 +206,7 @@ fn checking_status_for_endpoint(
     message: impl Into<String>,
 ) -> SyncEndpointStatus {
     SyncEndpointStatus {
-        state: "checking".to_string(),
+        state: SyncState::Checking,
         role: endpoint.map(|endpoint| endpoint.role.as_str().to_string()),
         url: endpoint.map(|endpoint| endpoint.url.clone()),
         message: Some(message.into()),
@@ -213,8 +332,22 @@ impl SyncClient {
         }
 
         for entry in entries {
-            self.push_entry(&entry, storage, &server_urls, &settings.api_key)
-                .await;
+            match self
+                .push_entry(&entry, storage, &server_urls, &settings.api_key)
+                .await
+            {
+                PushOutcome::Rejected(rejection) if rejection.is_credential_problem() => {
+                    log::warn!("Server rejected the sync credentials; pausing this push batch");
+                    return;
+                }
+                PushOutcome::Unreachable => {
+                    // Every remaining entry would wait out the same connect
+                    // timeout on every endpoint before failing too.
+                    log::debug!("No sync server reachable; pausing this push batch");
+                    return;
+                }
+                PushOutcome::Synced | PushOutcome::Rejected(_) | PushOutcome::Failed => {}
+            }
         }
     }
 
@@ -235,7 +368,7 @@ impl SyncClient {
         storage: &LocalStorage,
         server_urls: &[ServerEndpoint],
         api_key: &str,
-    ) {
+    ) -> PushOutcome {
         let flavors = entry.resolved_flavors();
 
         let content_hash = flavors.payload_hash(entry.content_type, entry.blob_hash.as_deref());
@@ -264,15 +397,17 @@ impl SyncClient {
             content_hash,
         };
 
-        let synced = self
+        let outcome = self
             .push_entry_with_fallback(server_urls, api_key, &req, &entry.id)
             .await;
 
-        if synced {
+        if outcome == PushOutcome::Synced {
             if let Err(e) = storage.mark_synced(&entry.id) {
                 log::error!("Failed to mark entry as synced: {}", e);
             }
         }
+
+        outcome
     }
 
     pub async fn pull_new_entries(&self, storage: &LocalStorage) -> anyhow::Result<PullSyncResult> {
@@ -303,7 +438,7 @@ impl SyncClient {
         let mut active_endpoint: Option<ServerEndpoint> = None;
 
         loop {
-            let Some(fetch_result) = self
+            let fetch_result = match self
                 .fetch_entries_page_with_fallback(
                     &server_urls,
                     &api_key,
@@ -312,22 +447,34 @@ impl SyncClient {
                         .as_ref()
                         .map(|(updated_at, id)| (updated_at.as_str(), id.as_str())),
                 )
-                .await?
-            else {
-                let endpoint_status = self.recent_responding_status().unwrap_or_else(|| {
-                    let attempted = server_urls
-                        .first()
-                        .expect("server_urls is non-empty after sync config check");
-                    SyncEndpointStatus::unreachable_endpoint(
-                        attempted,
-                        "No configured server endpoint responded while pulling entries.",
-                    )
-                });
+                .await
+            {
+                PageFetch::Page(result) => result,
+                PageFetch::Rejected {
+                    endpoint,
+                    rejection,
+                } => {
+                    return Ok(PullSyncResult {
+                        pulled,
+                        endpoint_status: SyncEndpointStatus::rejected(&endpoint, rejection),
+                    });
+                }
+                PageFetch::Unreachable => {
+                    let endpoint_status = self.recent_responding_status().unwrap_or_else(|| {
+                        let attempted = server_urls
+                            .first()
+                            .expect("server_urls is non-empty after sync config check");
+                        SyncEndpointStatus::unreachable_endpoint(
+                            attempted,
+                            "No configured server endpoint responded while pulling entries.",
+                        )
+                    });
 
-                return Ok(PullSyncResult {
-                    pulled,
-                    endpoint_status,
-                });
+                    return Ok(PullSyncResult {
+                        pulled,
+                        endpoint_status,
+                    });
+                }
             };
 
             let page = fetch_result.page;
@@ -448,7 +595,10 @@ impl SyncClient {
         api_key: &str,
         req: &CreateEntryRequest,
         entry_id: &str,
-    ) -> bool {
+    ) -> PushOutcome {
+        let mut rejection: Option<Rejection> = None;
+        let mut connected = false;
+
         for (index, endpoint) in server_urls.iter().enumerate() {
             let url = format!("{}/api/entries", endpoint.url);
             let mut request = self.http.post(&url).json(req);
@@ -459,11 +609,13 @@ impl SyncClient {
 
             match request.send().await {
                 Ok(response) => {
-                    self.note_responding_endpoint(endpoint);
-
+                    connected = true;
                     if response.status().is_success() {
-                        return true;
+                        self.note_responding_endpoint(endpoint);
+                        return PushOutcome::Synced;
                     }
+
+                    rejection = Some(Rejection::from_status(response.status()).outrank(rejection));
 
                     if index + 1 < server_urls.len() {
                         log::debug!(
@@ -482,6 +634,9 @@ impl SyncClient {
                     }
                 }
                 Err(e) => {
+                    // A connect failure or a request that could not even be built
+                    // never reached a server.
+                    connected |= !(e.is_connect() || e.is_builder());
                     if index + 1 < server_urls.len() {
                         log::debug!(
                             "Failed syncing entry {} via {}: {} (trying fallback)",
@@ -501,7 +656,11 @@ impl SyncClient {
             }
         }
 
-        false
+        match rejection {
+            Some(rejection) => PushOutcome::Rejected(rejection),
+            None if connected => PushOutcome::Failed,
+            None => PushOutcome::Unreachable,
+        }
     }
 
     async fn fetch_entries_page_with_fallback(
@@ -510,7 +669,9 @@ impl SyncClient {
         api_key: &str,
         page_size: u32,
         before_cursor: Option<(&str, &str)>,
-    ) -> anyhow::Result<Option<FetchEntriesResult>> {
+    ) -> PageFetch {
+        let mut first_rejection: Option<(ServerEndpoint, Rejection)> = None;
+
         for (index, endpoint) in server_urls.iter().enumerate() {
             let mut url = match reqwest::Url::parse(&format!("{}/api/entries", endpoint.url)) {
                 Ok(url) => url,
@@ -554,9 +715,14 @@ impl SyncClient {
                 }
             };
 
-            self.note_responding_endpoint(endpoint);
-
             if !response.status().is_success() {
+                let rejection = Rejection::from_status(response.status());
+                if first_rejection
+                    .as_ref()
+                    .is_none_or(|(_, earlier)| rejection.outranks(*earlier))
+                {
+                    first_rejection = Some((endpoint.clone(), rejection));
+                }
                 if index + 1 < server_urls.len() {
                     log::debug!(
                         "Server {} returned {} when pulling entries; trying fallback",
@@ -575,10 +741,13 @@ impl SyncClient {
 
             match response.json::<ListEntriesResponse>().await {
                 Ok(page) => {
-                    return Ok(Some(FetchEntriesResult {
+                    // Only a usable answer counts as the server responding;
+                    // a 401 or an HTML error page must not read as "online".
+                    self.note_responding_endpoint(endpoint);
+                    return PageFetch::Page(FetchEntriesResult {
                         page,
                         endpoint_index: index,
-                    }))
+                    });
                 }
                 Err(e) => {
                     log::warn!(
@@ -586,11 +755,19 @@ impl SyncClient {
                         endpoint.url,
                         e
                     );
+                    first_rejection
+                        .get_or_insert_with(|| (endpoint.clone(), Rejection::UnreadableResponse));
                 }
             }
         }
 
-        Ok(None)
+        match first_rejection {
+            Some((endpoint, rejection)) => PageFetch::Rejected {
+                endpoint,
+                rejection,
+            },
+            None => PageFetch::Unreachable,
+        }
     }
 
     async fn ingest_remote_entry(
@@ -894,6 +1071,304 @@ mod compression_tests {
             "request did not offer gzip:\n{request_head}"
         );
         // Only a successfully decoded and parsed page reports online.
-        assert_eq!(result.endpoint_status.state, "online");
+        assert_eq!(result.endpoint_status.state, SyncState::Online);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const EMPTY_PAGE: &str = r#"{"entries":[],"total":0,"has_more":false}"#;
+
+    /// A minimal HTTP/1.1 server that answers every request with one fixed
+    /// response and counts the requests it received.
+    async fn fake_server(status: &'static str, body: &'static str) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    read_request(&mut socket).await;
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        (url, requests)
+    }
+
+    /// Consume the request head and body so the client sees a clean response.
+    async fn read_request(socket: &mut tokio::net::TcpStream) {
+        let mut data = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = match socket.read(&mut buffer).await {
+                Ok(0) | Err(_) => return,
+                Ok(read) => read,
+            };
+            data.extend_from_slice(&buffer[..read]);
+
+            let Some(head_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&data[..head_end]).to_ascii_lowercase();
+            let body_len = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if data.len() >= head_end + 4 + body_len {
+                return;
+            }
+        }
+    }
+
+    /// A URL on which nothing is listening.
+    async fn closed_port_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        url
+    }
+
+    fn storage_with_servers(primary: &str, fallback: &str) -> (tempfile::TempDir, LocalStorage) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        storage
+            .save_settings(&Settings {
+                server_url_primary: primary.to_string(),
+                server_url_fallback: fallback.to_string(),
+                api_key: "configured password".to_string(),
+                ..Settings::default()
+            })
+            .unwrap();
+        (dir, storage)
+    }
+
+    fn queue_text(storage: &LocalStorage, text: &str) {
+        let flavors = ClipboardFlavors {
+            text_plain: Some(text.to_string()),
+            ..ClipboardFlavors::default()
+        };
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .expect("a new entry is queued");
+    }
+
+    async fn pull_state(primary: &str, fallback: &str) -> SyncEndpointStatus {
+        let (_dir, storage) = storage_with_servers(primary, fallback);
+        let client = SyncClient::new(&storage);
+        client
+            .pull_new_entries(&storage)
+            .await
+            .unwrap()
+            .endpoint_status
+    }
+
+    #[tokio::test]
+    async fn a_rejected_password_is_reported_instead_of_online() {
+        let (url, _) = fake_server("401 Unauthorized", r#"{"error":"Unauthorized"}"#).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Unauthorized);
+        assert!(status.message.unwrap().contains("password"));
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_server_is_reported_as_needing_setup() {
+        let (url, _) = fake_server("403 Forbidden", r#"{"error":"Password not configured"}"#).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Unauthorized);
+        assert!(status.message.unwrap().contains("admin page"));
+    }
+
+    #[tokio::test]
+    async fn a_credential_rejection_outranks_another_endpoints_error() {
+        let (failing, _) = fake_server("500 Internal Server Error", "{}").await;
+        let (refusing, _) = fake_server("401 Unauthorized", "{}").await;
+
+        for (primary, fallback) in [(&failing, &refusing), (&refusing, &failing)] {
+            let status = pull_state(primary, fallback).await;
+            assert_eq!(status.state, SyncState::Unauthorized);
+            assert_eq!(status.url.as_deref(), Some(refusing.as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_push_batch_pauses_when_any_endpoint_refuses_the_password() {
+        let (failing, failing_requests) = fake_server("500 Internal Server Error", "{}").await;
+        let (refusing, refusing_requests) = fake_server("401 Unauthorized", "{}").await;
+        let (_dir, storage) = storage_with_servers(&failing, &refusing);
+        for text in ["first", "second", "third"] {
+            queue_text(&storage, text);
+        }
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        assert_eq!(failing_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(refusing_requests.load(Ordering::SeqCst), 1);
+        // Pausing leaves the whole queue for the next successful sync.
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn sync_states_serialize_to_the_strings_the_frontend_knows() {
+        // Must match KNOWN_STATES in src/lib/util/syncStatusStore.ts, which
+        // folds anything else into "unreachable".
+        for (state, expected) in [
+            (SyncState::Checking, "checking"),
+            (SyncState::Disabled, "disabled"),
+            (SyncState::Online, "online"),
+            (SyncState::Unreachable, "unreachable"),
+            (SyncState::Unauthorized, "unauthorized"),
+            (SyncState::Error, "error"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_reported_with_its_status() {
+        let (url, _) = fake_server("500 Internal Server Error", r#"{"error":"boom"}"#).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Error);
+        assert!(status.message.unwrap().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_is_not_a_copywraith_response_is_an_error() {
+        let (url, _) = fake_server("200 OK", "<html>captive portal</html>").await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Error);
+    }
+
+    #[tokio::test]
+    async fn a_usable_page_is_online() {
+        let (url, _) = fake_server("200 OK", EMPTY_PAGE).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Online);
+    }
+
+    #[tokio::test]
+    async fn a_rejection_outranks_an_unreachable_fallback() {
+        let (url, _) = fake_server("401 Unauthorized", "{}").await;
+        let closed = closed_port_url().await;
+
+        // The server that answered says why sync fails; the dead endpoint
+        // cannot, whichever order they are configured in.
+        assert_eq!(
+            pull_state(&closed, &url).await.state,
+            SyncState::Unauthorized
+        );
+        assert_eq!(
+            pull_state(&url, &closed).await.state,
+            SyncState::Unauthorized
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_listening_is_unreachable() {
+        let closed = closed_port_url().await;
+
+        assert_eq!(pull_state(&closed, "").await.state, SyncState::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn a_push_batch_stops_at_the_first_credential_rejection() {
+        let (url, requests) = fake_server("401 Unauthorized", "{}").await;
+        let (_dir, storage) = storage_with_servers(&url, "");
+        for text in ["first", "second", "third"] {
+            queue_text(&storage, text);
+        }
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        // Every further request would cost the server an Argon2id run and
+        // could not succeed with the same password.
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_push_batch_continues_past_entry_specific_rejections() {
+        let (url, requests) = fake_server("413 Payload Too Large", "{}").await;
+        let (_dir, storage) = storage_with_servers(&url, "");
+        for text in ["first", "second", "third"] {
+            queue_text(&storage, text);
+        }
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_successful_push_marks_the_entry_synced() {
+        let (url, requests) = fake_server("201 Created", "{}").await;
+        let (_dir, storage) = storage_with_servers(&url, "");
+        queue_text(&storage, "accepted");
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(storage.get_unsynced_entries().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pushing_with_no_server_listening_is_unreachable() {
+        let closed = closed_port_url().await;
+        let (_dir, storage) = storage_with_servers(&closed, "");
+        queue_text(&storage, "stranded");
+        let entry = storage.get_unsynced_entries().unwrap().remove(0);
+        let client = SyncClient::new(&storage);
+        let endpoints = configured_server_urls(&storage.get_settings());
+
+        let outcome = client.push_entry(&entry, &storage, &endpoints, "pw").await;
+
+        assert_eq!(outcome, PushOutcome::Unreachable);
+    }
+
+    #[test]
+    fn only_failure_states_back_off() {
+        assert!(SyncState::Unreachable.is_failure());
+        assert!(SyncState::Unauthorized.is_failure());
+        assert!(SyncState::Error.is_failure());
+        assert!(!SyncState::Online.is_failure());
+        assert!(!SyncState::Disabled.is_failure());
+        assert!(!SyncState::Checking.is_failure());
     }
 }

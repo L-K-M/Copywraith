@@ -322,12 +322,25 @@
 				'Sync did not finish within 45 seconds. Check the server URL and network.'
 			);
 			setSyncEndpointStatus(result.endpoint_status);
-			updateMobileSyncProgress(
-				result.pulled > 0
-					? `Pulled ${result.pulled} server entr${result.pulled === 1 ? 'y' : 'ies'}.`
-					: 'Server sync complete.',
-				85
-			);
+			// The backend reports failures as a status, not an exception.
+			if (result.endpoint_status.state === 'disabled') {
+				updateMobileSyncProgress('Sync is disabled. Configure a server in Settings.', 85);
+			} else if (result.endpoint_status.state !== 'online') {
+				hadWarning = true;
+				updateMobileSyncProgress(
+					'Server sync did not complete.',
+					85,
+					result.endpoint_status.message ?? '',
+					'error'
+				);
+			} else {
+				updateMobileSyncProgress(
+					result.pulled > 0
+						? `Pulled ${result.pulled} server entr${result.pulled === 1 ? 'y' : 'ies'}.`
+						: 'Server sync complete.',
+					85
+				);
+			}
 		} catch (e) {
 			hadWarning = true;
 			console.error('Failed to sync entries:', e);
