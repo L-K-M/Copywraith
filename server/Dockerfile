@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS ui-builder
+FROM node:22-bookworm-slim AS ui-builder
 
 WORKDIR /build/server/ui
 

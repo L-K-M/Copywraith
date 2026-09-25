@@ -15,7 +15,7 @@ Copywraith is a cross-platform Tauri app (Rust backend + Svelte frontend) with a
 
 Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Installed-client smoke tests follow on Ubuntu 22.04 and 24.04. In-progress runs for the same ref are cancelled when a new commit is pushed.
 
-**Frontend (check & build)** — uses Node 20 with npm caching:
+**Frontend (check & build)** — uses Node 22 with npm caching:
 
 - `npm ci`, `npm run check` (TS7), and `npm run check:ts6` in both frontends.
 - `npm run test:frontend` at the root and `npm test` in `server/ui`.
