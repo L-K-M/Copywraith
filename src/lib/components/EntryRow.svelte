@@ -152,6 +152,8 @@
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			e.stopPropagation();
+			// A held Enter must not paste over and over.
+			if (e.repeat) return;
 			onselect?.(entry.id);
 			// Shift or Option/Alt, like Option/Alt+click.
 			if (e.shiftKey || e.altKey) {

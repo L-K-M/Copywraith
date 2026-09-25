@@ -24,7 +24,7 @@
 	let shortcutHelp = $derived(
 		[
 			'Click or Enter: paste',
-			`${$platform === 'macos' ? 'Option' : 'Alt'}+click or Shift+Enter: paste as plain text`,
+			`${$platform === 'macos' ? 'Option' : 'Alt'}+click, Shift+Enter or ${$platform === 'macos' ? 'Option' : 'Alt'}+Enter: paste as plain text`,
 			`${mod}1 to ${mod}9: paste that row`,
 			`${mod}S: star or unstar`,
 			`${mod}Y: preview`,
