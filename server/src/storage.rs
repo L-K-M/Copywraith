@@ -164,12 +164,16 @@ fn ensure_flavor_columns_backfilled(conn: &Connection) -> anyhow::Result<()> {
         )
         .optional()?
         .and_then(|value| value.parse::<i64>().ok());
-    if stored_version == Some(FLAVOR_BACKFILL_VERSION) {
+    // A newer marker (after a downgrade) also means the work is done.
+    if stored_version.is_some_and(|version| version >= FLAVOR_BACKFILL_VERSION) {
         return Ok(());
     }
 
-    backfill_flavor_columns(conn)?;
-    conn.execute(
+    // One transaction: the marker is recorded only with completed work, and
+    // the per-row updates do not each pay a synchronous commit.
+    let tx = conn.unchecked_transaction()?;
+    backfill_flavor_columns(&tx)?;
+    tx.execute(
         "INSERT INTO metadata (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![
@@ -177,6 +181,7 @@ fn ensure_flavor_columns_backfilled(conn: &Connection) -> anyhow::Result<()> {
             FLAVOR_BACKFILL_VERSION.to_string()
         ],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -982,6 +987,17 @@ mod migration_tests {
             )
             .unwrap();
         assert_eq!(search_text, "left alone");
+
+        // The first open ran the backfill and recorded it.
+        let marker: String = Connection::open(dir.path().join("copywraith.db"))
+            .unwrap()
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![FLAVOR_BACKFILL_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, FLAVOR_BACKFILL_VERSION.to_string());
     }
 
     #[test]
