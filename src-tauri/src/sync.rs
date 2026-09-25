@@ -116,9 +116,18 @@ pub fn checking_status_for_configured_endpoint(
 /// How long a transfer may make no progress before it is abandoned.
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Deadline for fetching one page of entries. Pages carry every text flavor,
-/// so a page of large rich-text copies can be many megabytes.
-const PAGE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Deadline for any request that does not set its own.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Deadline for fetching one page of entries. Pages carry every text flavor
+/// for up to 100 rows, so a page of large rich-text copies can reach tens of
+/// megabytes; ten minutes covers about 75 MB at the 1 Mbit/s floor rate. A
+/// stalled page still ends after `STALL_TIMEOUT`.
+const PAGE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Largest blob a client creates (an Android share). Used as the download size
+/// when a server does not report one.
+const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Deadline for a request that moves `payload_bytes` over the network.
 ///
@@ -131,7 +140,10 @@ fn transfer_timeout(payload_bytes: u64) -> Duration {
     const BASE: Duration = Duration::from_secs(30);
     // 1 Mbit/s.
     const FLOOR_BYTES_PER_SEC: u64 = 128 * 1024;
-    BASE + Duration::from_secs(payload_bytes / FLOOR_BYTES_PER_SEC)
+    // Download sizes come from the server; a garbage value must not produce
+    // an effectively endless deadline.
+    const MAX: Duration = Duration::from_secs(3600);
+    (BASE + Duration::from_secs(payload_bytes / FLOOR_BYTES_PER_SEC)).min(MAX)
 }
 
 /// Approximate request body size of a push: the base64 blob plus text.
@@ -179,11 +191,13 @@ impl SyncClient {
                 .ok()
                 .map(|dt| (dt.with_timezone(&Utc), id))
         });
-        // No client-wide total deadline: each request sets one sized to what
-        // it transfers (see `transfer_timeout`). The read timeout still ends a
-        // download that stops making progress.
+        // The client-wide deadline is only a default: pushes, pages and blob
+        // downloads each set their own, sized to what they transfer (see
+        // `transfer_timeout`), and a per-request timeout replaces this one.
+        // The read timeout ends any download that stops making progress.
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
             .read_timeout(STALL_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
@@ -730,7 +744,7 @@ impl SyncClient {
     ) -> anyhow::Result<Option<Vec<u8>>> {
         let mut last_error: Option<anyhow::Error> = None;
         let mut saw_definitive_unavailable = false;
-        let timeout = transfer_timeout(remote.entry.blob_size.unwrap_or(0));
+        let timeout = transfer_timeout(remote.entry.blob_size.unwrap_or(MAX_BLOB_BYTES));
 
         for (index, endpoint) in server_urls.iter().enumerate() {
             let blob_url = remote
@@ -892,6 +906,12 @@ mod timeout_tests {
         // At 5 Mbit/s the upload needs about 140 s; the old 30 s deadline
         // could never be met.
         assert!(deadline > Duration::from_secs(600), "{deadline:?}");
+    }
+
+    #[test]
+    fn server_supplied_sizes_cannot_make_deadlines_endless() {
+        assert_eq!(transfer_timeout(u64::MAX), Duration::from_secs(3600));
+        assert!(transfer_timeout(MAX_BLOB_BYTES) < Duration::from_secs(3600));
     }
 
     #[test]
