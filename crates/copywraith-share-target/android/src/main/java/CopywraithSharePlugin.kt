@@ -414,17 +414,19 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   private fun isForeignContentUri(uri: Uri): Boolean {
     if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false
     val authority = uri.authority ?: return false
+    val ownAuthorities = ownProviderAuthorities ?: return false
     return authority != activity.packageName &&
       !authority.startsWith("${activity.packageName}.") &&
-      authority !in ownProviderAuthorities
+      authority !in ownAuthorities
   }
 
   /**
    * Every authority declared by a provider in this package, including library
    * providers merged into the manifest whose authority need not start with the
-   * package name. The prefix checks above stay as the fail-closed default.
+   * package name. Null means the lookup failed; isForeignContentUri then
+   * rejects every URI rather than trusting the prefix checks alone.
    */
-  private val ownProviderAuthorities: Set<String> by lazy {
+  private val ownProviderAuthorities: Set<String>? by lazy {
     runCatching {
       @Suppress("DEPRECATION")
       activity.packageManager
@@ -433,7 +435,8 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
         ?.flatMap { provider -> provider.authority.orEmpty().split(';') }
         ?.filter { it.isNotBlank() }
         ?.toSet()
-    }.getOrNull() ?: emptySet()
+        ?: emptySet()
+    }.getOrNull()
   }
 
   private fun getDisplayName(uri: Uri): String? {

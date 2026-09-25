@@ -725,13 +725,6 @@ fn import_pending_file_share(
 /// entry's file list, which a desktop paste turns into a `file://` path. Only a
 /// final path component is kept, so a hostile name such as
 /// `/Users/alice/.ssh/id_rsa` cannot aim a desktop paste at a real file.
-/// Bidirectional overrides can make `photo\u{202E}gpj.exe` display as
-/// `photoexe.jpg`, disguising a file's real extension.
-#[cfg(any(target_os = "android", test))]
-fn is_bidi_override(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-}
-
 #[cfg(any(target_os = "android", test))]
 fn shared_file_display_name(raw: Option<&str>, stored_path: &std::path::Path) -> String {
     raw.and_then(|name| name.rsplit(['/', '\\']).next())
@@ -750,6 +743,13 @@ fn shared_file_display_name(raw: Option<&str>, stored_path: &std::path::Path) ->
                 .unwrap_or("shared-file")
                 .to_string()
         })
+}
+
+/// Bidirectional overrides can make `photo\u{202E}gpj.exe` display as
+/// `photoexe.jpg`, disguising a file's real extension.
+#[cfg(any(target_os = "android", test))]
+fn is_bidi_override(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 #[tauri::command]
