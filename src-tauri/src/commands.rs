@@ -729,7 +729,9 @@ fn import_pending_file_share(
 fn shared_file_display_name(raw: Option<&str>, stored_path: &std::path::Path) -> String {
     raw.and_then(|name| name.rsplit(['/', '\\']).next())
         .map(str::trim)
-        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .filter(|name| {
+            !name.is_empty() && *name != "." && *name != ".." && !name.chars().any(char::is_control)
+        })
         .map(str::to_string)
         .unwrap_or_else(|| {
             stored_path
@@ -1122,6 +1124,8 @@ mod tests {
             Some("folder/"),
             Some(".."),
             Some("a/.."),
+            Some("report\u{0}.pdf"),
+            Some("bad\nname.txt"),
         ] {
             assert_eq!(
                 shared_file_display_name(unusable, stored),

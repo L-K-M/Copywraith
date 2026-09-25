@@ -338,7 +338,14 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun persistSharedUri(uri: Uri, fallbackMimeType: String?): JSONObject? {
-    if (!isForeignContentUri(uri)) return null
+    if (!isForeignContentUri(uri)) {
+      // Scheme and authority only: the path can name the sender's files.
+      android.util.Log.w(
+        "CopywraithShare",
+        "Ignoring shared URI (scheme=${uri.scheme}, authority=${uri.authority})"
+      )
+      return null
+    }
 
     val resolver = activity.contentResolver
     val mimeType = resolver.getType(uri) ?: fallbackMimeType ?: "application/octet-stream"
@@ -408,7 +415,25 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
     if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false
     val authority = uri.authority ?: return false
     return authority != activity.packageName &&
-      !authority.startsWith("${activity.packageName}.")
+      !authority.startsWith("${activity.packageName}.") &&
+      authority !in ownProviderAuthorities
+  }
+
+  /**
+   * Every authority declared by a provider in this package, including library
+   * providers merged into the manifest whose authority need not start with the
+   * package name. The prefix checks above stay as the fail-closed default.
+   */
+  private val ownProviderAuthorities: Set<String> by lazy {
+    runCatching {
+      @Suppress("DEPRECATION")
+      activity.packageManager
+        .getPackageInfo(activity.packageName, PackageManager.GET_PROVIDERS)
+        .providers
+        ?.flatMap { provider -> provider.authority.orEmpty().split(';') }
+        ?.filter { it.isNotBlank() }
+        ?.toSet()
+    }.getOrNull() ?: emptySet()
   }
 
   private fun getDisplayName(uri: Uri): String? {
