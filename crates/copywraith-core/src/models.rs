@@ -146,6 +146,19 @@ impl ClipboardFlavors {
             .map(|paths| paths.join("\n"))
     }
 
+    /// Text for "paste as plain text": the `text/plain` flavor exactly as it
+    /// was copied, whitespace included, falling back to text derived from
+    /// HTML, RTF or a file list.
+    ///
+    /// `best_plain_text` trims, which suits previews and search but would drop
+    /// the indentation of a copied code line and its trailing newline.
+    pub fn plain_text_for_paste(&self) -> Option<String> {
+        self.text_plain
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| self.best_plain_text())
+    }
+
     pub fn payload_hash(&self, content_type: ContentType, blob_hash: Option<&str>) -> String {
         if content_type == ContentType::Image {
             if let Some(hash) = blob_hash {
@@ -262,6 +275,10 @@ impl ClipboardEntry {
         self.resolved_flavors().best_plain_text()
     }
 
+    pub fn plain_text_for_paste(&self) -> Option<String> {
+        self.resolved_flavors().plain_text_for_paste()
+    }
+
     pub fn new_text(text: String) -> Self {
         let now = Utc::now();
         let sensitive = crate::sensitive::contains_sensitive_data(&text);
@@ -372,6 +389,43 @@ mod tests {
         assert_eq!(
             flavors.payload_hash(ContentType::Text, None),
             crate::content::hash_text("hello")
+        );
+    }
+
+    #[test]
+    fn plain_text_paste_keeps_the_copied_whitespace() {
+        let code = ClipboardFlavors {
+            text_plain: Some("    return x;\n".to_string()),
+            text_html: Some("<pre>    return x;</pre>".to_string()),
+            ..ClipboardFlavors::default()
+        };
+        assert_eq!(
+            code.plain_text_for_paste().as_deref(),
+            Some("    return x;\n")
+        );
+        // Previews and search still get the trimmed form.
+        assert_eq!(code.best_plain_text().as_deref(), Some("return x;"));
+    }
+
+    #[test]
+    fn plain_text_paste_falls_back_to_rich_flavors() {
+        let html_only = ClipboardFlavors {
+            text_html: Some("<p>Hello <b>world</b></p>".to_string()),
+            ..ClipboardFlavors::default()
+        };
+        assert_eq!(
+            html_only.plain_text_for_paste().as_deref(),
+            Some("Hello world")
+        );
+
+        let blank_plain = ClipboardFlavors {
+            text_plain: Some("  \n".to_string()),
+            text_html: Some("<p>Rich only</p>".to_string()),
+            ..ClipboardFlavors::default()
+        };
+        assert_eq!(
+            blank_plain.plain_text_for_paste().as_deref(),
+            Some("Rich only")
         );
     }
 

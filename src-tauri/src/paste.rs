@@ -82,7 +82,7 @@ pub fn restore_previous_focus(app: &tauri::AppHandle) {
 pub fn paste_most_recent_plaintext(app: &tauri::AppHandle) {
     let state = app.state::<crate::AppState>();
     if let Ok(Some(entry)) = state.storage.get_most_recent_entry() {
-        if let Some(text) = entry.best_plain_text() {
+        if let Some(text) = entry.plain_text_for_paste() {
             // Write plaintext to clipboard and simulate paste
             write_and_paste_text(app, &text);
         }
