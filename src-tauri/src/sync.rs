@@ -1162,6 +1162,8 @@ mod tests {
 
         assert_eq!(failing_requests.load(Ordering::SeqCst), 1);
         assert_eq!(refusing_requests.load(Ordering::SeqCst), 1);
+        // Pausing leaves the whole queue for the next successful sync.
+        assert_eq!(storage.get_unsynced_entries().unwrap().len(), 3);
     }
 
     #[test]
