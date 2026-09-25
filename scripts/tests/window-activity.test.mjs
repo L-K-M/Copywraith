@@ -10,6 +10,7 @@ const AUTO_HIDE_WAIT_MS = 1_000;
 const page = readFileSync(new URL('../../src/routes/+page.svelte', import.meta.url), 'utf8');
 const script = page.slice(page.indexOf('>') + 1, page.indexOf('</script>'));
 const manager = readFileSync(new URL('../../src/lib/windowManager.ts', import.meta.url), 'utf8');
+const keyboard = readFileSync(new URL('../../src/lib/util/keyboard.ts', import.meta.url), 'utf8');
 
 // Execute the actual handlers with native APIs stubbed, like the other popup tests.
 function load(source, modules, bindings = {}) {
@@ -73,6 +74,7 @@ function popup(t, platformName = 'linux') {
 		svelte: { onMount: (callback) => mounts.push(callback), onDestroy: (callback) => destroys.push(callback) }
 	};
 	modules['$lib/windowManager'] = load(manager, modules);
+	modules['$lib/util/keyboard'] = load(keyboard, modules);
 	const handlers = load(`${script}\nexport { handleWindowDrag };`, modules, {
 		$state: (value) => value,
 		$derived: (value) => value,

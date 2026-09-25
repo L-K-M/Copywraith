@@ -56,7 +56,8 @@
 			return;
 		}
 
-		if (e.key === 'Enter') {
+		// Shift+Enter (paste as plain text) is handled by the popup's shortcuts.
+		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			pasteSelectedEntry();
 			return;

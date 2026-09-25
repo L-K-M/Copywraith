@@ -29,12 +29,15 @@
 		entry,
 		isFirst = false,
 		selected = false,
+		quickKey = null,
 		onselect,
 		onpreview
 	}: {
 		entry: ClipboardEntry;
 		isFirst?: boolean;
 		selected?: boolean;
+		/** Digit shown while the quick-paste modifier is held, or null. */
+		quickKey?: number | null;
 		onselect?: (id: string) => void;
 		onpreview?: (entry: ClipboardEntry) => void;
 	} = $props();
@@ -150,7 +153,11 @@
 			e.preventDefault();
 			e.stopPropagation();
 			onselect?.(entry.id);
-			pasteEntry(entry.id);
+			if (e.shiftKey) {
+				pasteEntryPlaintext(entry.id);
+			} else {
+				pasteEntry(entry.id);
+			}
 		}
 		// Space shows preview
 		if (e.key === ' ') {
@@ -215,6 +222,9 @@
 		</button>
 	</td>
 	<td class="col-content">
+		{#if quickKey !== null}
+			<span class="quick-key" aria-hidden="true">{quickKey}</span>
+		{/if}
 		{#if entry.has_image && imageSrc}
 			<div class="image-preview">
 				<!--
@@ -331,6 +341,20 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		padding: 3px 6px;
+	}
+
+	/* A System 7 style keycap in front of the first nine rows. */
+	.quick-key {
+		float: left;
+		min-width: 14px;
+		margin: 5px 6px 0 0;
+		padding: 0 2px;
+		border: 1px solid currentColor;
+		border-radius: 3px;
+		box-shadow: 1px 1px 0 currentColor;
+		font-size: 11px;
+		line-height: 14px;
+		text-align: center;
 	}
 
 	.text-preview {
