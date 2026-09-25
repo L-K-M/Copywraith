@@ -274,3 +274,37 @@ fn unreadable_native_format_preserves_usable_payloads() {
     peer.set_text(" ".into()).unwrap();
     assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Empty));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 clipboard (Xvfb)"]
+fn file_manager_uris_are_decoded_and_written_back_encoded() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("My Screenshot #1.png");
+    std::fs::write(&file, PNG).unwrap();
+    let path = file.to_string_lossy().into_owned();
+    let encoded = path.replace(' ', "%20").replace('#', "%23");
+
+    // File managers publish percent-encoded text/uri-list entries.
+    peer.set_files(vec![format!("file://{encoded}")]).unwrap();
+    let ClipboardPayload::Files(files) = adapter.read().unwrap() else {
+        panic!("expected files")
+    };
+    assert_eq!(files, std::slice::from_ref(&path));
+
+    // Pasting writes a valid URI again, for new decoded rows and for rows
+    // stored encoded before decoding existed.
+    for stored in [&path, &encoded] {
+        adapter.write_files(std::slice::from_ref(stored)).unwrap();
+        let native = peer.get_files().unwrap();
+        assert_eq!(native.len(), 1);
+        assert!(!native[0].contains(' '), "{native:?}");
+        let ClipboardPayload::Files(files) = adapter.read().unwrap() else {
+            panic!("expected files")
+        };
+        assert_eq!(files, std::slice::from_ref(&path), "stored as {stored:?}");
+    }
+}

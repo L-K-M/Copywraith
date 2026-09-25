@@ -75,7 +75,7 @@ fn handle_clipboard_change(
             return;
         }
         ClipboardPayload::Files(files) => {
-            if let Some(bytes) = read_first_image_file(&files) {
+            if let Some(bytes) = single_image_file(&files) {
                 let content_hash = hash_bytes(&bytes);
                 store_entry(
                     app,
@@ -189,35 +189,30 @@ fn store_entry(
     }
 }
 
-fn read_first_image_file(files: &[String]) -> Option<Vec<u8>> {
+/// The image bytes when exactly one image file was copied.
+///
+/// Copying one screenshot in a file manager is stored as an image so it can be
+/// previewed and pasted as a picture. With several files, converting would keep
+/// one image and silently drop the rest of the selection, so the file list is
+/// kept instead.
+fn single_image_file(files: &[String]) -> Option<Vec<u8>> {
     const MAX_IMAGE_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
-    for file_path in files {
-        let path = Path::new(file_path);
-        if !is_supported_image_path(path) {
-            continue;
-        }
-
-        let Ok(metadata) = std::fs::metadata(path) else {
-            continue;
-        };
-        if !metadata.is_file() || metadata.len() > MAX_IMAGE_FILE_BYTES {
-            continue;
-        }
-
-        let Ok(bytes) = std::fs::read(path) else {
-            continue;
-        };
-        if bytes.is_empty() {
-            continue;
-        }
-
-        if copywraith_core::content::detect_image_format(&bytes).is_some() {
-            return Some(bytes);
-        }
+    let [file_path] = files else {
+        return None;
+    };
+    let path = Path::new(file_path);
+    if !is_supported_image_path(path) {
+        return None;
     }
 
-    None
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_IMAGE_FILE_BYTES {
+        return None;
+    }
+
+    let bytes = std::fs::read(path).ok()?;
+    copywraith_core::content::detect_image_format(&bytes).map(|_| bytes)
 }
 
 fn is_supported_image_path(path: &Path) -> bool {
@@ -229,4 +224,44 @@ fn is_supported_image_path(path: &Path) -> bool {
         ext.to_ascii_lowercase().as_str(),
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::single_image_file;
+
+    const PNG: &[u8] = include_bytes!("../icons/32x32.png");
+
+    fn file(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> String {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn one_copied_image_file_becomes_an_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = file(&dir, "shot.png", PNG);
+
+        assert_eq!(single_image_file(&[image]).as_deref(), Some(PNG));
+    }
+
+    #[test]
+    fn several_copied_files_stay_a_file_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = file(&dir, "report.pdf", b"%PDF-1.7");
+        let image = file(&dir, "photo.png", PNG);
+
+        assert_eq!(single_image_file(&[report.clone(), image.clone()]), None);
+        assert_eq!(single_image_file(&[image.clone(), image]), None);
+        assert_eq!(single_image_file(&[report]), None);
+    }
+
+    #[test]
+    fn a_file_named_like_an_image_must_contain_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = file(&dir, "not-really.png", b"plain text");
+
+        assert_eq!(single_image_file(&[fake]), None);
+    }
 }

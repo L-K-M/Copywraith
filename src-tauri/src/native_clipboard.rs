@@ -77,8 +77,8 @@ impl NativeClipboard {
                 Ok(files) if !files.is_empty() => {
                     return Ok(ClipboardPayload::Files(
                         files
-                            .into_iter()
-                            .map(|path| path.strip_prefix("file://").unwrap_or(&path).to_string())
+                            .iter()
+                            .map(|entry| clipboard_file_path(entry))
                             .collect(),
                     ));
                 }
@@ -161,12 +161,16 @@ impl NativeClipboard {
             .map(|path| {
                 #[cfg(target_os = "windows")]
                 return path.strip_prefix("file://").unwrap_or(path).to_string();
-                #[cfg(not(target_os = "windows"))]
-                if path.starts_with("file://") {
+                // The macOS backend strips the scheme and treats the rest as a
+                // plain path, so it must not be percent-encoded.
+                #[cfg(target_os = "macos")]
+                return if path.starts_with("file://") {
                     path.clone()
                 } else {
                     format!("file://{path}")
-                }
+                };
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                return file_uri(path);
             })
             .collect();
         self.context()?.set_files(files).map_err(|e| e.to_string())
@@ -291,6 +295,78 @@ fn nonempty(text: String) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Convert one clipboard file entry to a local path.
+///
+/// X11 and Wayland deliver `text/uri-list` lines, which percent-encode spaces
+/// and other bytes (`file:///home/me/My%20File.png`). macOS and Windows deliver
+/// plain paths, which are returned unchanged: a literal `%` there is part of
+/// the file name.
+fn clipboard_file_path(entry: &str) -> String {
+    let Some(rest) = entry.strip_prefix("file://") else {
+        return entry.to_string();
+    };
+    let path = rest
+        .strip_prefix("localhost")
+        .filter(|path| path.starts_with('/'))
+        .unwrap_or(rest);
+    percent_decode(path)
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| bytes.get(index + 1..index + 3))
+            .flatten()
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        match escaped {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Build the `text/uri-list` entry for a local path.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn file_uri(path: &str) -> String {
+    if path.starts_with("file://") {
+        return path.to_string();
+    }
+
+    // Rows captured before URIs were decoded store the encoded form. Decode
+    // those first so they are not encoded twice.
+    let decoded = percent_decode(path);
+    let path = if !std::path::Path::new(path).exists() && std::path::Path::new(&decoded).exists() {
+        decoded.as_str()
+    } else {
+        path
+    };
+    format!("file://{}", percent_encode_path(path))
+}
+
+#[cfg(any(not(any(target_os = "macos", target_os = "windows")), test))]
+fn percent_encode_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 // Attempt every text representation; the caller reports errors only if none work.
 fn read_text_flavors(
     mut read: impl FnMut(ContentFormat) -> Result<String>,
@@ -315,6 +391,42 @@ fn read_text_flavors(
 #[cfg(test)]
 mod read_tests {
     use super::*;
+
+    #[test]
+    fn file_uris_become_decoded_local_paths() {
+        assert_eq!(
+            clipboard_file_path("file:///home/me/My%20Screenshot%20%231.png"),
+            "/home/me/My Screenshot #1.png"
+        );
+        assert_eq!(
+            clipboard_file_path("file://localhost/tmp/caf%C3%A9.txt"),
+            "/tmp/café.txt"
+        );
+        // Malformed escapes are kept literally rather than guessed at.
+        assert_eq!(clipboard_file_path("file:///tmp/100%.txt"), "/tmp/100%.txt");
+        assert_eq!(clipboard_file_path("file:///tmp/%zz%+1"), "/tmp/%zz%+1");
+    }
+
+    #[test]
+    fn plain_paths_are_not_decoded() {
+        // macOS and Windows hand over plain paths; a % is part of the name.
+        assert_eq!(
+            clipboard_file_path("/Users/me/50%20off.pdf"),
+            "/Users/me/50%20off.pdf"
+        );
+        assert_eq!(
+            clipboard_file_path("C:\\Temp\\a b.txt"),
+            "C:\\Temp\\a b.txt"
+        );
+    }
+
+    #[test]
+    fn paths_encode_to_uris_that_decode_back() {
+        let path = "/home/me/My Screenshot #1 (café).png";
+        let encoded = percent_encode_path(path);
+        assert!(!encoded.contains(' '));
+        assert_eq!(clipboard_file_path(&format!("file://{encoded}")), path);
+    }
 
     #[test]
     fn text_read_errors_do_not_discard_other_flavors() {
