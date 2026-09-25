@@ -174,6 +174,9 @@ async fn auth_setup(
             "Password must be at least 8 characters".to_string(),
         ));
     }
+    if let Some(problem) = bearer_password_problem(&req.password) {
+        return Err(AppError::BadRequest(problem.to_string()));
+    }
 
     let mut crypto = state.crypto.lock().unwrap();
     if crypto.is_initialized() {
@@ -251,6 +254,9 @@ async fn auth_change_password(
         return Err(AppError::BadRequest(
             "New password must be at least 8 characters".to_string(),
         ));
+    }
+    if let Some(problem) = bearer_password_problem(&req.new_password) {
+        return Err(AppError::BadRequest(problem.to_string()));
     }
 
     let mut crypto = state.crypto.lock().unwrap();
@@ -814,6 +820,92 @@ fn migrate_existing_data(state: &AppState, dek: &[u8; 32]) -> anyhow::Result<()>
 mod tests {
     use super::project_list_entry;
     use copywraith_core::models::ClipboardEntry;
+
+    mod password_rules {
+        use std::sync::{Arc, Mutex};
+
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use tower::ServiceExt;
+
+        use crate::crypto::CryptoState;
+        use crate::storage::Storage;
+        use crate::AppState;
+
+        fn app() -> (tempfile::TempDir, axum::Router) {
+            let dir = tempfile::tempdir().unwrap();
+            let state = Arc::new(AppState {
+                storage: Storage::new(dir.path()).unwrap(),
+                crypto: Mutex::new(CryptoState::load(dir.path()).unwrap()),
+            });
+            (dir, super::super::router().with_state(state))
+        }
+
+        async fn post(
+            app: &axum::Router,
+            path: &str,
+            bearer: Option<&str>,
+            body: serde_json::Value,
+        ) -> StatusCode {
+            let mut request = Request::post(path).header(header::CONTENT_TYPE, "application/json");
+            if let Some(password) = bearer {
+                request = request.header(header::AUTHORIZATION, format!("Bearer {password}"));
+            }
+            app.clone()
+                .oneshot(request.body(Body::from(body.to_string())).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+
+        #[tokio::test]
+        async fn setup_rejects_passwords_that_cannot_travel_in_a_header() {
+            let (_dir, app) = app();
+
+            for password in ["Grüezi-2026", "password123 "] {
+                let status = post(
+                    &app,
+                    "/auth/setup",
+                    None,
+                    serde_json::json!({ "password": password }),
+                )
+                .await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{password:?}");
+            }
+
+            let status = post(
+                &app,
+                "/auth/setup",
+                None,
+                serde_json::json!({ "password": "correct horse" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn change_password_rejects_a_new_password_that_cannot_travel_in_a_header() {
+            let (_dir, app) = app();
+            let current = "correct horse";
+            post(
+                &app,
+                "/auth/setup",
+                None,
+                serde_json::json!({ "password": current }),
+            )
+            .await;
+
+            let status = post(
+                &app,
+                "/auth/change-password",
+                Some(current),
+                serde_json::json!({ "old_password": current, "new_password": "Grüezi-2026" }),
+            )
+            .await;
+
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+    }
 
     #[test]
     fn list_projection_masks_sensitive_entries_unless_explicitly_requested() {

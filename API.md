@@ -34,6 +34,17 @@ Authorization: Bearer <password>
 
 If no password is configured yet, protected endpoints return `403` until password setup is completed.
 
+Because the password travels in that header, setup and password change accept
+only printable ASCII (letters, digits, punctuation and spaces) with no leading
+or trailing space, and at least 8 characters. Anything else is rejected with
+`400` rather than accepted and then refused on every later request.
+
+A server set up before this rule with such a password cannot authenticate any
+request, including `change-password`. There is no in-place recovery: the key
+that encrypts stored entries is wrapped with that password, so starting over
+means removing `auth.json` (and with it access to the existing encrypted data)
+and running setup again.
+
 ## Endpoint groups
 
 ### System

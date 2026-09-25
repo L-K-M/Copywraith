@@ -10,6 +10,7 @@
 		ConfirmDialog
 	} from '@lkmc/system7-ui';
 	import * as api from './lib/api';
+	import { bearerPasswordProblem } from './lib/password';
 	import type { EntryResponse, AuthStatusResponse } from './lib/types';
 	import EntryRow from './lib/EntryRow.svelte';
 	import EntryDetail from './lib/EntryDetail.svelte';
@@ -97,6 +98,11 @@
 		authError = '';
 		if (passwordInput.length < 8) {
 			authError = 'Password must be at least 8 characters.';
+			return;
+		}
+		const problem = bearerPasswordProblem(passwordInput);
+		if (problem) {
+			authError = problem;
 			return;
 		}
 		if (passwordInput !== passwordConfirm) {
