@@ -943,10 +943,19 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 
 #[tauri::command]
 pub async fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    let previous = state.storage.get_settings();
     state
         .storage
         .save_settings(&settings)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Against a different server the old watermark would hide every entry
+    // older than it. Re-walking is safe because ingestion is idempotent.
+    if sync::server_endpoints_changed(&previous, &settings) {
+        state.sync_client.reset_pull_cursor(&state.storage);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

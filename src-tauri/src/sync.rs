@@ -114,6 +114,9 @@ pub fn checking_status_for_configured_endpoint(
 }
 
 struct PullState {
+    /// Bumped by every cursor reset. A pull that started before a reset must
+    /// not write back a watermark from the server it was talking to.
+    generation: u64,
     initialized: bool,
     /// Newest `(updated_at, id)` we have fully pulled. Entries at or below this
     /// key are considered already synced. Comparing the full key (rather than a
@@ -151,6 +154,7 @@ impl SyncClient {
         Self {
             http,
             pull_state: Mutex::new(PullState {
+                generation: 0,
                 initialized: watermark.is_some(),
                 watermark,
             }),
@@ -167,12 +171,13 @@ impl SyncClient {
     }
 
     pub fn reset_pull_cursor(&self, storage: &LocalStorage) {
-        {
-            let mut state = self.pull_state.lock().unwrap();
-            state.initialized = false;
-            state.watermark = None;
-        }
+        let mut state = self.pull_state.lock().unwrap();
+        state.generation += 1;
+        state.initialized = false;
+        state.watermark = None;
 
+        // Cleared under the lock so an in-flight pull cannot persist its
+        // watermark between the in-memory reset and this delete.
         if let Err(e) = storage.clear_sync_watermark() {
             log::warn!("Failed to clear sync watermark: {}", e);
         }
@@ -289,9 +294,9 @@ impl SyncClient {
 
         let api_key = settings.api_key;
 
-        let (initialized, watermark) = {
+        let (generation, initialized, watermark) = {
             let state = self.pull_state.lock().unwrap();
-            (state.initialized, state.watermark.clone())
+            (state.generation, state.initialized, state.watermark.clone())
         };
 
         let mut before_cursor: Option<(String, String)> = None;
@@ -399,8 +404,9 @@ impl SyncClient {
         // next time) and only forward (never move the watermark backwards, e.g.
         // if the previous newest entry was deleted on the server).
         if let Some((updated_at, id)) = newest_seen.filter(|_| !had_ingest_error) {
-            let advanced = {
-                let mut state = self.pull_state.lock().unwrap();
+            let mut state = self.pull_state.lock().unwrap();
+            // A reset during this pass (e.g. the server URL changed) wins.
+            if state.generation == generation {
                 let should_advance = match state.watermark.as_ref() {
                     Some((wm_updated_at, wm_id)) => {
                         (updated_at, id.as_str()) > (*wm_updated_at, wm_id.as_str())
@@ -409,16 +415,13 @@ impl SyncClient {
                 };
                 if should_advance {
                     state.watermark = Some((updated_at, id.clone()));
+                    // Persisted under the lock so a concurrent reset cannot
+                    // interleave with this write.
+                    if let Err(e) = storage.save_sync_watermark(&updated_at.to_rfc3339(), &id) {
+                        log::warn!("Failed to persist sync watermark: {}", e);
+                    }
                 }
                 state.initialized = true;
-                should_advance
-            };
-
-            // Persist outside the in-memory lock so it survives app restarts.
-            if advanced {
-                if let Err(e) = storage.save_sync_watermark(&updated_at.to_rfc3339(), &id) {
-                    log::warn!("Failed to persist sync watermark: {}", e);
-                }
             }
         }
 
@@ -795,6 +798,23 @@ fn resolved_remote_flavors(entry: &ClipboardEntry) -> ClipboardFlavors {
         .merge_legacy(entry.content_type, entry.text_content.as_deref())
 }
 
+/// Whether two settings point at different sets of servers.
+///
+/// The pull watermark is a position in one server's history, so it must not
+/// survive a switch to another server. Swapping the local and VPN URLs, or
+/// editing whitespace and trailing slashes, keeps the same servers.
+pub fn server_endpoints_changed(before: &Settings, after: &Settings) -> bool {
+    let urls = |settings: &Settings| {
+        let mut urls: Vec<String> = configured_server_urls(settings)
+            .into_iter()
+            .map(|endpoint| endpoint.url)
+            .collect();
+        urls.sort();
+        urls
+    };
+    urls(before) != urls(after)
+}
+
 fn configured_server_urls(settings: &Settings) -> Vec<ServerEndpoint> {
     let mut urls: Vec<ServerEndpoint> = Vec::new();
 
@@ -829,5 +849,99 @@ fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
             base_url.trim_end_matches('/'),
             maybe_relative.trim_start_matches('/'),
         )
+    }
+}
+
+#[cfg(test)]
+mod cursor_reset_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn settings(primary: &str, fallback: &str) -> Settings {
+        Settings {
+            server_url_primary: primary.to_string(),
+            server_url_fallback: fallback.to_string(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_different_server_counts_as_a_change() {
+        let before = settings("http://192.168.1.5:3742", "http://100.64.0.10:3742");
+
+        for after in [
+            settings("http://192.168.1.9:3742", "http://100.64.0.10:3742"),
+            settings("http://192.168.1.5:3742", ""),
+            settings("", ""),
+        ] {
+            assert!(server_endpoints_changed(&before, &after), "{after:?}");
+        }
+    }
+
+    #[test]
+    fn the_same_servers_written_differently_are_not_a_change() {
+        let before = settings("http://192.168.1.5:3742", "http://100.64.0.10:3742");
+
+        for after in [
+            settings("http://192.168.1.5:3742/", " http://100.64.0.10:3742 "),
+            settings("http://100.64.0.10:3742", "http://192.168.1.5:3742"),
+        ] {
+            assert!(!server_endpoints_changed(&before, &after), "{after:?}");
+        }
+    }
+
+    /// One page holding a single entry, sent only after `release` fires.
+    async fn held_page_server(release: tokio::sync::oneshot::Receiver<()>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.unwrap();
+                head.extend_from_slice(&buffer[..read]);
+            }
+            release.await.unwrap();
+
+            let page = ListEntriesResponse {
+                entries: vec![EntryResponse {
+                    entry: ClipboardEntry::new_text("from the old server".to_string()),
+                    blob_url: None,
+                }],
+                total: 1,
+                has_more: false,
+            };
+            let body = serde_json::to_string(&page).unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_pull_in_flight_during_a_reset_does_not_restore_the_old_watermark() {
+        let (release, held) = tokio::sync::oneshot::channel();
+        let url = held_page_server(held).await;
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        storage.save_settings(&settings(&url, "")).unwrap();
+        let client = SyncClient::new(&storage);
+
+        let pull = client.pull_new_entries(&storage);
+        let reset_mid_pull = async {
+            // Give the pull time to send its request, then switch servers.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            client.reset_pull_cursor(&storage);
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(pull, reset_mid_pull);
+
+        assert_eq!(result.unwrap().pulled, 1);
+        assert_eq!(storage.get_sync_watermark(), None);
+        assert!(client.pull_state.lock().unwrap().watermark.is_none());
     }
 }
