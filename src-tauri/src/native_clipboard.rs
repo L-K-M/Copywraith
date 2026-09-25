@@ -309,6 +309,11 @@ fn clipboard_file_path(entry: &str) -> String {
         .strip_prefix("localhost")
         .filter(|path| path.starts_with('/'))
         .unwrap_or(rest);
+    if !path.starts_with('/') {
+        // A non-local authority (file://nas/share/x) has no local path; a
+        // relative-looking path would resolve against the working directory.
+        return entry.to_string();
+    }
     percent_decode(path)
 }
 
@@ -321,7 +326,9 @@ fn percent_decode(text: &str) -> String {
             .then(|| bytes.get(index + 1..index + 3))
             .flatten()
             .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
-            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok())
+            // A NUL cannot be part of a path; keep %00 literally like %zz.
+            .filter(|byte| *byte != 0);
         match escaped {
             Some(byte) => {
                 decoded.push(byte);
@@ -344,7 +351,11 @@ fn file_uri(path: &str) -> String {
     }
 
     // Rows captured before URIs were decoded store the encoded form. Decode
-    // those first so they are not encoded twice.
+    // those first so they are not encoded twice. Only a path containing an
+    // escape can be such a row, so others skip the filesystem check.
+    if !path.contains('%') {
+        return format!("file://{}", percent_encode_path(path));
+    }
     let decoded = percent_decode(path);
     let path = if !std::path::Path::new(path).exists() && std::path::Path::new(&decoded).exists() {
         decoded.as_str()
@@ -405,6 +416,15 @@ mod read_tests {
         // Malformed escapes are kept literally rather than guessed at.
         assert_eq!(clipboard_file_path("file:///tmp/100%.txt"), "/tmp/100%.txt");
         assert_eq!(clipboard_file_path("file:///tmp/%zz%+1"), "/tmp/%zz%+1");
+        assert_eq!(clipboard_file_path("file:///tmp/a%00b"), "/tmp/a%00b");
+    }
+
+    #[test]
+    fn remote_file_uris_are_not_turned_into_relative_paths() {
+        assert_eq!(
+            clipboard_file_path("file://nas/share/a%20b.png"),
+            "file://nas/share/a%20b.png"
+        );
     }
 
     #[test]
