@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::routing::get;
 use axum::Router;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -138,13 +139,22 @@ fn build_app(state: Arc<AppState>, ui_dir: Option<&std::path::Path>) -> Router {
     };
 
     router
-        // Entry lists carry every text flavor in full, and clients poll them.
-        // Compression is negotiated per request (Accept-Encoding), and the
-        // default predicate skips images and tiny bodies.
-        .layer(CompressionLayer::new())
+        .layer(compression_layer())
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Gzip for API and admin UI responses, negotiated per request.
+///
+/// Entry lists carry every text flavor in full and clients poll them, so they
+/// are what this is for. Images (skipped by the default predicate) and file
+/// blobs (`application/octet-stream`, often archives or PDFs of up to 64 MiB)
+/// are usually already compressed, so gzipping them only costs CPU.
+fn compression_layer() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new().compress_when(
+        DefaultPredicate::new().and(NotForContentType::const_new("application/octet-stream")),
+    )
 }
 
 /// Try to find the built UI dist directory.
@@ -230,5 +240,32 @@ mod tests {
     #[tokio::test]
     async fn responses_stay_plain_for_clients_that_do_not() {
         assert_eq!(content_encoding(None).await, None);
+    }
+
+    #[tokio::test]
+    async fn file_blobs_are_not_recompressed() {
+        let app = Router::new()
+            .route(
+                "/blob",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "application/octet-stream")],
+                        vec![b'x'; 4096],
+                    )
+                }),
+            )
+            .layer(compression_layer());
+
+        let response = app
+            .oneshot(
+                Request::get("/blob")
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
     }
 }

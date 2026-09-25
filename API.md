@@ -67,5 +67,5 @@ If no password is configured yet, protected endpoints return `403` until passwor
 - `GET /api/entries` supports pagination and filtering via query params (`limit`, `offset`, `content_type`, `starred_only`, `search`, `include_sensitive`).
 - For stable sync pagination on mutable datasets, it also supports cursor params `before_updated_at` + `before_id` (descending by `(updated_at, id)`).
 - Responses are gzip-compressed when the request sends `Accept-Encoding: gzip`
-  (the desktop and Android clients do). Images and very small bodies are sent
-  uncompressed.
+  (the desktop and Android clients do). Images, file blobs and very small
+  bodies are sent uncompressed.

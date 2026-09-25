@@ -854,6 +854,7 @@ mod compression_tests {
             let mut buffer = [0u8; 4096];
             while !head.windows(4).any(|window| window == b"\r\n\r\n") {
                 let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before sending complete headers");
                 head.extend_from_slice(&buffer[..read]);
             }
             let mut response = format!(
@@ -876,10 +877,14 @@ mod compression_tests {
             })
             .unwrap();
 
-        let result = SyncClient::new(&storage)
-            .pull_new_entries(&storage)
-            .await
-            .unwrap();
+        // The fake server answers one request; a second would hang, not fail.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            SyncClient::new(&storage).pull_new_entries(&storage),
+        )
+        .await
+        .expect("the pull finishes after one request")
+        .unwrap();
 
         let request_head = server.await.unwrap();
         assert!(
