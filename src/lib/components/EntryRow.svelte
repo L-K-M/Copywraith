@@ -153,7 +153,8 @@
 			e.preventDefault();
 			e.stopPropagation();
 			onselect?.(entry.id);
-			if (e.shiftKey) {
+			// Shift or Option/Alt, like Option/Alt+click.
+			if (e.shiftKey || e.altKey) {
 				pasteEntryPlaintext(entry.id);
 			} else {
 				pasteEntry(entry.id);

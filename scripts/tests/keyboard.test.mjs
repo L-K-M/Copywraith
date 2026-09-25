@@ -59,6 +59,22 @@ test('Page keys jump; Home and End only outside text fields', () => {
 	assert.deepEqual(resolveShortcut(key({ key: 'End' }), list), { type: 'select-edge', edge: 'last' });
 });
 
+test('a held chord fires once, but held movement keys keep moving', () => {
+	assert.equal(resolveShortcut(key({ key: 'Backspace', metaKey: true, repeat: true }), inFilter), null);
+	assert.equal(resolveShortcut(key({ key: 's', metaKey: true, repeat: true }), inFilter), null);
+	assert.equal(resolveShortcut(key({ key: 'Enter', shiftKey: true, repeat: true }), inFilter), null);
+	assert.equal(resolveShortcut(key({ key: '1', metaKey: true, repeat: true }), inFilter), null);
+	assert.deepEqual(resolveShortcut(key({ key: 'PageDown', repeat: true }), inFilter), { type: 'move', delta: 10 });
+});
+
+test('Option/Alt+Enter pastes as plain text, like Option/Alt+click', () => {
+	assert.deepEqual(resolveShortcut(key({ key: 'Enter', altKey: true }), inFilter), { type: 'paste-plaintext' });
+	assert.deepEqual(
+		resolveShortcut(key({ key: 'Enter', altKey: true }), { ...inFilter, platform: 'linux' }),
+		{ type: 'paste-plaintext' }
+	);
+});
+
 test('Option/AltGr combinations are left to the keyboard layout', () => {
 	assert.equal(resolveShortcut(key({ key: '2', metaKey: true, altKey: true }), inFilter), null);
 	assert.equal(resolveShortcut(key({ key: '@', ctrlKey: true, altKey: true }), { ...inFilter, platform: 'linux' }), null);

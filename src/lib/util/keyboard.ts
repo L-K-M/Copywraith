@@ -21,6 +21,8 @@ export interface ShortcutKey {
 	ctrlKey: boolean;
 	shiftKey: boolean;
 	altKey: boolean;
+	/** The OS is auto-repeating a held key. */
+	repeat?: boolean;
 }
 
 export interface ShortcutContext {
@@ -42,12 +44,26 @@ export function isModKey(key: string, platform: string): boolean {
 }
 
 export function resolveShortcut(event: ShortcutKey, context: ShortcutContext): ShortcutAction | null {
+	const action = resolveKey(event, context);
+	// A held chord must not delete, star or paste over and over; only moving
+	// the selection is meant to repeat.
+	if (event.repeat && action?.type !== 'move') return null;
+	return action;
+}
+
+function resolveKey(event: ShortcutKey, context: ShortcutContext): ShortcutAction | null {
 	const mod = context.platform === 'macos' ? event.metaKey : event.ctrlKey;
-	// Keep AltGr/Option layouts free to type characters.
+
+	// Option/Alt+Enter matches Option/Alt+click: paste as plain text.
+	if (event.key === 'Enter' && event.altKey && !mod && !event.shiftKey) {
+		return { type: 'paste-plaintext' };
+	}
+	// Otherwise keep AltGr/Option layouts free to type characters.
 	if (event.altKey) return null;
 
 	if (mod && !event.shiftKey) {
-		if (/^[1-9]$/.test(event.key)) return { type: 'quick-paste', index: Number(event.key) - 1 };
+		const slot = /^[1-9]$/.test(event.key) ? Number(event.key) : 0;
+		if (slot >= 1 && slot <= QUICK_PASTE_SLOTS) return { type: 'quick-paste', index: slot - 1 };
 
 		switch (event.key.toLowerCase()) {
 			case 's':

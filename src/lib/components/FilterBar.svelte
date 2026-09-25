@@ -56,8 +56,8 @@
 			return;
 		}
 
-		// Shift+Enter (paste as plain text) is handled by the popup's shortcuts.
-		if (e.key === 'Enter' && !e.shiftKey) {
+		// Shift/Alt+Enter (paste as plain text) are handled by the popup's shortcuts.
+		if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
 			e.preventDefault();
 			pasteSelectedEntry();
 			return;
