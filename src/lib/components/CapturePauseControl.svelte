@@ -53,8 +53,9 @@
 	}
 
 	function handleMenuKeydown(e: KeyboardEvent) {
-		// Close only the menu; Escape elsewhere hides the popup. Bound to the
-		// trigger too, which keeps focus after a mouse click opens the menu.
+		// Close only the menu; Escape elsewhere hides the popup. Captured on the
+		// window, before the popup's handler, because WebKit does not focus a
+		// clicked button, so focus may be anywhere while the menu is open.
 		if (menuOpen && e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
@@ -67,6 +68,7 @@
 	onclick={() => {
 		menuOpen = false;
 	}}
+	onkeydowncapture={handleMenuKeydown}
 />
 
 <div class="capture-pause">
@@ -83,7 +85,6 @@
 			e.stopPropagation();
 			menuOpen = !menuOpen;
 		}}
-		onkeydown={handleMenuKeydown}
 	>
 		{paused ? label : 'Pause'}
 	</button>
@@ -95,7 +96,6 @@
 			role="menu"
 			tabindex="-1"
 			onclick={(e) => e.stopPropagation()}
-			onkeydown={handleMenuKeydown}
 		>
 			{#if paused}
 				<button type="button" role="menuitem" onclick={() => choose('resume')}>
