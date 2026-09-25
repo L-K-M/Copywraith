@@ -1002,6 +1002,55 @@ pub async fn hide_popup(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Event emitted whenever capture is paused or resumed.
+const CAPTURE_PAUSE_CHANGED: &str = "capture-pause-changed";
+
+#[tauri::command]
+pub async fn get_capture_pause(
+    state: State<'_, AppState>,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    let pause = *state.capture_pause.lock().map_err(|e| e.to_string())?;
+    Ok(pause.status_at(chrono::Utc::now()))
+}
+
+/// Pause capture for `minutes`, or until resumed when `minutes` is `None`.
+#[tauri::command]
+pub async fn pause_capture(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    minutes: Option<u32>,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    use crate::models::CapturePause;
+
+    let pause = match minutes {
+        Some(0) => return Err("A pause needs at least one minute".to_string()),
+        Some(minutes) => {
+            CapturePause::Until(chrono::Utc::now() + chrono::Duration::minutes(minutes.into()))
+        }
+        None => CapturePause::Indefinite,
+    };
+    set_capture_pause(&app, &state, pause)
+}
+
+#[tauri::command]
+pub async fn resume_capture(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    set_capture_pause(&app, &state, crate::models::CapturePause::Active)
+}
+
+fn set_capture_pause(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    pause: crate::models::CapturePause,
+) -> Result<crate::models::CapturePauseStatus, String> {
+    *state.capture_pause.lock().map_err(|e| e.to_string())? = pause;
+    let status = pause.status_at(chrono::Utc::now());
+    let _ = app.emit(CAPTURE_PAUSE_CHANGED, &status);
+    Ok(status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{project_entry, truncate_chars, LIST_FULL_TEXT_CHARS, LIST_PREVIEW_CHARS};
