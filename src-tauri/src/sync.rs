@@ -127,9 +127,24 @@ struct EndpointHeartbeat {
     observed_at: Instant,
 }
 
+/// Page size for walking remote history.
+const PAGE_SIZE: u32 = 100;
+
+/// Page size of the first request once a watermark exists.
+///
+/// The sync loop polls every few seconds. Asking for a full page each time
+/// transferred the newest 100 entries, every text flavor in full, even when
+/// nothing had changed. One entry is enough to learn whether anything is newer
+/// than the watermark; only then does the walk continue with full pages.
+const PROBE_PAGE_SIZE: u32 = 1;
+
 pub struct SyncClient {
     http: reqwest::Client,
     pull_state: Mutex<PullState>,
+    /// Serializes pulls. The periodic loop, manual sync and the mobile resume
+    /// refresh can all start one; running them side by side only walks the same
+    /// pages twice.
+    pull_lock: tokio::sync::Mutex<()>,
     last_responding_endpoint: Mutex<Option<EndpointHeartbeat>>,
 }
 
@@ -154,6 +169,7 @@ impl SyncClient {
                 initialized: watermark.is_some(),
                 watermark,
             }),
+            pull_lock: tokio::sync::Mutex::new(()),
             last_responding_endpoint: Mutex::new(None),
         }
     }
@@ -276,7 +292,7 @@ impl SyncClient {
     }
 
     pub async fn pull_new_entries(&self, storage: &LocalStorage) -> anyhow::Result<PullSyncResult> {
-        const PAGE_SIZE: u32 = 100;
+        let _pull_guard = self.pull_lock.lock().await;
 
         let settings = storage.get_settings();
         let mut server_urls = configured_server_urls(&settings);
@@ -295,6 +311,11 @@ impl SyncClient {
         };
 
         let mut before_cursor: Option<(String, String)> = None;
+        let mut page_size = if initialized && watermark.is_some() {
+            PROBE_PAGE_SIZE
+        } else {
+            PAGE_SIZE
+        };
         let mut pulled = 0usize;
         // Newest (updated_at, id) observed this pass. Promoted to the watermark
         // once the pass finishes without a blocking ingest error.
@@ -307,7 +328,7 @@ impl SyncClient {
                 .fetch_entries_page_with_fallback(
                     &server_urls,
                     &api_key,
-                    PAGE_SIZE,
+                    page_size,
                     before_cursor
                         .as_ref()
                         .map(|(updated_at, id)| (updated_at.as_str(), id.as_str())),
@@ -392,6 +413,8 @@ impl SyncClient {
                 last_entry.entry.updated_at.to_rfc3339(),
                 last_entry.entry.id.clone(),
             ));
+            // The probe found something new; fetch the rest in full pages.
+            page_size = PAGE_SIZE;
         }
 
         // Advance the watermark to the newest entry we saw, but only when the
@@ -829,5 +852,196 @@ fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
             base_url.trim_end_matches('/'),
             maybe_relative.trim_start_matches('/'),
         )
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A fake server holding `history` (newest first) that pages it the way
+    /// the real server does, and records each requested page size.
+    async fn history_server(history: Vec<ClipboardEntry>) -> (String, Arc<Mutex<Vec<u32>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let limits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = limits.clone();
+        let history = Arc::new(history);
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let history = history.clone();
+                let recorded = recorded.clone();
+                tokio::spawn(async move {
+                    let target = read_request_target(&mut socket).await;
+                    let url = reqwest::Url::parse(&format!("http://fake{target}")).unwrap();
+                    let query = |name: &str| {
+                        url.query_pairs()
+                            .find(|(key, _)| key == name)
+                            .map(|(_, value)| value.into_owned())
+                    };
+                    let limit: u32 = query("limit").unwrap().parse().unwrap();
+                    recorded.lock().unwrap().push(limit);
+
+                    let cursor = query("before_updated_at").map(|updated_at| {
+                        let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+                            .unwrap()
+                            .with_timezone(&Utc);
+                        (updated_at, query("before_id").unwrap())
+                    });
+                    let older: Vec<&ClipboardEntry> = history
+                        .iter()
+                        .filter(|entry| match &cursor {
+                            Some((updated_at, id)) => {
+                                (entry.updated_at, entry.id.as_str()) < (*updated_at, id.as_str())
+                            }
+                            None => true,
+                        })
+                        .collect();
+                    let page = ListEntriesResponse {
+                        entries: older
+                            .iter()
+                            .take(limit as usize)
+                            .map(|entry| EntryResponse {
+                                entry: (*entry).clone(),
+                                blob_url: None,
+                            })
+                            .collect(),
+                        total: history.len() as u64,
+                        has_more: older.len() > limit as usize,
+                    };
+                    let body = serde_json::to_string(&page).unwrap();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        (base, limits)
+    }
+
+    /// Read a GET request's head and return its request target.
+    async fn read_request_target(socket: &mut tokio::net::TcpStream) -> String {
+        let mut data = Vec::new();
+        let mut buffer = [0u8; 4096];
+        while !data.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "client closed before sending a request");
+            data.extend_from_slice(&buffer[..read]);
+        }
+        let head = String::from_utf8_lossy(&data);
+        head.split_whitespace().nth(1).unwrap().to_string()
+    }
+
+    /// `count` text entries, newest first, one minute apart.
+    fn history(count: usize) -> Vec<ClipboardEntry> {
+        let oldest = DateTime::parse_from_rfc3339("2026-09-01T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        (0..count)
+            .rev()
+            .map(|index| {
+                let mut entry = ClipboardEntry::new_text(format!("entry {index}"));
+                entry.id = format!("01JQZ0R00000000000000{index:05}");
+                entry.created_at = oldest + chrono::Duration::minutes(index as i64);
+                entry.updated_at = entry.created_at;
+                entry
+            })
+            .collect()
+    }
+
+    fn storage_for(
+        url: &str,
+        watermark: Option<&ClipboardEntry>,
+    ) -> (tempfile::TempDir, LocalStorage) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path()).unwrap();
+        storage
+            .save_settings(&Settings {
+                server_url_primary: url.to_string(),
+                api_key: "password".to_string(),
+                ..Settings::default()
+            })
+            .unwrap();
+        if let Some(entry) = watermark {
+            storage
+                .save_sync_watermark(&entry.updated_at.to_rfc3339(), &entry.id)
+                .unwrap();
+        }
+        (dir, storage)
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_server_costs_one_single_entry_request() {
+        let history = history(150);
+        let newest = history[0].clone();
+        let (url, limits) = history_server(history).await;
+        let (_dir, storage) = storage_for(&url, Some(&newest));
+
+        let result = SyncClient::new(&storage)
+            .pull_new_entries(&storage)
+            .await
+            .unwrap();
+
+        assert_eq!(result.pulled, 0);
+        assert_eq!(*limits.lock().unwrap(), [PROBE_PAGE_SIZE]);
+    }
+
+    #[tokio::test]
+    async fn new_entries_found_by_the_probe_are_fetched_in_full_pages() {
+        let history = history(150);
+        // Three entries (indexes 0-2) are newer than the watermark.
+        let watermark = history[3].clone();
+        let (url, limits) = history_server(history).await;
+        let (_dir, storage) = storage_for(&url, Some(&watermark));
+
+        let result = SyncClient::new(&storage)
+            .pull_new_entries(&storage)
+            .await
+            .unwrap();
+
+        assert_eq!(result.pulled, 3);
+        assert_eq!(*limits.lock().unwrap(), [PROBE_PAGE_SIZE, PAGE_SIZE]);
+    }
+
+    #[tokio::test]
+    async fn a_first_pull_walks_full_pages_and_the_next_pass_only_probes() {
+        let (url, limits) = history_server(history(150)).await;
+        let (_dir, storage) = storage_for(&url, None);
+        let client = SyncClient::new(&storage);
+
+        assert_eq!(client.pull_new_entries(&storage).await.unwrap().pulled, 150);
+        assert_eq!(client.pull_new_entries(&storage).await.unwrap().pulled, 0);
+
+        assert_eq!(
+            *limits.lock().unwrap(),
+            [PAGE_SIZE, PAGE_SIZE, PROBE_PAGE_SIZE]
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_pulls_run_one_after_the_other() {
+        let (url, limits) = history_server(history(150)).await;
+        let (_dir, storage) = storage_for(&url, None);
+        let client = SyncClient::new(&storage);
+
+        let (first, second) = tokio::join!(
+            client.pull_new_entries(&storage),
+            client.pull_new_entries(&storage)
+        );
+
+        // The second pull starts from the watermark the first one left, so the
+        // history is walked once rather than twice.
+        assert_eq!(first.unwrap().pulled + second.unwrap().pulled, 150);
+        assert_eq!(
+            *limits.lock().unwrap(),
+            [PAGE_SIZE, PAGE_SIZE, PROBE_PAGE_SIZE]
+        );
     }
 }

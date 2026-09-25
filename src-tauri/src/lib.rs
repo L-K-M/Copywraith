@@ -870,8 +870,6 @@ fn start_sync_loop(
         let mut current_interval = BASE_INTERVAL_SECS;
 
         loop {
-            tokio::time::sleep(Duration::from_secs(current_interval)).await;
-
             // Push local unsynced entries first
             sync_client.sync_unsynced_entries(&storage).await;
 
@@ -907,6 +905,10 @@ fn start_sync_loop(
                     current_interval = (current_interval * 2).min(MAX_INTERVAL_SECS);
                 }
             }
+
+            // Sleep after the pass, not before it: the first sync starts at
+            // launch instead of after a guaranteed idle interval.
+            tokio::time::sleep(Duration::from_secs(current_interval)).await;
         }
     });
 }
