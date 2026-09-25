@@ -915,8 +915,12 @@ fn start_sync_loop(
             }
 
             // Sleep after the pass, not before it: the first sync starts at
-            // launch instead of after a guaranteed idle interval.
-            tokio::time::sleep(Duration::from_secs(current_interval)).await;
+            // launch instead of after a guaranteed idle interval. A sync
+            // request (e.g. a star toggle) cuts the wait short.
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(current_interval)) => {}
+                _ = sync_client.sync_requested() => {}
+            }
         }
     });
 }
