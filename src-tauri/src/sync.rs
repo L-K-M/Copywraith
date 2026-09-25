@@ -955,7 +955,10 @@ mod cursor_reset_tests {
         let pull = client.pull_new_entries(&storage);
         let reset_mid_pull = async {
             // Switch servers while the pull's request is in flight.
-            request_arrived.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), request_arrived)
+                .await
+                .expect("the pull never sent its request")
+                .unwrap();
             client.reset_pull_cursor(&storage);
             release.send(()).unwrap();
         };
