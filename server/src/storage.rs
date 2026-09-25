@@ -27,6 +27,10 @@ type StoredTextFields = (
     Option<String>,
 );
 
+/// Records that `backfill_flavor_columns` has run, so it is not repeated.
+const FLAVOR_BACKFILL_VERSION_KEY: &str = "flavor_backfill_version";
+const FLAVOR_BACKFILL_VERSION: i64 = 1;
+
 const ENTRIES_FTS_SCHEMA_VERSION_KEY: &str = "entries_fts_schema_version";
 const ENTRIES_FTS_SCHEMA_VERSION: i64 = 2;
 const ENCRYPTED_TEXT_PREFIX_LIKE: &str = "ENC:1:%";
@@ -140,6 +144,39 @@ fn backfill_flavor_columns(conn: &Connection) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Fill flavor columns for rows written before they existed, once.
+///
+/// The backfill reads every row into memory and strips HTML/RTF for each. It
+/// used to run on every start, and with encryption active it also rewrote
+/// every row created since the previous start: independently encrypted
+/// copies of the same text never compare equal. Every row written since the
+/// flavor columns were added already has them, so one pass per database is
+/// enough.
+fn ensure_flavor_columns_backfilled(conn: &Connection) -> anyhow::Result<()> {
+    let stored_version = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            params![FLAVOR_BACKFILL_VERSION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|value| value.parse::<i64>().ok());
+    if stored_version == Some(FLAVOR_BACKFILL_VERSION) {
+        return Ok(());
+    }
+
+    backfill_flavor_columns(conn)?;
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![
+            FLAVOR_BACKFILL_VERSION_KEY,
+            FLAVOR_BACKFILL_VERSION.to_string()
+        ],
+    )?;
     Ok(())
 }
 
@@ -361,7 +398,7 @@ impl Storage {
         ensure_entries_column(&conn, "text_rtf", "TEXT")?;
         ensure_entries_column(&conn, "search_text", "TEXT")?;
 
-        backfill_flavor_columns(&conn)?;
+        ensure_flavor_columns_backfilled(&conn)?;
         ensure_entries_fts_schema(&conn)?;
 
         Ok(Self {
@@ -912,6 +949,40 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
+
+    #[test]
+    fn the_flavor_backfill_runs_once_per_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let flavors = ClipboardFlavors {
+            text_plain: Some("copied once".into()),
+            ..Default::default()
+        };
+        let (entry, _) = Storage::new(dir.path())
+            .unwrap()
+            .create_entry(ContentType::Text, &flavors, None, None, None, "hash", None)
+            .unwrap();
+
+        // Make the row differ from what the backfill would compute, as every
+        // encrypted row does, then restart.
+        Connection::open(dir.path().join("copywraith.db"))
+            .unwrap()
+            .execute(
+                "UPDATE entries SET search_text = 'left alone' WHERE id = ?1",
+                params![entry.id],
+            )
+            .unwrap();
+        drop(Storage::new(dir.path()).unwrap());
+
+        let search_text: String = Connection::open(dir.path().join("copywraith.db"))
+            .unwrap()
+            .query_row(
+                "SELECT search_text FROM entries WHERE id = ?1",
+                params![entry.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(search_text, "left alone");
+    }
 
     #[test]
     fn legacy_database_upgrade_preserves_identifiers() {
