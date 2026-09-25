@@ -697,17 +697,9 @@ fn import_pending_file_share(
             Some(item.source_app.as_deref().unwrap_or("Android share sheet")),
         )
     } else {
-        let display_name = item
-            .file_name
-            .as_deref()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("shared-file")
-            });
+        let display_name = shared_file_display_name(item.file_name.as_deref(), path);
         let flavors = ClipboardFlavors {
-            file_list: Some(vec![display_name.to_string()]),
+            file_list: Some(vec![display_name]),
             ..ClipboardFlavors::default()
         };
         let blob_hash = copywraith_core::content::hash_bytes(&bytes);
@@ -725,6 +717,27 @@ fn import_pending_file_share(
         let _ = std::fs::remove_file(path);
     }
     result
+}
+
+/// The name recorded for a file shared from another Android app.
+///
+/// `DISPLAY_NAME` comes from the sending app's content provider and becomes the
+/// entry's file list, which a desktop paste turns into a `file://` path. Only a
+/// final path component is kept, so a hostile name such as
+/// `/Users/alice/.ssh/id_rsa` cannot aim a desktop paste at a real file.
+#[cfg(any(target_os = "android", test))]
+fn shared_file_display_name(raw: Option<&str>, stored_path: &std::path::Path) -> String {
+    raw.and_then(|name| name.rsplit(['/', '\\']).next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            stored_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("shared-file")
+                .to_string()
+        })
 }
 
 #[tauri::command]
@@ -1083,6 +1096,39 @@ mod tests {
         assert_eq!(truncate_chars("short", 100), None);
         assert_eq!(truncate_chars("exact", 5), None);
         assert_eq!(truncate_chars("abcdef", 3).as_deref(), Some("abc..."));
+    }
+
+    #[test]
+    fn shared_file_names_keep_only_their_final_component() {
+        use super::shared_file_display_name;
+        let stored = std::path::Path::new("/data/pending-shares/files/1-uuid-report.pdf");
+
+        assert_eq!(
+            shared_file_display_name(Some("report.pdf"), stored),
+            "report.pdf"
+        );
+        assert_eq!(
+            shared_file_display_name(Some("/Users/alice/.ssh/id_rsa"), stored),
+            "id_rsa"
+        );
+        assert_eq!(
+            shared_file_display_name(Some("C:\\Users\\bob\\secret.txt"), stored),
+            "secret.txt"
+        );
+        for unusable in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("folder/"),
+            Some(".."),
+            Some("a/.."),
+        ] {
+            assert_eq!(
+                shared_file_display_name(unusable, stored),
+                "1-uuid-report.pdf",
+                "{unusable:?}"
+            );
+        }
     }
 
     #[test]

@@ -2,6 +2,7 @@ package ch.lkmc.copywraith.share
 
 import android.app.Activity
 import android.content.ComponentName
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
@@ -337,6 +338,8 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun persistSharedUri(uri: Uri, fallbackMimeType: String?): JSONObject? {
+    if (!isForeignContentUri(uri)) return null
+
     val resolver = activity.contentResolver
     val mimeType = resolver.getType(uri) ?: fallbackMimeType ?: "application/octet-stream"
     val displayName = getDisplayName(uri) ?: fallbackFileName(mimeType)
@@ -392,11 +395,23 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  private fun getDisplayName(uri: Uri): String? {
-    if (uri.scheme == "file") {
-      return uri.lastPathSegment
-    }
+  /**
+   * Accept only content:// URIs served by another app.
+   *
+   * The URI is opened with Copywraith's own permissions. A file:// URI (or one
+   * from a provider in this package) would let any app that sends a share
+   * intent make Copywraith import its private files, such as the database that
+   * holds the server password, into history and sync them to every device.
+   * Apps have shared through content:// URIs since Android 7.
+   */
+  private fun isForeignContentUri(uri: Uri): Boolean {
+    if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false
+    val authority = uri.authority ?: return false
+    return authority != activity.packageName &&
+      !authority.startsWith("${activity.packageName}.")
+  }
 
+  private fun getDisplayName(uri: Uri): String? {
     return try {
       activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         ?.use { cursor ->
