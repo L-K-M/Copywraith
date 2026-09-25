@@ -113,6 +113,8 @@ pub fn checking_status_for_configured_endpoint(
     checking_status_for_endpoint(endpoint, message)
 }
 
+/// Lock order: `pull_state` is always taken before any storage call made
+/// while holding it (watermark writes, resets). Never the other way round.
 struct PullState {
     /// Bumped by every cursor reset. A pull that started before a reset must
     /// not write back a watermark from the server it was talking to.
@@ -283,6 +285,9 @@ impl SyncClient {
     pub async fn pull_new_entries(&self, storage: &LocalStorage) -> anyhow::Result<PullSyncResult> {
         const PAGE_SIZE: u32 = 100;
 
+        // Taken before the settings are read: a reset that lands after this
+        // point may already have switched servers, and must win.
+        let generation = self.pull_state.lock().unwrap().generation;
         let settings = storage.get_settings();
         let mut server_urls = configured_server_urls(&settings);
         if server_urls.is_empty() {
@@ -294,9 +299,9 @@ impl SyncClient {
 
         let api_key = settings.api_key;
 
-        let (generation, initialized, watermark) = {
+        let (initialized, watermark) = {
             let state = self.pull_state.lock().unwrap();
-            (state.generation, state.initialized, state.watermark.clone())
+            (state.initialized, state.watermark.clone())
         };
 
         let mut before_cursor: Option<(String, String)> = None;
@@ -803,6 +808,9 @@ fn resolved_remote_flavors(entry: &ClipboardEntry) -> ClipboardFlavors {
 /// The pull watermark is a position in one server's history, so it must not
 /// survive a switch to another server. Swapping the local and VPN URLs, or
 /// editing whitespace and trailing slashes, keeps the same servers.
+///
+/// The password is not compared: a server is single-user with one history,
+/// so a new password for the same server does not move the history.
 pub fn server_endpoints_changed(before: &Settings, after: &Settings) -> bool {
     let urls = |settings: &Settings| {
         let mut urls: Vec<String> = configured_server_urls(settings)
@@ -888,10 +896,20 @@ mod cursor_reset_tests {
         ] {
             assert!(!server_endpoints_changed(&before, &after), "{after:?}");
         }
+
+        // A fallback that repeats the primary is the same single server.
+        assert!(!server_endpoints_changed(
+            &settings("http://192.168.1.5:3742", ""),
+            &settings("http://192.168.1.5:3742", "http://192.168.1.5:3742/"),
+        ));
     }
 
-    /// One page holding a single entry, sent only after `release` fires.
-    async fn held_page_server(release: tokio::sync::oneshot::Receiver<()>) -> String {
+    /// One page holding a single entry. Signals `received` once the request
+    /// has arrived and answers only after `release` fires.
+    async fn held_page_server(
+        received: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move {
@@ -900,8 +918,10 @@ mod cursor_reset_tests {
             let mut buffer = [0u8; 4096];
             while !head.windows(4).any(|window| window == b"\r\n\r\n") {
                 let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before sending a request");
                 head.extend_from_slice(&buffer[..read]);
             }
+            received.send(()).unwrap();
             release.await.unwrap();
 
             let page = ListEntriesResponse {
@@ -924,8 +944,9 @@ mod cursor_reset_tests {
 
     #[tokio::test]
     async fn a_pull_in_flight_during_a_reset_does_not_restore_the_old_watermark() {
+        let (received, request_arrived) = tokio::sync::oneshot::channel();
         let (release, held) = tokio::sync::oneshot::channel();
-        let url = held_page_server(held).await;
+        let url = held_page_server(received, held).await;
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path()).unwrap();
         storage.save_settings(&settings(&url, "")).unwrap();
@@ -933,8 +954,8 @@ mod cursor_reset_tests {
 
         let pull = client.pull_new_entries(&storage);
         let reset_mid_pull = async {
-            // Give the pull time to send its request, then switch servers.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Switch servers while the pull's request is in flight.
+            request_arrived.await.unwrap();
             client.reset_pull_cursor(&storage);
             release.send(()).unwrap();
         };
