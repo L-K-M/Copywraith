@@ -2,6 +2,7 @@ package ch.lkmc.copywraith.share
 
 import android.app.Activity
 import android.content.ComponentName
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
@@ -337,6 +338,15 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun persistSharedUri(uri: Uri, fallbackMimeType: String?): JSONObject? {
+    if (!isForeignContentUri(uri)) {
+      // Scheme and authority only: the path can name the sender's files.
+      android.util.Log.w(
+        "CopywraithShare",
+        "Ignoring shared URI (scheme=${uri.scheme}, authority=${uri.authority})"
+      )
+      return null
+    }
+
     val resolver = activity.contentResolver
     val mimeType = resolver.getType(uri) ?: fallbackMimeType ?: "application/octet-stream"
     val displayName = getDisplayName(uri) ?: fallbackFileName(mimeType)
@@ -392,11 +402,44 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  private fun getDisplayName(uri: Uri): String? {
-    if (uri.scheme == "file") {
-      return uri.lastPathSegment
-    }
+  /**
+   * Accept only content:// URIs served by another app.
+   *
+   * The URI is opened with Copywraith's own permissions. A file:// URI (or one
+   * from a provider in this package) would let any app that sends a share
+   * intent make Copywraith import its private files, such as the database that
+   * holds the server password, into history and sync them to every device.
+   * Apps have shared through content:// URIs since Android 7.
+   */
+  private fun isForeignContentUri(uri: Uri): Boolean {
+    if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false
+    val authority = uri.authority ?: return false
+    val ownAuthorities = ownProviderAuthorities ?: return false
+    return authority != activity.packageName &&
+      !authority.startsWith("${activity.packageName}.") &&
+      authority !in ownAuthorities
+  }
 
+  /**
+   * Every authority declared by a provider in this package, including library
+   * providers merged into the manifest whose authority need not start with the
+   * package name. Null means the lookup failed; isForeignContentUri then
+   * rejects every URI rather than trusting the prefix checks alone.
+   */
+  private val ownProviderAuthorities: Set<String>? by lazy {
+    runCatching {
+      @Suppress("DEPRECATION")
+      activity.packageManager
+        .getPackageInfo(activity.packageName, PackageManager.GET_PROVIDERS)
+        .providers
+        ?.flatMap { provider -> provider.authority.orEmpty().split(';') }
+        ?.filter { it.isNotBlank() }
+        ?.toSet()
+        ?: emptySet()
+    }.getOrNull()
+  }
+
+  private fun getDisplayName(uri: Uri): String? {
     return try {
       activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         ?.use { cursor ->
