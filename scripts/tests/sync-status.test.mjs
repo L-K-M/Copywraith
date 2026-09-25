@@ -64,7 +64,7 @@ new Function('require', 'module', 'exports', ts.transpileModule(store, {
 }).outputText)(
 	(name) => {
 		assert.equal(name, 'svelte/store');
-		return { writable: () => ({ set() {}, update() {} }) };
+		return { writable: () => ({ set() {}, update() {}, subscribe: () => () => {} }) };
 	},
 	storeModule,
 	storeModule.exports

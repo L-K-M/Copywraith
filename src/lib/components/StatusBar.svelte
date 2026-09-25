@@ -154,7 +154,9 @@
 						? 'Sync is disabled. Configure a server in Settings.'
 						: result.endpoint_status.state === 'unauthorized'
 							? 'The server rejected the password. Update it in Settings.'
-							: 'Sync did not complete. See the message above.';
+							: result.endpoint_status.state === 'error'
+								? 'The server answered with an error. See the message above.'
+								: 'Sync did not complete. See the message above.';
 				return;
 			}
 

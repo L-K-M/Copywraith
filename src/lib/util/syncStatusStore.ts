@@ -1,21 +1,16 @@
 import { writable } from 'svelte/store';
 
-export type SyncEndpointState =
-	| 'checking'
-	| 'disabled'
-	| 'online'
-	| 'unreachable'
-	| 'unauthorized'
-	| 'error';
-
-const KNOWN_STATES: readonly SyncEndpointState[] = [
+/** Must match the serialized `SyncState` variants in `src-tauri/src/sync.rs`. */
+const KNOWN_STATES = [
 	'checking',
 	'disabled',
 	'online',
 	'unreachable',
 	'unauthorized',
 	'error'
-];
+] as const;
+
+export type SyncEndpointState = (typeof KNOWN_STATES)[number];
 
 export interface SyncEndpointStatus {
 	state: SyncEndpointState;

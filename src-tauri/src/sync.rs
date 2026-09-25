@@ -59,6 +59,22 @@ impl Rejection {
     fn is_credential_problem(self) -> bool {
         matches!(self, Self::Unauthorized | Self::Forbidden)
     }
+
+    /// Whether this rejection explains a failure better than `earlier`, one
+    /// from another endpoint. A credential refusal does, because it is what
+    /// the user must fix and what pauses a push batch; otherwise the first
+    /// endpoint's answer stands.
+    fn outranks(self, earlier: Self) -> bool {
+        self.is_credential_problem() && !earlier.is_credential_problem()
+    }
+
+    /// The more telling of this rejection and an `earlier` one, if any.
+    fn outrank(self, earlier: Option<Self>) -> Self {
+        match earlier {
+            Some(earlier) if !self.outranks(earlier) => earlier,
+            _ => self,
+        }
+    }
 }
 
 /// How pushing one entry ended.
@@ -599,7 +615,7 @@ impl SyncClient {
                         return PushOutcome::Synced;
                     }
 
-                    rejection.get_or_insert(Rejection::from_status(response.status()));
+                    rejection = Some(Rejection::from_status(response.status()).outrank(rejection));
 
                     if index + 1 < server_urls.len() {
                         log::debug!(
@@ -700,9 +716,13 @@ impl SyncClient {
             };
 
             if !response.status().is_success() {
-                first_rejection.get_or_insert_with(|| {
-                    (endpoint.clone(), Rejection::from_status(response.status()))
-                });
+                let rejection = Rejection::from_status(response.status());
+                if first_rejection
+                    .as_ref()
+                    .is_none_or(|(_, earlier)| rejection.outranks(*earlier))
+                {
+                    first_rejection = Some((endpoint.clone(), rejection));
+                }
                 if index + 1 < server_urls.len() {
                     log::debug!(
                         "Server {} returned {} when pulling entries; trying fallback",
@@ -1103,6 +1123,61 @@ mod tests {
 
         assert_eq!(status.state, SyncState::Unauthorized);
         assert!(status.message.unwrap().contains("password"));
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_server_is_reported_as_needing_setup() {
+        let (url, _) = fake_server("403 Forbidden", r#"{"error":"Password not configured"}"#).await;
+
+        let status = pull_state(&url, "").await;
+
+        assert_eq!(status.state, SyncState::Unauthorized);
+        assert!(status.message.unwrap().contains("admin page"));
+    }
+
+    #[tokio::test]
+    async fn a_credential_rejection_outranks_another_endpoints_error() {
+        let (failing, _) = fake_server("500 Internal Server Error", "{}").await;
+        let (refusing, _) = fake_server("401 Unauthorized", "{}").await;
+
+        for (primary, fallback) in [(&failing, &refusing), (&refusing, &failing)] {
+            let status = pull_state(primary, fallback).await;
+            assert_eq!(status.state, SyncState::Unauthorized);
+            assert_eq!(status.url.as_deref(), Some(refusing.as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_push_batch_pauses_when_any_endpoint_refuses_the_password() {
+        let (failing, failing_requests) = fake_server("500 Internal Server Error", "{}").await;
+        let (refusing, refusing_requests) = fake_server("401 Unauthorized", "{}").await;
+        let (_dir, storage) = storage_with_servers(&failing, &refusing);
+        for text in ["first", "second", "third"] {
+            queue_text(&storage, text);
+        }
+
+        SyncClient::new(&storage)
+            .sync_unsynced_entries(&storage)
+            .await;
+
+        assert_eq!(failing_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(refusing_requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn sync_states_serialize_to_the_strings_the_frontend_knows() {
+        // Must match KNOWN_STATES in src/lib/util/syncStatusStore.ts, which
+        // folds anything else into "unreachable".
+        for (state, expected) in [
+            (SyncState::Checking, "checking"),
+            (SyncState::Disabled, "disabled"),
+            (SyncState::Online, "online"),
+            (SyncState::Unreachable, "unreachable"),
+            (SyncState::Unauthorized, "unauthorized"),
+            (SyncState::Error, "error"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), expected);
+        }
     }
 
     #[tokio::test]

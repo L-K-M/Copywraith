@@ -312,7 +312,9 @@
 			);
 			setSyncEndpointStatus(result.endpoint_status);
 			// The backend reports failures as a status, not an exception.
-			if (result.endpoint_status.state !== 'online') {
+			if (result.endpoint_status.state === 'disabled') {
+				updateMobileSyncProgress('Sync is disabled. Configure a server in Settings.', 85);
+			} else if (result.endpoint_status.state !== 'online') {
 				hadWarning = true;
 				updateMobileSyncProgress(
 					'Server sync did not complete.',
