@@ -113,6 +113,42 @@ pub fn checking_status_for_configured_endpoint(
     checking_status_for_endpoint(endpoint, message)
 }
 
+/// How long a transfer may make no progress before it is abandoned.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Deadline for fetching one page of entries. Pages carry every text flavor,
+/// so a page of large rich-text copies can be many megabytes.
+const PAGE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Deadline for a request that moves `payload_bytes` over the network.
+///
+/// A fixed 30 s deadline made any blob that needs longer than that on the
+/// user's link unsyncable: the push timed out and was retried every pass, and
+/// a timed-out download counted as an ingest error that pinned the pull
+/// watermark. The deadline now allows the payload at a deliberately slow floor
+/// rate, so only a transfer far slower than any working link times out.
+fn transfer_timeout(payload_bytes: u64) -> Duration {
+    const BASE: Duration = Duration::from_secs(30);
+    // 1 Mbit/s.
+    const FLOOR_BYTES_PER_SEC: u64 = 128 * 1024;
+    BASE + Duration::from_secs(payload_bytes / FLOOR_BYTES_PER_SEC)
+}
+
+/// Approximate request body size of a push: the base64 blob plus text.
+fn push_payload_bytes(req: &CreateEntryRequest) -> u64 {
+    let flavor_bytes = req.flavors.as_ref().map_or(0, |flavors| {
+        [&flavors.text_plain, &flavors.text_html, &flavors.text_rtf]
+            .into_iter()
+            .flatten()
+            .map(String::len)
+            .sum::<usize>()
+    });
+    let bytes = req.blob_base64.as_ref().map_or(0, String::len)
+        + req.text_content.as_ref().map_or(0, String::len)
+        + flavor_bytes;
+    bytes as u64
+}
+
 struct PullState {
     initialized: bool,
     /// Newest `(updated_at, id)` we have fully pulled. Entries at or below this
@@ -143,9 +179,12 @@ impl SyncClient {
                 .ok()
                 .map(|dt| (dt.with_timezone(&Utc), id))
         });
+        // No client-wide total deadline: each request sets one sized to what
+        // it transfers (see `transfer_timeout`). The read timeout still ends a
+        // download that stops making progress.
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            .read_timeout(STALL_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
@@ -449,9 +488,10 @@ impl SyncClient {
         req: &CreateEntryRequest,
         entry_id: &str,
     ) -> bool {
+        let timeout = transfer_timeout(push_payload_bytes(req));
         for (index, endpoint) in server_urls.iter().enumerate() {
             let url = format!("{}/api/entries", endpoint.url);
-            let mut request = self.http.post(&url).json(req);
+            let mut request = self.http.post(&url).json(req).timeout(timeout);
 
             if !api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
@@ -533,7 +573,7 @@ impl SyncClient {
                 }
             }
 
-            let mut request = self.http.get(url);
+            let mut request = self.http.get(url).timeout(PAGE_TIMEOUT);
             if !api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
             }
@@ -690,6 +730,7 @@ impl SyncClient {
     ) -> anyhow::Result<Option<Vec<u8>>> {
         let mut last_error: Option<anyhow::Error> = None;
         let mut saw_definitive_unavailable = false;
+        let timeout = transfer_timeout(remote.entry.blob_size.unwrap_or(0));
 
         for (index, endpoint) in server_urls.iter().enumerate() {
             let blob_url = remote
@@ -700,7 +741,7 @@ impl SyncClient {
                     format!("{}/api/entries/{}/blob", endpoint.url, remote.entry.id)
                 });
 
-            let mut request = self.http.get(&blob_url);
+            let mut request = self.http.get(&blob_url).timeout(timeout);
             if !api_key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
             }
@@ -829,5 +870,47 @@ fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
             base_url.trim_end_matches('/'),
             maybe_relative.trim_start_matches('/'),
         )
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn small_requests_keep_the_base_deadline() {
+        assert_eq!(transfer_timeout(0), Duration::from_secs(30));
+        assert_eq!(transfer_timeout(100 * 1024), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn large_transfers_get_time_for_their_size() {
+        // The largest Android share: 64 MiB, which is ~85 MiB as base64.
+        let base64_len = (64 * 1024 * 1024) / 3 * 4;
+        let deadline = transfer_timeout(base64_len);
+
+        // At 5 Mbit/s the upload needs about 140 s; the old 30 s deadline
+        // could never be met.
+        assert!(deadline > Duration::from_secs(600), "{deadline:?}");
+    }
+
+    #[test]
+    fn push_size_counts_the_blob_and_every_text_field() {
+        let req = CreateEntryRequest {
+            content_type: ContentType::Html,
+            text_content: Some("a".repeat(10)),
+            flavors: Some(ClipboardFlavors {
+                text_plain: Some("b".repeat(20)),
+                text_html: Some("c".repeat(30)),
+                text_rtf: Some("d".repeat(40)),
+                file_list: None,
+            }),
+            blob_base64: Some("e".repeat(50)),
+            source_app: None,
+            starred: Some(false),
+            content_hash: "hash".to_string(),
+        };
+
+        assert_eq!(push_payload_bytes(&req), 150);
     }
 }
