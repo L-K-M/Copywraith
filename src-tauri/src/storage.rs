@@ -624,17 +624,24 @@ impl LocalStorage {
     /// Mark an entry synced, but only if it still has the `updated_at` that was
     /// pushed.
     ///
-    /// Every local mutation that needs pushing (a star toggle) moves
-    /// `updated_at`. If the row changed while its push was in flight, the
-    /// server has an older state; acknowledging it would drop the newer local
-    /// change from the push queue for good. Returns whether the row was marked.
+    /// If the row changed while its push was in flight, the server has an
+    /// older state; acknowledging it would drop the newer local change from the
+    /// push queue for good. Returns whether the row was marked.
+    ///
+    /// Required invariant: every write that clears `synced` must also move
+    /// `updated_at` to a fresh timestamp (today only `toggle_star` does both;
+    /// new rows start unsynced). A writer that clears `synced` without it would
+    /// let a stale acknowledgement drop its change.
     pub fn mark_synced_if_unchanged(
         &self,
         id: &str,
         pushed_updated_at: chrono::DateTime<Utc>,
     ) -> anyhow::Result<bool> {
-        let db = self.db.lock().unwrap();
-        let current: Option<String> = db
+        let mut db = self.db.lock().unwrap();
+        // One transaction, so the check and the update cannot be separated by
+        // another connection (a second app instance shares the file).
+        let tx = db.transaction()?;
+        let current: Option<String> = tx
             .query_row(
                 "SELECT updated_at FROM entries WHERE id = ?1",
                 params![id],
@@ -644,14 +651,22 @@ impl LocalStorage {
 
         // Compare parsed instants, not strings, so a stored timestamp in a
         // different but equivalent RFC 3339 form still matches.
-        let unchanged = current
-            .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
-            .is_some_and(|value| value == pushed_updated_at);
+        // An unparsable value is reported rather than read as "changed", which
+        // would keep the row queued forever without a trace.
+        let unchanged = match current.as_deref() {
+            Some(value) => {
+                chrono::DateTime::parse_from_rfc3339(value).map_err(|error| {
+                    anyhow::anyhow!("entry {id} has an unparsable updated_at ({error})")
+                })? == pushed_updated_at
+            }
+            None => false,
+        };
         if !unchanged {
             return Ok(false);
         }
 
-        db.execute("UPDATE entries SET synced = 1 WHERE id = ?1", params![id])?;
+        tx.execute("UPDATE entries SET synced = 1 WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(true)
     }
 
@@ -876,6 +891,30 @@ mod tests {
             .mark_synced_if_unchanged(&entry.id, latest.updated_at)
             .unwrap());
         assert!(storage.get_unsynced_entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unparsable_timestamp_is_reported_not_silently_requeued() {
+        let (_dir, storage) = temp_storage();
+        let flavors = text_flavors("odd timestamp");
+        let hash = flavors.payload_hash(ContentType::Text, None);
+        let entry = storage
+            .insert_entry(ContentType::Text, &flavors, None, &hash, None)
+            .unwrap()
+            .unwrap();
+        storage
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE entries SET updated_at = 'not a timestamp' WHERE id = ?1",
+                params![entry.id],
+            )
+            .unwrap();
+
+        assert!(storage
+            .mark_synced_if_unchanged(&entry.id, entry.updated_at)
+            .is_err());
     }
 
     #[test]
