@@ -71,11 +71,11 @@ services:
   copywraith-server:
     ports: !override
       - "8080:3742"
-    volumes: !override
+    volumes:
       - /mnt/Main/Applications/copywraith/copywraith-data:/data
 ```
 
-`!override` replaces the list rather than appending to it (Docker Compose 2.24.4+). `scripts/redeploy-server-docker.sh` passes an explicit `-f`, which skips the override file.
+`ports` entries are appended, so `!override` (Docker Compose 2.24.4+) is needed to replace the default mapping; `volumes` entries are merged by container path, so the `/data` entry simply replaces the default one. `scripts/redeploy-server-docker.sh` passes an explicit `-f`, which skips the override file.
 
 For repeat deployments, use the helper script:
 
