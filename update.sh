@@ -27,12 +27,15 @@ branch="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 # such edits exist, point at the fix instead of leaving only git's bare error.
 explain_local_changes() {
     git diff --quiet HEAD -- && return
+    echo >&2
+    echo "These tracked files have local changes:" >&2
+    git diff --name-only HEAD -- | sed 's/^/    /' >&2
     cat >&2 <<'EOF'
 
-Tracked files have local changes (see above). Deployment tweaks to
-docker-compose.yml (ports, volumes, environment, …) belong in
-docker-compose.override.yml, which is git-ignored and merged automatically by
-`docker compose`. Move your edits there, then discard them from the tracked file:
+If git refused above because of them: deployment tweaks to docker-compose.yml
+(ports, volumes, environment, …) belong in docker-compose.override.yml, which is
+git-ignored and merged automatically by `docker compose`. Move your edits there,
+then discard them from the tracked file:
 
     git diff docker-compose.yml          # review what you changed
     git checkout -- docker-compose.yml   # discard it once it's in the override
