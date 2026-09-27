@@ -22,16 +22,16 @@ cd "$(dirname "$0")"
 # the new version after the sync below.
 branch="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 
-# A fast-forward pull (and a branch switch) refuses to touch locally edited
-# tracked files, so fail up front with a pointer to the fix instead of a bare
-# git error halfway through.
-if ! git diff --quiet HEAD --; then
-    echo "error: tracked files have local changes, so the update can't be pulled:" >&2
-    git diff --name-only HEAD -- | sed 's/^/    /' >&2
+# A fast-forward pull (and a branch switch) refuses to overwrite locally edited
+# tracked files that the incoming commits also change. When git refuses and
+# such edits exist, point at the fix instead of leaving only git's bare error.
+explain_local_changes() {
+    git diff --quiet HEAD -- && return
     cat >&2 <<'EOF'
 
-Deployment tweaks to docker-compose.yml (ports, volumes, environment, …) belong
-in docker-compose.override.yml, which is git-ignored and merged automatically by
+Tracked files have local changes (see above). Deployment tweaks to
+docker-compose.yml (ports, volumes, environment, …) belong in
+docker-compose.override.yml, which is git-ignored and merged automatically by
 `docker compose`. Move your edits there, then discard them from the tracked file:
 
     git diff docker-compose.yml          # review what you changed
@@ -40,24 +40,23 @@ in docker-compose.override.yml, which is git-ignored and merged automatically by
 
 Or keep the edits aside with `git stash` and re-apply them with `git stash pop`.
 EOF
-    exit 1
-fi
+}
 
 # The rebuild uses the checked-out tree, so an explicitly named branch must
 # actually be checked out — syncing it alone would redeploy the old branch.
 if [[ "$branch" != "$(git rev-parse --abbrev-ref HEAD)" ]]; then
     echo "==> Switching to '$branch'…"
-    git checkout "$branch"
+    git checkout "$branch" || { explain_local_changes; exit 1; }
 fi
 
 echo "==> Syncing '$branch' from the remote…"
 if command -v gh >/dev/null 2>&1; then
     if ! gh repo sync --branch "$branch"; then
         echo "    gh repo sync failed; falling back to: git pull --ff-only" >&2
-        git pull --ff-only origin "$branch"
+        git pull --ff-only origin "$branch" || { explain_local_changes; exit 1; }
     fi
 else
-    git pull --ff-only origin "$branch"
+    git pull --ff-only origin "$branch" || { explain_local_changes; exit 1; }
 fi
 
 echo "==> Rebuilding the image and recreating the container…"
