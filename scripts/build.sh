@@ -384,7 +384,7 @@ build_android() {
     cp "$apk" "$DIST/android/" \
       || { FAILED+=("android: failed to copy $(basename "$apk") into dist/android"); return 1; }
   done < <(find "src-tauri/gen/android/app/build/outputs/apk" \
-            -name '*.apk' -path "*$profile*" 2>/dev/null)
+            -name '*.apk' -path "*$profile*")
   if ! ls "$DIST/android"/*.apk >/dev/null 2>&1; then
     FAILED+=("android: no APK found under outputs/apk/$profile")
     return 1
