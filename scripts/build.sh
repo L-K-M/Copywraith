@@ -283,7 +283,9 @@ install_desktop() {
 # enough before accepting it.
 java_ok() {
   local major
-  major=$("$1" -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\)\..*/\1/p' | head -n1)
+  # JEP 223 GA builds print a dotless major ("version "17""), so the
+  # captured major must end on any non-digit, not a literal dot.
+  major=$("$1" -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\)[^0-9].*/\1/p' | head -n1)
   case "$major" in ''|*[!0-9]*) return 1 ;; esac
   [ "$major" -ge 17 ]
 }
@@ -375,9 +377,14 @@ build_android() {
   mkdir -p "$DIST/android"
   local profile=release
   [ "$DEBUG" -eq 1 ] && profile=debug
-  find "src-tauri/gen/android/app/build/outputs/apk" -name '*.apk' -path "*$profile*" \
-    -exec cp {} "$DIST/android/" \; 2>/dev/null \
-    || err "android: some APKs failed to copy into dist/android"
+  # find -exec \; never propagates cp's exit status — a read-loop does,
+  # matching the hard-fail staging of the other targets.
+  local apk
+  while IFS= read -r apk; do
+    cp "$apk" "$DIST/android/" \
+      || { FAILED+=("android: failed to copy $(basename "$apk") into dist/android"); return 1; }
+  done < <(find "src-tauri/gen/android/app/build/outputs/apk" \
+            -name '*.apk' -path "*$profile*" 2>/dev/null)
   if ! ls "$DIST/android"/*.apk >/dev/null 2>&1; then
     FAILED+=("android: no APK found under outputs/apk/$profile")
     return 1
