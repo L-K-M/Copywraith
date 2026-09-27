@@ -5,7 +5,7 @@
 
 Copywraith is a local-first clipboard manager with an optional sync server for durable, searchable clipboard history across devices.
 
-**Latest release:** [Download](https://github.com/L-K-M/Copywraith/releases/latest)
+**Latest release:** v<!-- version -->0.3.1<!-- /version --> · [Download](https://github.com/L-K-M/Copywraith/releases/latest)
 
 It has three main pieces:
 
@@ -48,6 +48,15 @@ Optional repository checks:
 cargo check --workspace
 cargo test --workspace
 npm run build
+```
+
+Build every target this host supports (artifacts stage into `dist/`; missing
+toolchains are skipped unless the target is named explicitly):
+
+```bash
+scripts/build.sh              # frontend, server UI, server, desktop, Android, docker
+scripts/build.sh --install    # also install: cargo install, deb/AppImage, adb, compose
+scripts/build.sh --help       # target list and per-target prerequisites
 ```
 
 ## Repository Layout

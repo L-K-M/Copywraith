@@ -5,6 +5,7 @@ node_modules/
 target/
 build/
 .svelte-kit/
+dist/
 
 # Environment
 .env
