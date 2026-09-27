@@ -34,7 +34,7 @@
 # target was named explicitly. The summary at the end lists what happened.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$(pwd)"
 DIST="$REPO_ROOT/dist"
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -144,7 +144,8 @@ build_frontend() {
   npm run build || { FAILED+=("frontend: vite build failed"); err "frontend: build failed"; return 1; }
   rm -rf "$DIST/frontend"
   mkdir -p "$DIST/frontend"
-  cp -R build/. "$DIST/frontend/"
+  cp -R build/. "$DIST/frontend/" \
+    || { FAILED+=("frontend: staging to dist/frontend failed"); err "frontend: staging failed"; return 1; }
   BUILT+=("frontend -> dist/frontend")
   FRONTEND_DONE=1
 }
@@ -158,7 +159,8 @@ build_server_ui() {
   npm run build --prefix server/ui || { FAILED+=("server-ui: vite build failed"); err "server-ui: build failed"; return 1; }
   rm -rf "$DIST/server-ui"
   mkdir -p "$DIST/server-ui"
-  cp -R server/ui/dist/. "$DIST/server-ui/"
+  cp -R server/ui/dist/. "$DIST/server-ui/" \
+    || { FAILED+=("server-ui: staging to dist/server-ui failed"); err "server-ui: staging failed"; return 1; }
   BUILT+=("server-ui -> dist/server-ui")
 }
 
@@ -176,7 +178,8 @@ build_server() {
   mkdir -p "$DIST"
   local profile=release
   [ "$DEBUG" -eq 1 ] && profile=debug
-  cp "target/$profile/copywraith-server" "$DIST/copywraith-server"
+  cp "target/$profile/copywraith-server" "$DIST/copywraith-server" \
+    || { FAILED+=("server: staging to dist failed"); err "server: staging failed"; return 1; }
   BUILT+=("server -> dist/copywraith-server")
 }
 
@@ -195,7 +198,7 @@ desktop_toolchain_ok() {
   need npm || return 1
   find_cc || return 1
   case "$(uname -s)" in
-    Linux) pkg-config --exists webkit2gtk-4.1 javascriptcoregtk-4.1 2>/dev/null ;;
+    Linux) pkg-config --exists webkit2gtk-4.1 javascriptcoregtk-4.1 gtk+-3.0 libsoup-3.0 rsvg-2.0 xdo openssl ayatana-appindicator3-0.1 2>/dev/null ;;
     Darwin) need xcodebuild ;;
     *) return 1 ;;
   esac
@@ -213,7 +216,8 @@ build_desktop() {
   npm run tauri -- build "${args[@]+"${args[@]}"}" \
     || { FAILED+=("desktop: tauri build failed"); err "desktop: build failed"; return 1; }
   if [ "$(uname -s)" = Linux ] && [ "$DEBUG" -eq 0 ]; then
-    ./scripts/check-linux-bundle.sh || note "desktop: bundle check failed (see above)"
+    ./scripts/check-linux-bundle.sh \
+      || FAILED+=("desktop: check-linux-bundle.sh failed (see above)")
   fi
   rm -rf "$DIST/desktop"
   mkdir -p "$DIST/desktop"
@@ -238,7 +242,7 @@ install_desktop() {
       deb=$(find "$bundle_dir/deb" -name '*.deb' 2>/dev/null | head -n1)
       local appimage
       appimage=$(find "$bundle_dir/appimage" -name '*.AppImage' 2>/dev/null | head -n1)
-      if [ -n "$deb" ] && need sudo; then
+      if [ -n "$deb" ] && need sudo && need apt-get; then
         sudo apt-get install -y "$deb" \
           && INSTALLED+=("desktop -> apt ($deb)") \
           || FAILED+=("install desktop: apt install failed")
@@ -274,8 +278,18 @@ install_desktop() {
 # ---------------------------------------------------------------------------
 # android: universal release APK for the four ABIs.
 # ---------------------------------------------------------------------------
+# A `java` on PATH can be a broken shim (macOS's /usr/bin/java stub exits
+# non-zero), and Gradle needs JDK 17+. Verify the binary runs and is new
+# enough before accepting it.
+java_ok() {
+  local major
+  major=$("$1" -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\)\..*/\1/p' | head -n1)
+  case "$major" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$major" -ge 17 ]
+}
+
 find_java() {
-  if need java; then return 0; fi
+  if need java && java_ok java; then return 0; fi
   local candidate
   for candidate in \
     "${JAVA_HOME:-}/bin/java" \
@@ -284,7 +298,7 @@ find_java() {
     /usr/lib/jvm/*/bin/java \
     "$HOME"/Applications/Android\ Studio.app/Contents/jbr/*/Contents/Home/bin/java \
     /opt/android-studio/jbr/bin/java; do
-    if [ -x "$candidate" ]; then
+    if [ -x "$candidate" ] && java_ok "$candidate"; then
       export JAVA_HOME="${candidate%/bin/java}"
       export PATH="$JAVA_HOME/bin:$PATH"
       return 0
@@ -315,6 +329,17 @@ find_android_ndk() {
   export ANDROID_NDK_HOME="${ndk%/}"
 }
 
+# Map the CW_ANDROID_TARGETS ABI names to the rustup triples they need.
+abi_triple() {
+  case "$1" in
+    aarch64) echo "aarch64-linux-android" ;;
+    armv7)   echo "armv7-linux-androideabi" ;;
+    i686)    echo "i686-linux-android" ;;
+    x86_64)  echo "x86_64-linux-android" ;;
+    *)       echo "$1" ;;
+  esac
+}
+
 build_android() {
   step "android: universal APK"
   find_java || { blocked android "no JDK 17 (JAVA_HOME unset; nothing in ~/opt, /usr/lib/jvm, Android Studio jbr)"; return 1; }
@@ -323,6 +348,14 @@ build_android() {
   need cargo || { blocked android "cargo not found"; return 1; }
   need npm || { blocked android "npm not found"; return 1; }
   find_cc || { blocked android "no host C linker (needed by cargo build scripts)"; return 1; }
+  local targets="${CW_ANDROID_TARGETS:-aarch64 armv7 i686 x86_64}"
+  if command -v rustup >/dev/null 2>&1; then
+    local abi
+    for abi in $targets; do
+      rustup target list --installed 2>/dev/null | grep -qx "$(abi_triple "$abi")" \
+        || { blocked android "rust target $(abi_triple "$abi") not installed (run scripts/android-dev-bootstrap.sh)"; return 1; }
+    done
+  fi
   note "java: $(java -version 2>&1 | head -n1)"
   note "sdk:  $ANDROID_HOME | ndk: $ANDROID_NDK_HOME"
   [ "$FRONTEND_DONE" -eq 1 ] || build_frontend || { FAILED+=("android: frontend prerequisite failed"); return 1; }
@@ -332,7 +365,6 @@ build_android() {
     npm run tauri -- android init || { FAILED+=("android: tauri android init failed"); return 1; }
   fi
 
-  local targets="${CW_ANDROID_TARGETS:-aarch64 armv7 i686 x86_64}"
   local args=(android build --apk)
   [ "$DEBUG" -eq 1 ] && args+=(--debug)
   # shellcheck disable=SC2086
@@ -344,7 +376,8 @@ build_android() {
   local profile=release
   [ "$DEBUG" -eq 1 ] && profile=debug
   find "src-tauri/gen/android/app/build/outputs/apk" -name '*.apk' -path "*$profile*" \
-    -exec cp {} "$DIST/android/" \; 2>/dev/null || true
+    -exec cp {} "$DIST/android/" \; 2>/dev/null \
+    || err "android: some APKs failed to copy into dist/android"
   if ! ls "$DIST/android"/*.apk >/dev/null 2>&1; then
     FAILED+=("android: no APK found under outputs/apk/$profile")
     return 1
@@ -354,7 +387,7 @@ build_android() {
 
 install_android() {
   step "install: APK -> connected device"
-  local adb="$ANDROID_HOME/platform-tools/adb"
+  local adb="${ANDROID_HOME:-}/platform-tools/adb"
   [ -x "$adb" ] || adb=$(command -v adb 2>/dev/null || true)
   [ -n "$adb" ] || { FAILED+=("install android: adb not found"); return 1; }
   if ! "$adb" devices | grep -q "device$"; then
@@ -388,6 +421,17 @@ install_docker() {
     || FAILED+=("install docker: docker compose up failed")
 }
 
+# Exact-match check that a target reached BUILT (the entries look like
+# "server -> dist/copywraith-server"; substring matching would confuse
+# "server" with "server-ui").
+built_target() {
+  local b
+  for b in "${BUILT[@]+"${BUILT[@]}"}"; do
+    [ "${b%% ->*}" = "$1" ] && return 0
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 for target in "${WANTED[@]}"; do
   case "$target" in
@@ -404,12 +448,12 @@ done
 if [ "$INSTALL" -eq 1 ]; then
   for target in "${WANTED[@]}"; do
     case "$target" in
-      server)   [[ "${BUILT[*]}" == *"server ->"* ]] && install_server ;;
-      desktop)  [[ "${BUILT[*]}" == *"desktop ->"* ]] && install_desktop ;;
-      android)  [[ "${BUILT[*]}" == *"android ->"* ]] && install_android ;;
-      docker)   [[ "${BUILT[*]}" == *"docker ->"* ]] && install_docker ;;
+      server)   built_target server && install_server ;;
+      desktop)  built_target desktop && install_desktop ;;
+      android)  built_target android && install_android ;;
+      docker)   built_target docker && install_docker ;;
       frontend|server-ui)
-        [[ "${BUILT[*]}" == *"$target ->"* ]] && note "install: $target has nothing to install" ;;
+        built_target "$target" && note "install: $target has nothing to install" ;;
     esac
   done
 fi
