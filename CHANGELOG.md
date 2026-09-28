@@ -58,9 +58,8 @@ Earlier history lives in the commit log and any GitHub releases.
 - On Android, Entry Preview's buttons no longer run off the left edge of
   the screen, toasts no longer cover the status bar's Sync button, and
   the status bar's grey reaches the bottom edge under the gesture bar.
-- Reloading the list, which Android does on every resume and sync, no
-  longer replaces it with "Loading clipboard..." and scrolls back to the
-  top.
+- On Android, reloading the list on every resume and sync no longer
+  replaces it with "Loading clipboard..." and scrolls back to the top.
 - `scripts/build.sh` stops with a clear message when Node is older than a
   package's `engines` range, instead of failing in vite with "Cannot find
   native binding", and reinstalls npm dependencies after a Node upgrade. A
