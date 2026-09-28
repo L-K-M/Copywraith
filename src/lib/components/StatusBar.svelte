@@ -194,7 +194,7 @@
 	}
 </script>
 
-<div class="status-bar">
+<div class="status-bar" class:mobile={$isMobile}>
 	<span class="status-text">
 		{entryCount} item{entryCount !== 1 ? 's' : ''}{starredLabel}
 	</span>
@@ -236,7 +236,7 @@
 
 {#if showSyncDetails}
 	<MovableDialog title="Sync Details" width="360px" onclose={() => (showSyncDetails = false)}>
-		<div class="sync-details-body" role="status">
+		<div class="sync-details-body" class:mobile={$isMobile} role="status">
 			<div class="sync-details-row">
 				<span>State</span>
 				<strong>{endpointText}</strong>
@@ -266,7 +266,7 @@
 				<p>Settings read failed: {settingsError}</p>
 			{/if}
 		</div>
-		<div class="sync-details-actions">
+		<div class="sync-details-actions" class:mobile={$isMobile}>
 			{#if lastSyncSummary}
 				<span class="sync-summary" role="status">{lastSyncSummary}</span>
 			{/if}
@@ -409,6 +409,37 @@
 
 	.mobile-sync-progress.error {
 		filter: hue-rotate(170deg) saturate(1.2);
+	}
+
+	/*
+	 * Mobile: the bar also fills the bottom safe area so its grey runs under
+	 * the gesture bar instead of leaving a white strip. Text is sized per
+	 * element because the library gives unsized elements 24px; 16px is
+	 * Geneva's crisp 1x size.
+	 */
+	.status-bar.mobile {
+		padding-bottom: calc(4px + var(--safe-area-bottom, 0px));
+	}
+
+	.status-bar.mobile .status-text {
+		font-size: 16px;
+	}
+
+	.status-bar.mobile .status-endpoint {
+		max-width: 60vw;
+		min-height: 32px;
+		padding: 4px 8px;
+		font-size: 16px;
+	}
+
+	.sync-details-body.mobile span,
+	.sync-details-body.mobile strong,
+	.sync-details-body.mobile p {
+		font-size: 16px;
+	}
+
+	.sync-details-actions.mobile .sync-summary {
+		font-size: 16px;
 	}
 
 	@media (max-width: 920px) {

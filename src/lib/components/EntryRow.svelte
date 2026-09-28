@@ -4,7 +4,7 @@
 	import { isMobile } from '$lib/util/platform';
 	import { BalloonHelp } from '@lkmc/system7-ui';
 	import { TauriService } from '$lib/tauri';
-	import { now, formatRelativeTime, imageMimeFromBase64 } from '$lib/util/clock';
+	import { now, formatRelativeTime, imageMimeFromBase64, RelativeTimeStyle } from '$lib/util/clock';
 
 	/**
 	 * Start fetching a row's image this far outside the viewport.
@@ -51,7 +51,14 @@
 	// Metadata refreshes replace entry objects without changing their image.
 	let imageEntryId = $derived(entry.has_image ? entry.id : null);
 
-	let relativeTime = $derived(formatRelativeTime(entry.updated_at, $now));
+	// The mobile time column fits about three characters, not a date.
+	let relativeTime = $derived(
+		formatRelativeTime(
+			entry.updated_at,
+			$now,
+			$isMobile ? RelativeTimeStyle.Compact : RelativeTimeStyle.Date
+		)
+	);
 	let imageSrc = $derived(
 		imageData ? `data:${imageMimeFromBase64(imageData)};base64,${imageData}` : null
 	);
@@ -202,9 +209,14 @@
 	the Space key and the preview button in the actions cell, which also gives
 	touch devices a preview path they never had.
 -->
+<!--
+	Selection exists for keyboard navigation, which mobile does not have, so a
+	phone shows no persistent highlight; a tap flashes the row instead.
+-->
 <tr
 	class="entry-row"
-	class:selected={selected}
+	class:selected={selected && !$isMobile}
+	class:mobile={$isMobile}
 	bind:this={rowElement}
 	onclick={handleClick}
 	onfocus={handleFocus}
@@ -258,15 +270,20 @@
 		<span class="type-badge">{getTypeLabel(entry.content_type)}</span>
 	</td>
 	<td class="col-time">
-		<BalloonHelp message={new Date(entry.updated_at).toLocaleString()} delay={600}>
+		{#if $isMobile}
+			<!-- Balloon help needs hover; the preview dialog shows the full date. -->
 			<span class="time">{relativeTime}</span>
-		</BalloonHelp>
+		{:else}
+			<BalloonHelp message={new Date(entry.updated_at).toLocaleString()} delay={600}>
+				<span class="time">{relativeTime}</span>
+			</BalloonHelp>
+		{/if}
 	</td>
 	<td class="col-actions">
 		<div class="row-actions">
 			<button
 				type="button"
-				class="row-action-btn"
+				class="row-action-btn preview-btn"
 				onmousedown={stopRowClick}
 				onclick={handlePreviewClick}
 				title="Preview"
@@ -282,7 +299,8 @@
 				title="Delete"
 				aria-label="Delete entry"
 			>
-				{'\u2715'}
+				<!-- Geneva has no U+2715; its own multiplication sign stays pixel-styled. -->
+				{$isMobile ? '\u00d7' : '\u2715'}
 			</button>
 		</div>
 	</td>
@@ -294,10 +312,19 @@
 		user-select: none;
 	}
 
-	/* Keep keyboard focus visible over selection and hover. */
-	.entry-row:hover {
-		background: var(--system7-color-highlight, #000);
-		color: var(--system7-color-highlight-text, #fff);
+	/*
+	 * Keep keyboard focus visible over selection and hover. Touch browsers
+	 * keep :hover on the last tapped row, so hover styling needs a real hover.
+	 */
+	@media (hover: hover) {
+		.entry-row:hover {
+			background: var(--system7-color-highlight, #000);
+			color: var(--system7-color-highlight-text, #fff);
+		}
+
+		.entry-row:hover .star-btn.starred {
+			color: #ffd700;
+		}
 	}
 
 	.entry-row.selected {
@@ -333,8 +360,8 @@
 		color: #f5a623;
 	}
 
-	.entry-row:hover .star-btn.starred,
-	.entry-row.selected .star-btn.starred {
+	.entry-row.selected .star-btn.starred,
+	.entry-row.mobile:active .star-btn.starred {
 		color: #ffd700;
 	}
 
@@ -454,46 +481,85 @@
 		}
 	}
 
-	/* Mobile: larger touch targets, always-visible actions */
-	@media (pointer: coarse) {
-		.entry-row {
-			min-height: 44px;
-		}
+	/*
+	 * Mobile. Copied text uses the same 24px as desktop (Geneva's 1.5x grid);
+	 * the badge and age use its crisp 1x size, 16px. Anything smaller is
+	 * illegible on a phone. Cells need two classes plus the row's to beat the
+	 * library's (0,3,2) cell padding rule. The 44px star button sets the row
+	 * height, so every control in the row is a comfortable touch target.
+	 */
+	.entry-row.mobile:active {
+		background: var(--system7-color-highlight, #000);
+		color: var(--system7-color-highlight-text, #fff);
+	}
 
-		.col-star {
-			padding: 4px 6px;
-		}
+	.entry-row.mobile .col-star {
+		padding: 0;
+	}
 
-		.star-btn {
-			font-size: 18px;
-			padding: 4px;
-		}
+	.entry-row.mobile .star-btn {
+		display: block;
+		width: 100%;
+		height: 44px;
+		padding: 0;
+		font-size: 22px;
+	}
 
-		.col-content {
-			padding: 6px 8px;
-		}
+	.entry-row.mobile .col-content {
+		padding: 0 6px 0 2px;
+	}
 
-		.text-preview {
-			font-size: 16px;
-		}
+	.entry-row.mobile .text-preview {
+		font-size: 24px;
+	}
 
-		.image-preview {
-			height: 56px;
-		}
+	.entry-row.mobile .image-preview {
+		height: 56px;
+	}
 
-		.image-preview img {
-			max-height: 56px;
-		}
+	.entry-row.mobile .image-preview img {
+		max-width: 100%;
+		max-height: 56px;
+	}
 
-		.row-actions {
-			gap: 4px;
-		}
+	.entry-row.mobile .col-type {
+		padding: 0 2px;
+		text-align: center;
+	}
 
-		/* There is no hover on touch, so the controls must always be visible. */
-		.row-action-btn {
-			font-size: 14px;
-			opacity: 0.5;
-			padding: 6px;
-		}
+	.entry-row.mobile .type-badge {
+		padding: 0 2px;
+		font-size: 16px;
+	}
+
+	.entry-row.mobile .col-time {
+		padding: 0 4px;
+		text-align: right;
+	}
+
+	.entry-row.mobile .time {
+		font-size: 16px;
+	}
+
+	.entry-row.mobile .col-actions {
+		padding: 0;
+	}
+
+	.entry-row.mobile .row-actions {
+		gap: 0;
+	}
+
+	/* There is no hover on touch, so the controls are always visible. */
+	.entry-row.mobile .row-action-btn {
+		width: 32px;
+		height: 44px;
+		padding: 0;
+		font-size: 32px;
+		opacity: 0.7;
+	}
+
+	/* Geneva's ellipsis sits on the baseline; lift it to the row's centre line. */
+	.entry-row.mobile .preview-btn {
+		padding-bottom: 14px;
 	}
 </style>
