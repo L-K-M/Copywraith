@@ -417,11 +417,21 @@
 	 * element because the library gives unsized elements 24px; 16px is
 	 * Geneva's crisp 1x size.
 	 */
+	/*
+	 * The middle track keeps room for the sync progress bar, and the endpoint
+	 * button shrinks to its own track (ellipsizing) instead of painting over it.
+	 */
 	.status-bar.mobile {
+		grid-template-columns: auto minmax(64px, 1fr) auto;
 		padding-bottom: calc(4px + var(--safe-area-bottom, 0px));
 	}
 
-	.status-bar.mobile .status-text {
+	.status-bar.mobile .sync-status-wrap {
+		max-width: 100%;
+	}
+
+	.status-bar.mobile .status-text,
+	.status-bar.mobile .status-hint {
 		font-size: 16px;
 	}
 
@@ -440,6 +450,10 @@
 
 	.sync-details-actions.mobile .sync-summary {
 		font-size: 16px;
+	}
+
+	.sync-details-actions.mobile :global(.sys7-btn) {
+		min-height: 44px;
 	}
 
 	@media (max-width: 920px) {

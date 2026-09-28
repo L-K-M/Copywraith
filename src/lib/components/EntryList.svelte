@@ -101,14 +101,16 @@
 
 <div class="entry-list" class:mobile={$isMobile} bind:this={entryListElement}>
 	<!--
-		The placeholder only covers the first load. Mobile reloads the list on
-		every resume and sync; swapping the rows for "Loading..." each time
-		flashed the list and threw the user back to the top.
+		On mobile the placeholder only covers the first load: the list reloads
+		on every resume and sync, and swapping the rows for "Loading..." each
+		time flashed the list and threw the user back to the top. The desktop
+		popup keeps it for every load, so stale rows are never clickable while
+		a new filter is loading.
 	-->
 	<DataTable
 		{columns}
 		bodyClass="entry-list-scroll-body"
-		loading={$isLoading && $entries.length === 0}
+		loading={$isLoading && (!$isMobile || $entries.length === 0)}
 		loadingText="Loading clipboard..."
 		empty={$entries.length === 0 && !$isLoading}
 		emptyText="No clipboard entries"

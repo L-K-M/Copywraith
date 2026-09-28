@@ -482,6 +482,52 @@
 	}
 
 	/*
+	 * Touch-first desktops (e.g. Windows tablet mode) have no hover to reveal
+	 * the row actions, so they keep larger, always-visible controls. On phones
+	 * the more specific .mobile rules below take over.
+	 */
+	@media (pointer: coarse) {
+		.entry-row {
+			min-height: 44px;
+		}
+
+		.col-star {
+			padding: 4px 6px;
+		}
+
+		.star-btn {
+			font-size: 18px;
+			padding: 4px;
+		}
+
+		.col-content {
+			padding: 6px 8px;
+		}
+
+		.text-preview {
+			font-size: 16px;
+		}
+
+		.image-preview {
+			height: 56px;
+		}
+
+		.image-preview img {
+			max-height: 56px;
+		}
+
+		.row-actions {
+			gap: 4px;
+		}
+
+		.row-action-btn {
+			font-size: 14px;
+			opacity: 0.5;
+			padding: 6px;
+		}
+	}
+
+	/*
 	 * Mobile. Copied text uses the same 24px as desktop (Geneva's 1.5x grid);
 	 * the badge and age use its crisp 1x size, 16px. Anything smaller is
 	 * illegible on a phone. Cells need two classes plus the row's to beat the
@@ -491,6 +537,20 @@
 	.entry-row.mobile:active {
 		background: var(--system7-color-highlight, #000);
 		color: var(--system7-color-highlight-text, #fff);
+	}
+
+	/*
+	 * Pressing the star, preview or delete button is not a copy, so it must not
+	 * flash the row. A WebView without :has() ignores these rules and keeps the
+	 * flash, which is the safer failure than losing tap-to-copy feedback.
+	 */
+	.entry-row.mobile:active:has(button:active) {
+		background: none;
+		color: inherit;
+	}
+
+	.entry-row.mobile:active:has(button:active) .star-btn.starred {
+		color: #f5a623;
 	}
 
 	.entry-row.mobile .col-star {

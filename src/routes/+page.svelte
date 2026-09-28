@@ -739,6 +739,23 @@
 		display: contents;
 	}
 
+	/* Mobile dialogs scroll by touch too, so they use the list's thin thumb. */
+	.dialog-layer.mobile :global(::-webkit-scrollbar) {
+		width: 6px;
+	}
+
+	.dialog-layer.mobile :global(::-webkit-scrollbar-track) {
+		background: var(--system7-color-paper, #fff);
+		border-left: 1px solid var(--system7-color-ink, #000);
+	}
+
+	.dialog-layer.mobile :global(::-webkit-scrollbar-thumb) {
+		background: var(--system7-color-scrollbar-thumb, #ccccff);
+		background-image: none;
+		border: 1px solid var(--system7-color-ink, #000);
+		box-shadow: none;
+	}
+
 	/* Rows and buttons show their own System 7 press state; Android's blue
 	   tap flash would sit on top of it. The property is inherited. */
 	.window-frame.mobile,

@@ -52,7 +52,9 @@ Earlier history lives in the commit log and any GitHub releases.
 
 - On an Android phone in dark mode the status bar clock and battery, and
   the navigation buttons, were drawn white on Copywraith's white window
-  and could not be seen. They are now always dark.
+  and could not be seen. They are now dark (the navigation buttons from
+  Android 8 on; Android 7 has no dark navigation buttons and keeps its
+  dark bar behind them).
 - On Android, Entry Preview's buttons no longer run off the left edge of
   the screen, toasts no longer cover the status bar's Sync button, and
   the status bar's grey reaches the bottom edge under the gesture bar.
