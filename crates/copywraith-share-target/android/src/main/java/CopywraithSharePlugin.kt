@@ -127,8 +127,10 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   override fun onConfigurationChanged(newConfig: Configuration) {
     // A night mode switch arrives here without recreating or resuming the
     // activity (the manifest's configChanges includes uiMode), so the resume
-    // hook in SystemBars does not see it.
-    SystemBars.applyLightAppearance(activity)
+    // hook in SystemBars does not see it. `activity` is the one the plugin was
+    // constructed with and goes stale once MainActivity is recreated, so
+    // reapply() targets the host activity that last resumed.
+    SystemBars.reapply(activity)
   }
 
   @Command

@@ -9,6 +9,7 @@ import android.view.View
 import android.view.Window
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import java.lang.ref.WeakReference
 
 /**
  * Keeps the status bar and navigation bar icons dark on Copywraith's activity.
@@ -36,9 +37,15 @@ internal object SystemBars {
 
   private var resumeCallbacksRegistered = false
 
+  // The host activity that was installed or last resumed, for [reapply]. Weak
+  // so this process-wide object cannot keep a destroyed activity alive. Only
+  // touched on the UI thread (Plugin.load, Plugin.onConfigurationChanged and
+  // the activity lifecycle callbacks all run there), so it needs no locking.
+  private var hostActivity: WeakReference<Activity>? = null
+
   /**
    * Applies the light appearance to [activity] now and again every time an
-   * activity of the same class resumes.
+   * activity of the same class resumes, and remembers it for [reapply].
    *
    * Plugin.onResume is not dispatched on tauri 2.11 (the generated
    * TauriLifecycleObserver is never registered), and a recreated MainActivity
@@ -49,6 +56,7 @@ internal object SystemBars {
    * share and Shizuku setup or into an activity resume.
    */
   fun install(activity: Activity) {
+    hostActivity = WeakReference(activity)
     applyLightAppearance(activity)
     if (resumeCallbacksRegistered) return
     try {
@@ -59,7 +67,20 @@ internal object SystemBars {
     }
   }
 
-  fun applyLightAppearance(activity: Activity) {
+  /**
+   * Applies the light appearance again to the current host activity, or to
+   * [fallback] when there is none.
+   *
+   * tauri constructs the plugin once per process with the first activity, so
+   * after MainActivity is recreated (Back on API 29 finishes it while the
+   * process lives on, and a font-scale change recreates it) the plugin's own
+   * activity is destroyed and its window is no longer shown.
+   */
+  fun reapply(fallback: Activity) {
+    applyLightAppearance(hostActivity?.get() ?: fallback)
+  }
+
+  private fun applyLightAppearance(activity: Activity) {
     try {
       applyLightAppearance(activity.window)
     } catch (e: Throwable) {
@@ -111,6 +132,7 @@ internal object SystemBars {
       // Only the activity that hosts the light web UI. An activity from a
       // library may be dark and need the white icons it asked for.
       if (activity.javaClass != hostActivityClass) return
+      hostActivity = WeakReference(activity)
       applyLightAppearance(activity)
     }
 
@@ -124,6 +146,10 @@ internal object SystemBars {
 
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
 
-    override fun onActivityDestroyed(activity: Activity) {}
+    override fun onActivityDestroyed(activity: Activity) {
+      // A destroyed activity stays reachable until the next GC; drop it now so
+      // that [reapply] never prefers its window.
+      if (hostActivity?.get() === activity) hostActivity = null
+    }
   }
 }
