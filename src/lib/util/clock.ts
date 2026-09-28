@@ -20,13 +20,28 @@ export const now = readable(Date.now(), (set) => {
 	return () => clearInterval(handle);
 });
 
+/** How entries older than 30 days are labelled. */
+export enum RelativeTimeStyle {
+	/** A locale date, e.g. "9/28/2026". */
+	Date = 'date',
+	/** Months or years, e.g. "5mo" or "2y", for a column too narrow for a date. */
+	Compact = 'compact'
+}
+
+const DAYS_PER_MONTH = 30;
+const DAYS_PER_YEAR = 365;
+
 /**
  * Format `dateStr` as a short age relative to `nowMs`.
  *
- * Falls back to a locale date for anything older than 30 days, and returns an
+ * Anything older than 30 days is labelled according to `style`. Returns an
  * em dash rather than "NaN" for an unparseable timestamp.
  */
-export function formatRelativeTime(dateStr: string, nowMs: number): string {
+export function formatRelativeTime(
+	dateStr: string,
+	nowMs: number,
+	style: RelativeTimeStyle = RelativeTimeStyle.Date
+): string {
 	const timestamp = new Date(dateStr).getTime();
 	if (Number.isNaN(timestamp)) return '—';
 
@@ -39,8 +54,12 @@ export function formatRelativeTime(dateStr: string, nowMs: number): string {
 	if (diffSec < 60) return 'now';
 	if (diffMin < 60) return `${diffMin}m`;
 	if (diffHour < 24) return `${diffHour}h`;
-	if (diffDay < 30) return `${diffDay}d`;
-	return new Date(timestamp).toLocaleDateString();
+	if (diffDay < DAYS_PER_MONTH) return `${diffDay}d`;
+	if (style === RelativeTimeStyle.Date) return new Date(timestamp).toLocaleDateString();
+
+	const diffYear = Math.floor(diffDay / DAYS_PER_YEAR);
+	if (diffYear > 0) return `${diffYear}y`;
+	return `${Math.floor(diffDay / DAYS_PER_MONTH)}mo`;
 }
 
 /**

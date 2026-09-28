@@ -59,6 +59,12 @@
 		// Shift/Alt+Enter (paste as plain text) are handled by the popup's shortcuts.
 		if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
 			e.preventDefault();
+			// A phone has no visible selection to copy, and its keyboard's
+			// search key is expected to close the keyboard and show results.
+			if ($isMobile) {
+				filterInput?.blur();
+				return;
+			}
 			// A held Enter must not paste over and over.
 			if (!e.repeat) pasteSelectedEntry();
 			return;
@@ -74,7 +80,7 @@
 	}
 </script>
 
-<div class="filter-bar">
+<div class="filter-bar" class:mobile={$isMobile}>
 	<div class="filter-input-wrapper">
 		<input
 			bind:this={filterInput}
@@ -82,6 +88,10 @@
 			class="s7-input filter-input"
 			placeholder={$isMobile ? 'Filter...' : 'Filter clipboard...'}
 			aria-label="Filter clipboard history"
+			enterkeyhint="search"
+			autocapitalize="off"
+			autocomplete="off"
+			spellcheck={false}
 			value={$filterText}
 			oninput={handleInput}
 			onkeydown={handleKeydown}
@@ -159,6 +169,27 @@
 		gap: 8px;
 		flex-shrink: 0;
 		white-space: nowrap;
+	}
+
+	/*
+	 * Mobile: touch-height controls. The button and checkbox come from the
+	 * library, hence :global; the label stays the tap target it already is.
+	 */
+	.filter-bar.mobile .filter-input {
+		min-height: 40px;
+	}
+
+	.filter-bar.mobile .clear-filter-btn {
+		height: 32px;
+		font-size: 16px;
+	}
+
+	.filter-bar.mobile :global(.sys7-checkbox) {
+		min-height: 40px;
+	}
+
+	.filter-bar.mobile :global(.sys7-btn) {
+		min-height: 36px;
 	}
 
 	@media (max-width: 520px) {

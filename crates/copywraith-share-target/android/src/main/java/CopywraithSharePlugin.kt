@@ -6,6 +6,7 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.IBinder
 import android.provider.OpenableColumns
@@ -114,12 +115,22 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun load(webView: WebView) {
+    SystemBars.install(activity)
     handleShareIntent(activity.intent)
     installShizukuCallbacks()
   }
 
   override fun onNewIntent(intent: Intent) {
     handleShareIntent(intent)
+  }
+
+  override fun onConfigurationChanged(newConfig: Configuration) {
+    // A night mode switch arrives here without recreating or resuming the
+    // activity (the manifest's configChanges includes uiMode), so the resume
+    // hook in SystemBars does not see it. `activity` is the one the plugin was
+    // constructed with and goes stale once MainActivity is recreated, so
+    // reapply() targets the host activity that last resumed.
+    SystemBars.reapply(activity)
   }
 
   @Command

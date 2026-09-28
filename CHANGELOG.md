@@ -15,6 +15,17 @@ Earlier history lives in the commit log and any GitHub releases.
 
 ### Changed
 
+- The Android app is laid out for a phone. It has a System 7 title bar,
+  copied text uses the same 24px font as the desktop popup, and the type,
+  age and action columns are only as wide as their contents, so the text
+  column gets about 60% more room. Rows are 44px touch targets, a tap
+  flashes the row instead of leaving it highlighted, and ages older than
+  30 days read "5mo" or "2y". The keyboard's search key closes the
+  keyboard instead of copying the first row.
+- On Android the Entry Preview and Settings dialogs use the System 7 fonts
+  at readable sizes. Preview's buttons are a 2x2 grid labelled Copy and
+  Copy as Text, and Settings keeps Cancel and Save pinned below its
+  scrolling form.
 - Content that a password manager marks as concealed, transient or
   auto-generated is no longer captured or synced. (#147)
 - The sync status reports a rejected password or a server error instead of
@@ -39,6 +50,16 @@ Earlier history lives in the commit log and any GitHub releases.
 
 ### Fixed
 
+- On an Android phone in dark mode the status bar clock and battery, and
+  the navigation buttons, were drawn white on Copywraith's white window
+  and could not be seen. They are now dark (the navigation buttons from
+  Android 8 on; Android 7 has no dark navigation buttons and keeps its
+  dark bar behind them).
+- On Android, Entry Preview's buttons no longer run off the left edge of
+  the screen, toasts no longer cover the status bar's Sync button, and
+  the status bar's grey reaches the bottom edge under the gesture bar.
+- On Android, reloading the list on every resume and sync no longer
+  replaces it with "Loading clipboard..." and scrolls back to the top.
 - `scripts/build.sh` stops with a clear message when Node is older than a
   package's `engines` range, instead of failing in vite with "Cannot find
   native binding", and reinstalls npm dependencies after a Node upgrade. A

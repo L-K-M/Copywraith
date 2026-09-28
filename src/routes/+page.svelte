@@ -577,7 +577,16 @@
 	{/if}
 
 	{#if $isMobile}
-		<div class="mobile-safe-top" aria-hidden="true"></div>
+		<!--
+			The OS draws the status bar icons over this strip. The Android plugin
+			forces those icons dark because the strip is always paper white; the
+			title bar below gives the phone the same System 7 window header as the
+			desktop popup, without window controls a phone app cannot use.
+		-->
+		<header class="mobile-header">
+			<div class="mobile-safe-top" aria-hidden="true"></div>
+			<TitleBar title="Copywraith" />
+		</header>
 	{/if}
 
 	{#if !isWindowShaded}
@@ -650,31 +659,39 @@
 	{/if}
 </div>
 
-{#if showSettings}
-	<SettingsDialog onclose={() => (showSettings = false)} />
-{/if}
+<!--
+	Dialogs sit outside the window frame so they can overlay it. On mobile the
+	layer carries s7-root so they get the same System 7 typography as the list;
+	desktop keeps its existing dialog styling.
+-->
+<div class="dialog-layer" class:s7-root={$isMobile} class:mobile={$isMobile}>
+	{#if showSettings}
+		<SettingsDialog onclose={() => (showSettings = false)} />
+	{/if}
 
-{#if previewEntry}
-	<EntryPreview entry={previewEntry} onclose={() => { previewEntryId = null; }} />
-{/if}
+	{#if previewEntry}
+		<EntryPreview entry={previewEntry} onclose={() => { previewEntryId = null; }} />
+	{/if}
 
-{#if shareProgressVisible && $isMobile}
-	<ModalDialog width="340px">
-		<div class="mobile-progress-dialog">
-			<div class="progress-title">{shareProgressTitle}</div>
-			<ProgressBar
-				value={shareProgressValue}
-				max={100}
-				height={16}
-				ariaLabel="Shared item import progress"
-			/>
-			<div class="progress-message">{shareProgressMessage}</div>
-			{#if shareProgressDetail}
-				<div class="progress-detail">{shareProgressDetail}</div>
-			{/if}
-		</div>
-	</ModalDialog>
-{/if}
+	{#if shareProgressVisible && $isMobile}
+		<!-- The frame adds a 32px border on each side (content-box sizing). -->
+		<ModalDialog width="min(340px, calc(100% - 64px))">
+			<div class="mobile-progress-dialog">
+				<div class="progress-title">{shareProgressTitle}</div>
+				<ProgressBar
+					value={shareProgressValue}
+					max={100}
+					height={16}
+					ariaLabel="Shared item import progress"
+				/>
+				<div class="progress-message">{shareProgressMessage}</div>
+				{#if shareProgressDetail}
+					<div class="progress-detail">{shareProgressDetail}</div>
+				{/if}
+			</div>
+		</ModalDialog>
+	{/if}
+</div>
 
 <style>
 	.window-frame {
@@ -700,40 +717,89 @@
 		overflow: hidden;
 	}
 
-	/* Mobile: no window border, full screen */
+	/*
+	 * Mobile: no window border, full screen. The status bar (StatusBar.svelte)
+	 * pads itself by --safe-area-bottom so its grey runs under the gesture bar.
+	 * Side insets keep landscape content clear of a display cutout.
+	 */
 	.window-frame.mobile {
 		--safe-area-top: env(safe-area-inset-top, 0px);
 		--safe-area-bottom: env(safe-area-inset-bottom, 0px);
 		border: none;
+		padding-left: env(safe-area-inset-left, 0px);
+		padding-right: env(safe-area-inset-right, 0px);
 	}
 
 	.window-frame.mobile.android {
 		--safe-area-top: max(env(safe-area-inset-top, 0px), 24px);
 	}
 
+	/* Only a styling scope: the dialogs position themselves. */
+	.dialog-layer {
+		display: contents;
+	}
+
+	/* Mobile dialogs scroll by touch too, so they use the list's thin thumb. */
+	.dialog-layer.mobile :global(::-webkit-scrollbar) {
+		width: 6px;
+	}
+
+	.dialog-layer.mobile :global(::-webkit-scrollbar-track) {
+		background: var(--system7-color-paper, #fff);
+		border-left: 1px solid var(--system7-color-ink, #000);
+	}
+
+	.dialog-layer.mobile :global(::-webkit-scrollbar-thumb) {
+		background: var(--system7-color-scrollbar-thumb, #ccccff);
+		background-image: none;
+		border: 1px solid var(--system7-color-ink, #000);
+		box-shadow: none;
+	}
+
+	/* Rows and buttons show their own System 7 press state; Android's blue
+	   tap flash would sit on top of it. The property is inherited. */
+	.window-frame.mobile,
+	.dialog-layer.mobile {
+		-webkit-tap-highlight-color: transparent;
+	}
+
+	/*
+	 * The library pins toasts 20px above the viewport bottom, which on a phone
+	 * covers the status bar and its Sync button. Lift them clear of the bar and
+	 * the gesture area; the toast's fade only animates opacity, so a transform
+	 * does not fight it, and the inline per-toast stacking offsets still apply.
+	 */
+	.window-frame.mobile :global(.notification) {
+		transform: translateY(calc(-1 * (var(--safe-area-bottom, 0px) + 44px)));
+	}
+
+	.mobile-header {
+		flex-shrink: 0;
+		background: var(--system7-color-paper, #fff);
+	}
+
 	.mobile-safe-top {
 		height: var(--safe-area-top);
-		flex-shrink: 0;
 	}
 
-	.window-frame.mobile .app-content {
-		padding-bottom: var(--safe-area-bottom);
-	}
-
+	/* Mobile-only, and inside s7-root there, so every text element needs its
+	   own size: Geneva below 16px is illegible on a phone. */
 	.mobile-progress-dialog {
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
 		padding: 8px 4px;
-		font-size: 12px;
+		font-size: 16px;
 	}
 
 	.progress-title {
+		font-size: 16px;
 		font-weight: bold;
 		text-align: center;
 	}
 
 	.progress-message {
+		font-size: 16px;
 		line-height: 1.35;
 		text-align: center;
 	}
@@ -741,7 +807,7 @@
 	.progress-detail {
 		max-height: 72px;
 		overflow: auto;
-		font-size: 10px;
+		font-size: 16px;
 		line-height: 1.3;
 		color: #555;
 		word-break: break-word;

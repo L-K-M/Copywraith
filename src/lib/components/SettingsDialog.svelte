@@ -206,7 +206,7 @@
 </script>
 
 {#snippet settingsForm()}
-	<div class="settings-form">
+	<div class="settings-form" class:mobile={$isMobile}>
 		<div class="s7-form-group">
 			<label for="primary-server-url">Local Server URL</label>
 			<input
@@ -376,12 +376,13 @@
 	</div>
 {/snippet}
 
-<MovableDialog title="Settings" {onclose} width="380px">
+<!-- On a phone the viewport caps the width; landscape gets the extra room. -->
+<MovableDialog title="Settings" {onclose} width={$isMobile ? '560px' : '380px'}>
 	{#if isLoadingSettings}
-		<div class="settings-state" role="status">Loading settings...</div>
+		<div class="settings-state" class:mobile={$isMobile} role="status">Loading settings...</div>
 	{:else if loadError}
-		<div class="settings-state" role="alert">
-			<div>{loadError}</div>
+		<div class="settings-state" class:mobile={$isMobile} role="alert">
+			<div class="settings-state-message">{loadError}</div>
 			<div class="settings-actions s7-actions">
 				<Button onclick={onclose}>Cancel</Button>
 				<Button variant="primary" onclick={loadSettings}>Retry</Button>
@@ -524,5 +525,110 @@
 	.shizuku-status.listening {
 		border-color: #2f6d35;
 		background: #e7f4e7;
+	}
+
+	/*
+	 * Phone layout. The dialog sits inside .s7-root there, so text without its
+	 * own font-size would be Geneva 24px and the desktop 10-12px sizes are
+	 * illegible in Geneva; 16px is the font's crisp 1x size. Labels use the
+	 * library's control font so they read like System 7 dialog captions.
+	 */
+	.mobile label,
+	.mobile .section-label {
+		font-family: 'Sysfont', 'Chicago', sans-serif !important;
+		font-size: 18px;
+		font-weight: 400;
+		letter-spacing: 1px;
+		font-feature-settings:
+			'liga' off,
+			'clig' off,
+			'calt' off;
+		color: #000;
+	}
+
+	.mobile .section-label {
+		margin-top: 4px;
+	}
+
+	.mobile .field-hint,
+	.mobile .field-error,
+	.mobile .shizuku-status,
+	.settings-state.mobile,
+	.mobile .settings-state-message {
+		font-size: 16px;
+		line-height: 20px;
+	}
+
+	.mobile .shizuku-status {
+		padding: 8px;
+	}
+
+	.mobile .s7-form-group {
+		margin-bottom: 4px;
+	}
+
+	.mobile .s7-input {
+		height: 44px;
+		padding: 0 8px;
+	}
+
+	.mobile :global(.sys7-btn) {
+		min-height: 44px;
+	}
+
+	.mobile .inline-actions {
+		flex-direction: column;
+		align-items: stretch;
+		gap: 8px;
+	}
+
+	/* Equal-width Cancel/Save (and Cancel/Retry) halves are easier to hit. */
+	.mobile .s7-actions {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		align-items: center;
+	}
+
+	.mobile .s7-actions :global(.sys7-btn) {
+		width: 100%;
+	}
+
+	/*
+	 * On a phone the form is its own scroll area, sized so the whole dialog
+	 * fits the viewport: 94px is the backdrop margin plus the dialog frame,
+	 * title bar and body padding, with 1px spare for rounding. Scrolling here
+	 * rather than in the dialog body keeps the title bar from being squeezed
+	 * and lets the button row stick to the bottom, so Save stays reachable.
+	 */
+	.settings-form.mobile {
+		box-sizing: border-box;
+		max-height: calc(
+			100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 94px
+		);
+		overflow-y: auto;
+		padding-bottom: 0;
+		/* Focus scrolling must not park a field under the pinned button row. */
+		scroll-padding-bottom: 64px;
+	}
+
+	@supports (height: 100dvh) {
+		.settings-form.mobile {
+			max-height: calc(
+				100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 94px
+			);
+		}
+	}
+
+	/* The bottom padding leaves room for the Save button's outer ring. */
+	.settings-form.mobile > .s7-actions {
+		position: sticky;
+		bottom: 0;
+		z-index: 1;
+		margin-top: 4px;
+		padding: 12px 0 4px;
+		border-top: 1px solid #000;
+		background: var(--system7-color-paper, #fff);
+		/* Covers the sub-pixel strip left under the row at fractional DPRs. */
+		box-shadow: 0 2px 0 var(--system7-color-paper, #fff);
 	}
 </style>
