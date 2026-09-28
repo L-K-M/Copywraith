@@ -753,7 +753,7 @@
 	 * does not fight it, and the inline per-toast stacking offsets still apply.
 	 */
 	.window-frame.mobile :global(.notification) {
-		transform: translateY(calc(-1 * (var(--safe-area-bottom) + 44px)));
+		transform: translateY(calc(-1 * (var(--safe-area-bottom, 0px) + 44px)));
 	}
 
 	.mobile-header {

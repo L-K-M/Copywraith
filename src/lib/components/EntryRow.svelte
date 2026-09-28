@@ -560,6 +560,7 @@
 
 	/* Geneva's ellipsis sits on the baseline; lift it to the row's centre line. */
 	.entry-row.mobile .preview-btn {
+		box-sizing: border-box;
 		padding-bottom: 14px;
 	}
 </style>
