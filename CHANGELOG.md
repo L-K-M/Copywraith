@@ -42,7 +42,10 @@ Earlier history lives in the commit log and any GitHub releases.
 - `scripts/build.sh` stops with a clear message when Node is older than a
   package's `engines` range, instead of failing in vite with "Cannot find
   native binding", and reinstalls npm dependencies after a Node upgrade. A
-  new `.nvmrc` selects Node 22.
+  new `.nvmrc` selects Node 22; when nvm is installed the script switches to
+  it automatically. Missing Android Rust targets are added with rustup, and
+  `scripts/android-dev-bootstrap.sh` installs all four instead of only
+  aarch64.
 - Server setup and password change reject passwords that cannot be sent in
   an HTTP header (non-ASCII, or a leading or trailing space), which
   previously locked every client out. (#152)

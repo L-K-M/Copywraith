@@ -30,6 +30,11 @@
 #   docker     docker compose up -d --build (local stack redeploy)
 #   frontend, server-ui  nothing to install (reported, not an error)
 #
+# Self-provisioning: a Node older than package.json's engines is swapped for
+# the .nvmrc version via nvm (installed on demand), npm deps are (re)installed
+# when the lockfile or Node changes, and missing Android Rust targets are
+# added with rustup.
+#
 # Missing toolchains skip a target on a default run but fail it when the
 # target was named explicitly. The summary at the end lists what happened.
 set -uo pipefail
@@ -156,8 +161,29 @@ node_engine_ok() {
 # binding". Refuse up front instead, and reinstall whenever node_modules was
 # populated by a different Node (upgrading Node alone never fetches the
 # binding that was skipped).
+# Switch to the Node in .nvmrc via nvm (installing it if needed) when the
+# current one is too old. nvm is a shell function, so source it first. Tried
+# once per run; a PATH change here carries over to every later target.
+NODE_SWITCHED=0
+switch_node() {
+  [ "$NODE_SWITCHED" -eq 0 ] || return 1
+  NODE_SWITCHED=1
+  local nvm_sh="${NVM_DIR:-$HOME/.nvm}/nvm.sh"
+  [ -s "$nvm_sh" ] || nvm_sh="$(brew --prefix nvm 2>/dev/null)/nvm.sh"
+  [ -s "$nvm_sh" ] || { err "Node $(node -v) too old and nvm not found (https://github.com/nvm-sh/nvm)"; return 1; }
+  note "Node $(node -v) too old; switching to $(cat "$REPO_ROOT/.nvmrc") via nvm"
+  # shellcheck disable=SC1090
+  # nvm.sh trips over `set -u`.
+  set +u
+  . "$nvm_sh" && nvm install && nvm use
+  local rc=$?
+  set -u
+  return "$rc"
+}
+
 npm_deps() {
   local target="$1" dir="$2" stamp want
+  node_engine_ok "$dir" || { switch_node && hash -r; }
   if ! node_engine_ok "$dir"; then
     local range
     range=$(node -p "require('$REPO_ROOT/$dir/package.json').engines.node")
@@ -400,7 +426,8 @@ build_android() {
     local abi
     for abi in $targets; do
       rustup target list --installed 2>/dev/null | grep -qx "$(abi_triple "$abi")" \
-        || { blocked android "rust target $(abi_triple "$abi") not installed (run scripts/android-dev-bootstrap.sh)"; return 1; }
+        || rustup target add "$(abi_triple "$abi")" \
+        || { blocked android "rustup target add $(abi_triple "$abi") failed"; return 1; }
     done
   fi
   note "java: $(java -version 2>&1 | head -n1)"
