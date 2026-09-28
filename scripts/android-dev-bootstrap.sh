@@ -4,9 +4,12 @@ set -Eeuo pipefail
 # Usage:
 #   ./scripts/android-dev-bootstrap.sh
 # Optional:
-#   TARGET=aarch64-linux-android RUN_TAURI=0 ./scripts/android-dev-bootstrap.sh
+#   TARGETS=aarch64-linux-android RUN_TAURI=0 ./scripts/android-dev-bootstrap.sh
+#
+# Installs all four Android Rust targets by default, since scripts/build.sh
+# builds a universal APK for every ABI. TARGET (singular) is still honored.
 
-TARGET="${TARGET:-aarch64-linux-android}"
+TARGETS="${TARGETS:-${TARGET:-aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android}}"
 RUN_TAURI="${RUN_TAURI:-1}"
 REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 
@@ -42,33 +45,36 @@ echo "== Diagnostics =="
 echo "cargo:     $CARGO_BIN"
 echo "rustc:     $RUSTC_BIN"
 echo "toolchain: $ACTIVE_TOOLCHAIN"
-echo "target:    $TARGET"
+echo "targets:   $TARGETS"
 echo
 
-echo "== Ensuring Android Rust target is installed =="
-rustup target add --toolchain "$ACTIVE_TOOLCHAIN" "$TARGET"
-rustup component add --toolchain "$ACTIVE_TOOLCHAIN" rust-std --target "$TARGET"
-
-TARGET_LIBDIR="$(rustc --print target-libdir --target "$TARGET" 2>/dev/null || true)"
-if [[ -z "$TARGET_LIBDIR" || ! -d "$TARGET_LIBDIR" ]]; then
-  echo "Target stdlib directory missing; reinstalling target..."
-  rustup target remove --toolchain "$ACTIVE_TOOLCHAIN" "$TARGET" || true
+echo "== Ensuring Android Rust targets are installed =="
+for TARGET in $TARGETS; do
   rustup target add --toolchain "$ACTIVE_TOOLCHAIN" "$TARGET"
-  TARGET_LIBDIR="$(rustc --print target-libdir --target "$TARGET")"
-fi
+  rustup component add --toolchain "$ACTIVE_TOOLCHAIN" rust-std --target "$TARGET"
 
-if [[ ! -d "$TARGET_LIBDIR" ]]; then
-  echo "ERROR: target libdir still missing for $TARGET"
-  exit 1
-fi
+  TARGET_LIBDIR="$(rustc --print target-libdir --target "$TARGET" 2>/dev/null || true)"
+  if [[ -z "$TARGET_LIBDIR" || ! -d "$TARGET_LIBDIR" ]]; then
+    echo "Target stdlib directory missing; reinstalling target..."
+    rustup target remove --toolchain "$ACTIVE_TOOLCHAIN" "$TARGET" || true
+    rustup target add --toolchain "$ACTIVE_TOOLCHAIN" "$TARGET"
+    TARGET_LIBDIR="$(rustc --print target-libdir --target "$TARGET")"
+  fi
 
-# Basic verification that libdir is readable/non-empty
-if ! ls "$TARGET_LIBDIR" >/dev/null 2>&1; then
-  echo "ERROR: target libdir exists but is not readable: $TARGET_LIBDIR"
-  exit 1
-fi
+  if [[ ! -d "$TARGET_LIBDIR" ]]; then
+    echo "ERROR: target libdir still missing for $TARGET"
+    exit 1
+  fi
 
-echo "Target libdir OK: $TARGET_LIBDIR"
+  # Basic verification that libdir is readable/non-empty
+  if ! ls "$TARGET_LIBDIR" >/dev/null 2>&1; then
+    echo "ERROR: target libdir exists but is not readable: $TARGET_LIBDIR"
+    exit 1
+  fi
+
+  echo "Target libdir OK: $TARGET_LIBDIR"
+  echo
+done
 echo
 
 # Android SDK defaults (macOS)
