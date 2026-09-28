@@ -39,6 +39,10 @@ Earlier history lives in the commit log and any GitHub releases.
 
 ### Fixed
 
+- `scripts/build.sh` stops with a clear message when Node is older than a
+  package's `engines` range, instead of failing in vite with "Cannot find
+  native binding", and reinstalls npm dependencies after a Node upgrade. A
+  new `.nvmrc` selects Node 22.
 - Server setup and password change reject passwords that cannot be sent in
   an HTTP header (non-ASCII, or a leading or trailing space), which
   previously locked every client out. (#152)

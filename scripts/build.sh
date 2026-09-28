@@ -130,17 +130,64 @@ find_cc() {
   return 1
 }
 
+# Does the running Node satisfy $1/package.json's engines.node? Understands
+# the `^x.y.z`, `>=x.y.z` and `||` forms the repo uses; anything else passes.
+node_engine_ok() {
+  node -e '
+    const range = (require(process.argv[1] + "/package.json").engines || {}).node;
+    if (!range) process.exit(0);
+    const v = process.versions.node.split(".").map(Number);
+    const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    const ok = range.split("||").some(alt => alt.trim().split(/\s+/).every(term => {
+      const m = term.match(/^(\^|>=)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/);
+      if (!m) return true;
+      const want = [+m[2], +(m[3] || 0), +(m[4] || 0)];
+      if (m[1] === ">=") return cmp(v, want) >= 0;
+      if (m[1] === "^") return v[0] === want[0] && cmp(v, want) >= 0;
+      return cmp(v, want) === 0;
+    }));
+    process.exit(ok ? 0 : 1);
+  ' "$REPO_ROOT/$1"
+}
+
+# Install $2's npm deps for target $1. npm silently skips optional deps whose
+# `engines` exclude the running Node, and rolldown's native binding is one, so
+# a too-old Node "installs" fine and vite then dies with "Cannot find native
+# binding". Refuse up front instead, and reinstall whenever node_modules was
+# populated by a different Node (upgrading Node alone never fetches the
+# binding that was skipped).
+npm_deps() {
+  local target="$1" dir="$2" stamp want
+  if ! node_engine_ok "$dir"; then
+    local range
+    range=$(node -p "require('$REPO_ROOT/$dir/package.json').engines.node")
+    FAILED+=("$target: Node $(node -v) does not satisfy \"$range\" (e.g. nvm install 22)")
+    err "$target: Node $(node -v) is too old; package.json requires \"$range\""
+    return 1
+  fi
+  stamp="$dir/node_modules/.copywraith-node"
+  want=$(node -p 'process.version + " " + process.platform + " " + process.arch')
+  if [ ! -d "$dir/node_modules" ] || [ "$dir/package-lock.json" -nt "$dir/node_modules" ] \
+    || [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
+    (cd "$dir" && npm ci) || { FAILED+=("$target: npm ci failed"); err "$target: npm ci failed"; return 1; }
+    printf '%s\n' "$want" > "$stamp"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # frontend: Svelte popup UI. src-tauri embeds build/ via generate_context!,
 # so the desktop and android targets call this first when it hasn't run.
 # ---------------------------------------------------------------------------
+# 0 = not attempted, 1 = built, 2 = failed (so desktop/android don't retry
+# a frontend build that already failed this run and report it twice).
 FRONTEND_DONE=0
 build_frontend() {
+  [ "$FRONTEND_DONE" -eq 1 ] && return 0
+  [ "$FRONTEND_DONE" -eq 2 ] && return 1
+  FRONTEND_DONE=2
   step "frontend: Svelte UI"
   need npm || { blocked frontend "npm not found"; return 1; }
-  if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
-    npm ci || { FAILED+=("frontend: npm ci failed"); err "frontend: npm ci failed"; return 1; }
-  fi
+  npm_deps frontend . || return 1
   npm run build || { FAILED+=("frontend: vite build failed"); err "frontend: build failed"; return 1; }
   rm -rf "$DIST/frontend"
   mkdir -p "$DIST/frontend"
@@ -153,9 +200,7 @@ build_frontend() {
 build_server_ui() {
   step "server-ui: server admin UI"
   need npm || { blocked server-ui "npm not found"; return 1; }
-  if [ ! -d server/ui/node_modules ] || [ server/ui/package-lock.json -nt server/ui/node_modules ]; then
-    npm ci --prefix server/ui || { FAILED+=("server-ui: npm ci failed"); err "server-ui: npm ci failed"; return 1; }
-  fi
+  npm_deps server-ui server/ui || return 1
   npm run build --prefix server/ui || { FAILED+=("server-ui: vite build failed"); err "server-ui: build failed"; return 1; }
   rm -rf "$DIST/server-ui"
   mkdir -p "$DIST/server-ui"
