@@ -17,7 +17,8 @@
 #   desktop    Tauri bundles for this host OS -> dist/desktop/
 #              Linux needs the webkit2gtk-4.1 dev packages (see README.ubuntu.md);
 #              missing system deps skip the target on a default run
-#   android    Universal release APK for all four ABIs -> dist/android/
+#   android    Universal release APK for all four ABIs -> dist/android/,
+#              signed with the Android debug key so it installs
 #              Needs JDK 17, the Android SDK, an NDK, and the Rust android
 #              targets (scripts/android-dev-bootstrap.sh installs them).
 #              CW_ANDROID_TARGETS overrides the ABI list (default: all four)
@@ -413,6 +414,34 @@ abi_triple() {
   esac
 }
 
+# Gradle leaves release APKs unsigned, and Android refuses to install those.
+# Sign with the standard Android debug key (~/.android/debug.keystore, the
+# one Android Studio and debug builds use; created if missing) so the APK
+# installs via adb or sideloading. Real release signing lives in release.yml.
+sign_debug_apk() {
+  local in="$1" out="$2" build_tools ks="$HOME/.android/debug.keystore"
+  build_tools=$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -n1)
+  build_tools="${build_tools%/}"
+  if [ -z "$build_tools" ] || [ ! -x "$build_tools/apksigner" ]; then
+    FAILED+=("android: no build-tools with apksigner under $ANDROID_HOME/build-tools")
+    return 1
+  fi
+  if [ ! -f "$ks" ]; then
+    mkdir -p "$(dirname "$ks")"
+    keytool -genkeypair -keystore "$ks" -storepass android -keypass android \
+      -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+      -dname "CN=Android Debug,O=Android,C=US" >/dev/null \
+      || { FAILED+=("android: could not create $ks"); return 1; }
+  fi
+  "$build_tools/zipalign" -p -f 4 "$in" "$out.aligned" \
+    && "$build_tools/apksigner" sign --ks "$ks" --ks-pass pass:android \
+         --ks-key-alias androiddebugkey --key-pass pass:android --out "$out" "$out.aligned" \
+    && "$build_tools/apksigner" verify "$out" \
+    || { rm -f "$out.aligned" "$out"; FAILED+=("android: debug-signing $(basename "$in") failed"); return 1; }
+  rm -f "$out.aligned" "$out.idsig"
+  note "android: signed $(basename "$out") with the debug key ($ks)"
+}
+
 build_android() {
   step "android: universal APK"
   find_java || { blocked android "no JDK 17 (JAVA_HOME unset; nothing in ~/opt, /usr/lib/jvm, Android Studio jbr)"; return 1; }
@@ -453,8 +482,12 @@ build_android() {
   # matching the hard-fail staging of the other targets.
   local apk
   while IFS= read -r apk; do
-    cp "$apk" "$DIST/android/" \
-      || { FAILED+=("android: failed to copy $(basename "$apk") into dist/android"); return 1; }
+    if [ "$profile" = release ]; then
+      sign_debug_apk "$apk" "$DIST/android/$(basename "${apk%-unsigned.apk}" .apk).apk" || return 1
+    else
+      cp "$apk" "$DIST/android/" \
+        || { FAILED+=("android: failed to copy $(basename "$apk") into dist/android"); return 1; }
+    fi
   done < <(find "src-tauri/gen/android/app/build/outputs/apk" \
             -name '*.apk' -path "*$profile*")
   if ! ls "$DIST/android"/*.apk >/dev/null 2>&1; then
