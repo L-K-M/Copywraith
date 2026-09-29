@@ -40,7 +40,10 @@ else
 fi
 
 echo "==> Rebuilding the image and recreating the container…"
-docker compose up -d --build --remove-orphans
+# `up --build` rebuilds the app layers but never refetches the FROM base
+# image; a separate `build --pull` refreshes it so base-layer fixes arrive.
+docker compose build --pull
+docker compose up -d --remove-orphans
 
 echo "==> Pruning dangling images…"
 docker image prune -f >/dev/null || true
