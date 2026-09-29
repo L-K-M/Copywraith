@@ -234,7 +234,7 @@ jobs:
         # wherever it landed rather than assuming the top level.
         run: |
           mapfile -t DEBS < <(find dist/flatpak-deb -type f -name '*.deb')
-          [ "${#DEBS[@]}" -eq 1 ] || { echo "::error::expected exactly one .deb in linux-bundles artifact, got ${#DEBS[@]}" >&2; exit 1; }
+          [ "${#DEBS[@]}" -eq 1 ] || { echo "::error::expected exactly one .deb in linux-bundles artifact, got ${#DEBS[@]}:" >&2; printf '%s\n' "${DEBS[@]}" >&2; exit 1; }
           DEB="${DEBS[0]}"
           ./scripts/build-flatpak.sh "$DEB"
 
