@@ -1,0 +1,28 @@
+# Flatpak manifest. scripts/build-flatpak.sh extracts the release .deb into
+# dist/flatpak/stage and builds from that — the bundle ships the same files
+# the .deb installs, relaid under flatpak's /app prefix.
+id: ch.lkmc.copywraith
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: copywraith
+finish-args:
+  - --share=ipc
+  # X11 outright, not fallback-x11: clipboard capture, the global --toggle
+  # shortcut and XTest paste injection are X11 protocols. On Wayland the app
+  # rides XWayland with the same degradations the .deb already has.
+  - --socket=x11
+  # WebKit's GPU rendering.
+  - --device=dri
+  # The app's LLM calls need outbound HTTPS.
+  - --share=network
+  # Tray icon via StatusNotifier.
+  - --talk-name=org.kde.StatusNotifierWatcher
+modules:
+  - name: copywraith
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ../dist/flatpak/stage
+    build-commands:
+      - cp -R bin share /app/

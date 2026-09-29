@@ -38,6 +38,8 @@ Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Inst
 - `scripts/check-linux-bundle.sh` — asserts the `.deb` installs `/usr/bin/copywraith`, ships a `copywraith.png` icon, and execs `copywraith` from its desktop entry. The Ubuntu and KDE docs tell users to bind `copywraith --toggle` to a global shortcut, and the app writes `Icon=copywraith` into its autostart entry, so a renamed binary would silently break both. The binary name comes from `mainBinaryName` in `src-tauri/tauri.conf.json`.
 - Uploads the `.deb` and AppImage as a build artifact (7-day retention).
 
+**Linux Flatpak bundle** — repacks the `linux-bundle` job's `.deb` under flatpak's `/app` prefix via `scripts/build-flatpak.sh` (GNOME runtime; X11 socket, not Wayland, because clipboard capture / global shortcut / XTest paste are X11 protocols). Uploads `Copywraith-<version>-linux.flatpak` plus a `.sha256` (7-day retention). The release workflow builds its own `.deb` and attaches the same bundle to the GitHub Release.
+
 **Ubuntu client smoke** — installs the `.deb` on fresh Ubuntu 22.04 and 24.04 runners, then runs `scripts/smoke-linux-client.py` in isolated D-Bus/Xvfb/Openbox sessions. It checks startup, clipboard capture, single-instance commands, the X11 global shortcut, frontend Escape handling, search-and-paste, and plaintext restoration without duplicate history.
 
 The release workflow also checks package contents and smoke-tests its actual release `.deb` before publication. These tests do not validate a physical GNOME Wayland session, tray rendering, or `/dev/uinput` keystroke injection.

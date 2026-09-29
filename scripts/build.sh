@@ -23,6 +23,7 @@
 #              targets (scripts/android-dev-bootstrap.sh installs them).
 #              CW_ANDROID_TARGETS overrides the ABI list (default: all four)
 #   docker     Server image -> copywraith-server:<version> (docker daemon only)
+#   flatpak    Repack the Linux .deb as a Flatpak bundle -> dist/ (Linux only)
 #
 # --install semantics per target:
 #   desktop    .deb -> sudo apt install; otherwise AppImage -> ~/Applications
@@ -70,7 +71,7 @@ for arg in "$@"; do
   esac
 done
 
-ALL_TARGETS="frontend server-ui server desktop android docker"
+ALL_TARGETS="frontend server-ui server desktop android docker flatpak"
 if [ "${#NAMED[@]}" -gt 0 ]; then
   WANTED=("${NAMED[@]}")
   EXPLICIT=1
@@ -303,6 +304,24 @@ build_desktop() {
     return 1
   fi
   BUILT+=("desktop -> dist/desktop")
+}
+
+# flatpak: repack the Linux .deb as a Flatpak bundle.
+build_flatpak() {
+  step "flatpak: Flatpak bundle (Linux)"
+  [ "$(uname -s)" = Linux ] || { blocked flatpak "Flatpak builds run on Linux"; return 1; }
+  local deb
+  deb="$(ls -t "$DIST"/desktop/deb/*.deb 2>/dev/null | head -1 || true)"
+  if [ -z "$deb" ]; then
+    [ "$FRONTEND_DONE" -eq 1 ] || build_frontend || { FAILED+=("flatpak: frontend prerequisite failed"); return 1; }
+    desktop_toolchain_ok || { blocked flatpak "missing cargo/npm or webkit2gtk-4.1 dev packages (see README.ubuntu.md)"; return 1; }
+    npm run tauri -- build --bundles deb \
+      || { FAILED+=("flatpak: tauri deb build failed"); err "flatpak: build failed"; return 1; }
+    deb="$(ls -t target/release/bundle/deb/*.deb | head -1)"
+  fi
+  ./scripts/build-flatpak.sh "$deb" \
+    || { FAILED+=("flatpak: build-flatpak.sh failed"); err "flatpak: repack failed"; return 1; }
+  BUILT+=("flatpak -> dist/")
 }
 
 install_desktop() {
@@ -551,6 +570,7 @@ for target in "${WANTED[@]}"; do
     server-ui) build_server_ui ;;
     server)    build_server ;;
     desktop)   build_desktop ;;
+    flatpak)   build_flatpak ;;
     android)   build_android ;;
     docker)    build_docker ;;
     *) err "unknown target: $target"; FAILED+=("$target: unknown target") ;;
