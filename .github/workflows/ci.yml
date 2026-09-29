@@ -233,8 +233,9 @@ jobs:
         # The artifact keeps the upload's directory layout — find the .deb
         # wherever it landed rather than assuming the top level.
         run: |
-          DEB="$(find dist/flatpak-deb -type f -name '*.deb' -print -quit)"
-          [ -n "$DEB" ] || { echo "::error::no .deb in linux-bundles artifact" >&2; exit 1; }
+          mapfile -t DEBS < <(find dist/flatpak-deb -type f -name '*.deb')
+          [ "${#DEBS[@]}" -eq 1 ] || { echo "::error::expected exactly one .deb in linux-bundles artifact, got ${#DEBS[@]}" >&2; exit 1; }
+          DEB="${DEBS[0]}"
           ./scripts/build-flatpak.sh "$DEB"
 
       - name: Checksum and upload Flatpak bundle

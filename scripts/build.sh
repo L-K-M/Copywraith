@@ -320,7 +320,7 @@ build_flatpak() {
     npm run tauri -- build --bundles deb \
       || { FAILED+=("flatpak: tauri deb build failed"); err "flatpak: build failed"; return 1; }
     deb="$(find target/release/bundle/deb -type f -name '*.deb' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -n1 | cut -f2- || true)"
-    [ -n "$deb" ] || { FAILED+=("flatpak: tauri deb build produced no .deb"); return 1; }
+    [ -n "$deb" ] || { FAILED+=("flatpak: tauri deb build produced no .deb"); err "flatpak: no .deb"; return 1; }
     mkdir -p "$DIST/desktop/deb" && cp "$deb" "$DIST/desktop/deb/"
   fi
   ./scripts/build-flatpak.sh "$deb" \
