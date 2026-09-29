@@ -320,6 +320,7 @@ build_flatpak() {
     npm run tauri -- build --bundles deb \
       || { FAILED+=("flatpak: tauri deb build failed"); err "flatpak: build failed"; return 1; }
     deb="$(ls -t target/release/bundle/deb/*.deb | head -1)"
+    mkdir -p "$DIST/desktop/deb" && cp "$deb" "$DIST/desktop/deb/"
   fi
   ./scripts/build-flatpak.sh "$deb" \
     || { FAILED+=("flatpak: build-flatpak.sh failed"); err "flatpak: repack failed"; return 1; }
