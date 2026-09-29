@@ -180,7 +180,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             flatpak \
-            flatpak-builder
+            flatpak-builder elfutils
           # Ubuntu 24.04 denies the unprivileged user namespaces bubblewrap
           # (flatpak's sandbox helper) builds in.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true   # absent on kernels without the knob

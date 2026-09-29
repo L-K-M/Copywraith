@@ -224,13 +224,15 @@ jobs:
       - name: Install Flatpak tooling
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y flatpak flatpak-builder
+          sudo apt-get install --no-install-recommends -y flatpak flatpak-builder elfutils
           # Ubuntu 24.04 denies the unprivileged user namespaces bubblewrap
           # (flatpak's sandbox helper) builds in.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true   # absent on kernels without the knob
 
       - name: Repack .deb as Flatpak bundle
-        run: ./scripts/build-flatpak.sh dist/flatpak-deb/*.deb
+        # The artifact keeps the upload's directory layout — find the .deb
+        # wherever it landed rather than assuming the top level.
+        run: ./scripts/build-flatpak.sh "$(find dist/flatpak-deb -type f -name '*.deb' -print -quit)"
 
       - name: Checksum and upload Flatpak bundle
         run: |
