@@ -312,14 +312,15 @@ build_flatpak() {
   [ "$(uname -s)" = Linux ] || { blocked flatpak "Flatpak builds run on Linux"; return 1; }
   local deb start
   start=$(( $(date +%s) - SECONDS ))
-  deb="$(ls -t "$DIST"/desktop/deb/*.deb 2>/dev/null | head -1 || true)"
+  deb="$(find "$DIST/desktop/deb" -type f -name '*.deb' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -n1 | cut -f2- || true)"
   # Reuse the .deb the desktop target just packaged; rebuild when absent or stale.
   if [ -z "$deb" ] || [ "$(stat -c %Y "$deb" 2>/dev/null || echo 0)" -lt "$start" ]; then
     [ "$FRONTEND_DONE" -eq 1 ] || build_frontend || { FAILED+=("flatpak: frontend prerequisite failed"); return 1; }
     desktop_toolchain_ok || { blocked flatpak "missing cargo/npm or webkit2gtk-4.1 dev packages (see README.ubuntu.md)"; return 1; }
     npm run tauri -- build --bundles deb \
       || { FAILED+=("flatpak: tauri deb build failed"); err "flatpak: build failed"; return 1; }
-    deb="$(ls -t target/release/bundle/deb/*.deb | head -1)"
+    deb="$(find target/release/bundle/deb -type f -name '*.deb' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -n1 | cut -f2- || true)"
+    [ -n "$deb" ] || { FAILED+=("flatpak: tauri deb build produced no .deb"); return 1; }
     mkdir -p "$DIST/desktop/deb" && cp "$deb" "$DIST/desktop/deb/"
   fi
   ./scripts/build-flatpak.sh "$deb" \
