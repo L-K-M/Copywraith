@@ -18,7 +18,9 @@ export enum WindowActivitySource {
 	Event = 'event'
 }
 
-const TITLE_BAR_HEIGHT = 36;
+// The 35px System 7 title bar plus the window frame's 2px border above and
+// below; the library's title bar keeps its height instead of shrinking.
+const SHADED_WINDOW_HEIGHT = 39;
 const ACTIVITY_CHANGED = 'window-activity-changed';
 
 export class WindowManager {
@@ -80,7 +82,7 @@ export class WindowManager {
 
 		if (!this.isShaded) {
 			this.savedWindowSize = { width: logicalWidth, height: logicalHeight };
-			await this.appWindow.setSize(new LogicalSize(logicalWidth, TITLE_BAR_HEIGHT));
+			await this.appWindow.setSize(new LogicalSize(logicalWidth, SHADED_WINDOW_HEIGHT));
 			this.isShaded = true;
 		} else {
 			const saved = this.savedWindowSize ?? { width: 560, height: 480 };
