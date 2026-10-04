@@ -12,7 +12,7 @@
     "check:ts6": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@lkmc/system7-ui": "^0.2.2",
+    "@lkmc/system7-ui": "^0.3.0",
     "svelte": "^5.57.0"
   },
   "devDependencies": {
