@@ -11,4 +11,4 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 ulid = { workspace = true }
-utoipa = { version = "5", features = ["chrono"] }
+utoipa = { version = "6", features = ["chrono"] }
