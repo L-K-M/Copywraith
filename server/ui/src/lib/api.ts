@@ -2,6 +2,7 @@ import type { EntryResponse, ListEntriesResponse, HealthResponse, AuthStatusResp
 
 let API_BASE = '/api';
 const SESSION_KEY = 'copywraith_password';
+const HTTP_UNAUTHORIZED = 401;
 
 function normalizeBase(base: string): string {
 	if (!base) return '/api';
@@ -158,6 +159,16 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 // Data API
 // ---------------------------------------------------------------------------
 
+// Data endpoints share session expiry; auth and health use different policies.
+function requireDataResponse(resp: Response): void {
+	if (resp.status === HTTP_UNAUTHORIZED) {
+		clearSession();
+		throw new Error('Unauthorized');
+	}
+
+	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+}
+
 export async function fetchEntries(params: {
 	limit?: number;
 	offset?: number;
@@ -173,21 +184,13 @@ export async function fetchEntries(params: {
 	if (params.starred_only) sp.set('starred_only', 'true');
 
 	const resp = await fetch(`${apiUrl('/entries')}?${sp}`, { headers: buildHeaders() });
-	if (resp.status === 401) {
-		clearSession();
-		throw new Error('Unauthorized');
-	}
-	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+	requireDataResponse(resp);
 	return resp.json();
 }
 
 export async function fetchEntry(id: string): Promise<EntryResponse> {
 	const resp = await fetch(apiUrl(`/entries/${id}`), { headers: buildHeaders() });
-	if (resp.status === 401) {
-		clearSession();
-		throw new Error('Unauthorized');
-	}
-	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+	requireDataResponse(resp);
 	return resp.json();
 }
 
@@ -197,11 +200,7 @@ export async function toggleStar(id: string, starred: boolean): Promise<void> {
 		headers: buildHeaders({ 'Content-Type': 'application/json' }),
 		body: JSON.stringify({ starred })
 	});
-	if (resp.status === 401) {
-		clearSession();
-		throw new Error('Unauthorized');
-	}
-	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+	requireDataResponse(resp);
 }
 
 export async function deleteEntry(id: string): Promise<void> {
@@ -209,11 +208,7 @@ export async function deleteEntry(id: string): Promise<void> {
 		method: 'DELETE',
 		headers: buildHeaders()
 	});
-	if (resp.status === 401) {
-		clearSession();
-		throw new Error('Unauthorized');
-	}
-	if (!resp.ok && resp.status !== 204) throw new Error(`HTTP ${resp.status}`);
+	requireDataResponse(resp);
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
@@ -224,11 +219,7 @@ export async function fetchHealth(): Promise<HealthResponse> {
 
 export async function fetchBlob(blobUrl: string): Promise<Blob> {
 	const resp = await fetch(resolveBlobUrl(blobUrl), { headers: buildHeaders() });
-	if (resp.status === 401) {
-		clearSession();
-		throw new Error('Unauthorized');
-	}
-	if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+	requireDataResponse(resp);
 	return resp.blob();
 }
 
