@@ -49,7 +49,7 @@ describe.each(dataRequests)('$name requests', ({ run, url, method }) => {
 	it('clears the session on unauthorized responses without reading the body', async () => {
 		const response = new Response('not JSON', { status: HTTP.UNAUTHORIZED });
 		fetchMock.mockResolvedValue(response);
-		await expect(run(api)).rejects.toThrow('Unauthorized');
+		await expect(run(api)).rejects.toThrow(new Error('Unauthorized'));
 		expect(api.getSessionPassword()).toBeNull();
 		expect(response.bodyUsed).toBe(false);
 	});
@@ -57,7 +57,7 @@ describe.each(dataRequests)('$name requests', ({ run, url, method }) => {
 	it.each([HTTP.FORBIDDEN, HTTP.ERROR])('reports HTTP %i without clearing the session or reading the body', async (status) => {
 		const response = new Response('not JSON', { status });
 		fetchMock.mockResolvedValue(response);
-		await expect(run(api)).rejects.toThrow(`HTTP ${status}`);
+		await expect(run(api)).rejects.toThrow(new Error(`HTTP ${status}`));
 		expect(api.getSessionPassword()).toBe(PASSWORD);
 		expect(response.bodyUsed).toBe(false);
 	});
@@ -134,7 +134,7 @@ it('discovers a reverse-proxy prefix and resolves each supported blob URL form',
 
 it('keeps health unauthorized errors distinct from data unauthorized errors', async () => {
 	fetchMock.mockResolvedValue(new Response(null, { status: HTTP.UNAUTHORIZED }));
-	await expect(api.fetchHealth()).rejects.toThrow('HTTP 401');
+	await expect(api.fetchHealth()).rejects.toThrow(new Error('HTTP 401'));
 	expect(api.getSessionPassword()).toBe(PASSWORD);
 });
 
@@ -145,13 +145,13 @@ it('clears the current session when an earlier request returns unauthorized', as
 	expect(fetchMock.mock.calls[0][1]?.headers).toEqual({ Authorization: `Bearer ${PASSWORD}` });
 	api.setSessionPassword('replacement password');
 	respond(new Response(null, { status: HTTP.UNAUTHORIZED }));
-	await expect(request).rejects.toThrow('Unauthorized');
+	await expect(request).rejects.toThrow(new Error('Unauthorized'));
 	expect(api.getSessionPassword()).toBeNull();
 });
 
 it('keeps unlock unauthorized errors distinct and retains the previous session', async () => {
 	fetchMock.mockResolvedValue(new Response(null, { status: HTTP.UNAUTHORIZED }));
-	await expect(api.unlockServer('wrong password')).rejects.toThrow('Incorrect password');
+	await expect(api.unlockServer('wrong password')).rejects.toThrow(new Error('Incorrect password'));
 	expect(api.getSessionPassword()).toBe(PASSWORD);
 });
 
@@ -159,6 +159,6 @@ it.each([HTTP.UNAUTHORIZED, HTTP.FORBIDDEN])('clears the session after a lock re
 	fetchMock.mockResolvedValue(new Response(null, { status }));
 	const result = api.lockServer();
 	if (status === HTTP.UNAUTHORIZED) await expect(result).resolves.toBeUndefined();
-	else await expect(result).rejects.toThrow(`HTTP ${status}`);
+	else await expect(result).rejects.toThrow(new Error(`HTTP ${status}`));
 	expect(api.getSessionPassword()).toBeNull();
 });
