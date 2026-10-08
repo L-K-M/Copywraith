@@ -158,7 +158,9 @@ fn local_insertion_preserves_text_payloads_and_metadata() {
         let expected_entry = serde_json::to_value(&entry).unwrap();
         let stored = db.get_entry(&entry.id).unwrap().unwrap();
         assert_eq!(serde_json::to_value(stored).unwrap(), expected_entry);
-        assert_eq!(db.get_unsynced_entries().unwrap()[0].id, entry.id);
+        let unsynced = db.get_unsynced_entries().unwrap();
+        assert_eq!(unsynced.len(), 1);
+        assert_eq!(unsynced[0].id, entry.id);
         drop(db);
 
         let reopened = LocalStorage::new(dir.path()).unwrap();
