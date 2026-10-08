@@ -202,12 +202,7 @@ impl LocalStorage {
         )?;
 
         // Migration: add sensitive column if missing (existing databases)
-        let has_sensitive: bool = conn
-            .prepare("SELECT sensitive FROM entries LIMIT 0")
-            .is_ok();
-        if !has_sensitive {
-            conn.execute_batch("ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;")?;
-        }
+        ensure_entries_column(&conn, "sensitive", "INTEGER DEFAULT 0")?;
 
         ensure_entries_column(&conn, "text_plain", "TEXT")?;
         ensure_entries_column(&conn, "text_html", "TEXT")?;
