@@ -23,6 +23,7 @@ fn legacy_desktop_database_preserves_ids_and_sync_state() {
     let db = LocalStorage::new(dir.path()).unwrap();
     let old = db.get_entry(&legacy.id).unwrap().unwrap();
     assert_eq!(old.flavors.text_plain.as_deref(), Some("legacy row"));
+    assert!(!old.sensitive);
     let flavors = ClipboardFlavors {
         text_plain: Some("new local row".into()),
         ..Default::default()
@@ -39,10 +40,42 @@ fn legacy_desktop_database_preserves_ids_and_sync_state() {
         .unwrap());
     drop(db);
     let db = LocalStorage::new(dir.path()).unwrap();
-    assert_eq!(db.get_entry(&legacy.id).unwrap().unwrap().id, legacy.id);
+    let old = db.get_entry(&legacy.id).unwrap().unwrap();
+    assert_eq!(old.id, legacy.id);
+    assert!(!old.sensitive);
     assert_eq!(db.get_entry(&new.id).unwrap().unwrap().id, new.id);
     assert_eq!(db.get_unsynced_entries().unwrap().len(), 1);
     assert_eq!(db.get_unsynced_entries().unwrap()[0].id, new.id);
+}
+
+#[test]
+fn migration_preserves_existing_sensitive_flags() {
+    let legacy: ClipboardEntry = serde_json::from_str(include_str!("fixtures/entry.json")).unwrap();
+
+    for sensitive in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("copywraith.db");
+        std::fs::write(&path, include_bytes!("fixtures/legacy.db")).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE entries ADD COLUMN synced INTEGER DEFAULT 0;
+             ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE entries SET sensitive = ?1 WHERE id = ?2",
+            rusqlite::params![sensitive as i32, legacy.id],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Stored classifications survive migrations and repeated opens.
+        for _ in 0..2 {
+            let db = LocalStorage::new(dir.path()).unwrap();
+            let old = db.get_entry(&legacy.id).unwrap().unwrap();
+            assert_eq!(old.sensitive, sensitive);
+        }
+    }
 }
 
 #[test]

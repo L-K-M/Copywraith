@@ -391,12 +391,7 @@ impl Storage {
         )?;
 
         // Migration: add sensitive column if missing (existing databases)
-        let has_sensitive: bool = conn
-            .prepare("SELECT sensitive FROM entries LIMIT 0")
-            .is_ok();
-        if !has_sensitive {
-            conn.execute_batch("ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;")?;
-        }
+        ensure_entries_column(&conn, "sensitive", "INTEGER DEFAULT 0")?;
 
         ensure_entries_column(&conn, "text_plain", "TEXT")?;
         ensure_entries_column(&conn, "text_html", "TEXT")?;
@@ -1001,6 +996,34 @@ mod migration_tests {
     }
 
     #[test]
+    fn migration_preserves_existing_sensitive_flags() {
+        let legacy: ClipboardEntry =
+            serde_json::from_str(include_str!("../tests/fixtures/entry.json")).unwrap();
+
+        for sensitive in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("copywraith.db");
+            std::fs::write(&path, include_bytes!("../tests/fixtures/legacy.db")).unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("ALTER TABLE entries ADD COLUMN sensitive INTEGER DEFAULT 0;")
+                .unwrap();
+            conn.execute(
+                "UPDATE entries SET sensitive = ?1 WHERE id = ?2",
+                params![sensitive as i32, legacy.id],
+            )
+            .unwrap();
+            drop(conn);
+
+            // Stored classifications survive migrations and repeated opens.
+            for _ in 0..2 {
+                let storage = Storage::new(dir.path()).unwrap();
+                let old = storage.get_entry(&legacy.id, None).unwrap().unwrap();
+                assert_eq!(old.sensitive, sensitive);
+            }
+        }
+    }
+
+    #[test]
     fn legacy_database_upgrade_preserves_identifiers() {
         let dir = tempfile::tempdir().unwrap();
         // A real rusqlite 0.32 database lacking flavor/sensitive columns.
@@ -1046,9 +1069,8 @@ mod migration_tests {
             reopened.get_entry(&new.id, None).unwrap().unwrap().id,
             new.id
         );
-        assert_eq!(
-            reopened.get_entry(&legacy.id, None).unwrap().unwrap().id,
-            legacy.id
-        );
+        let old = reopened.get_entry(&legacy.id, None).unwrap().unwrap();
+        assert_eq!(old.id, legacy.id);
+        assert!(!old.sensitive);
     }
 }
