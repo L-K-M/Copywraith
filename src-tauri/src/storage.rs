@@ -280,17 +280,15 @@ impl LocalStorage {
             ],
         )?;
 
-        let entry_flavors = flavors.clone().merge_legacy(content_type, None);
-        let entry_text_content = entry_flavors.to_legacy_text_content(content_type);
-
+        // params! borrows the payload, so the return needs no second clone.
         Ok(Some(ClipboardEntry {
             id,
             content_type,
-            text_content: entry_text_content,
+            text_content: legacy_text_content,
             blob_hash,
             blob_size,
             source_app: source_app.map(|s| s.to_string()),
-            flavors: entry_flavors,
+            flavors: resolved_flavors,
             starred: false,
             sensitive,
             created_at: now,
