@@ -205,6 +205,54 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Repack the same .deb as a Flatpak bundle — identical files under /app,
+  # so this exercises the packaging path without a second toolchain build.
+  linux-flatpak:
+    name: Linux Flatpak bundle
+    needs: linux-bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the Linux bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-bundles
+          path: dist/flatpak-deb/
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y flatpak flatpak-builder elfutils
+          # Ubuntu 24.04 denies the unprivileged user namespaces bubblewrap
+          # (flatpak's sandbox helper) builds in.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true   # absent on kernels without the knob
+
+      - name: Repack .deb as Flatpak bundle
+        # The artifact keeps the upload's directory layout — find the .deb
+        # wherever it landed rather than assuming the top level.
+        run: |
+          mapfile -t DEBS < <(find dist/flatpak-deb -type f -name '*.deb')
+          [ "${#DEBS[@]}" -eq 1 ] || { echo "::error::expected exactly one .deb in linux-bundles artifact, got ${#DEBS[@]}:" >&2; printf '%s\n' "${DEBS[@]}" >&2; exit 1; }
+          DEB="${DEBS[0]}"
+          ./scripts/build-flatpak.sh "$DEB"
+
+      - name: Checksum and upload Flatpak bundle
+        run: |
+          for f in dist/*.flatpak; do
+            (cd dist && sha256sum "$(basename "$f")" > "$(basename "$f").sha256")
+          done
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-flatpak
+          path: |
+            dist/*.flatpak
+            dist/*.flatpak.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   # Test the installed package without the build job's development libraries.
   linux-smoke:
     name: Ubuntu client smoke (${{ matrix.platform }})

@@ -156,6 +156,71 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
+  # Linux Flatpak: repacks a freshly built .deb under the flatpak /app prefix,
+  # so the bundle ships exactly the files the .deb installs.
+  # ---------------------------------------------------------------------------
+  flatpak:
+    name: Linux Flatpak
+    needs: create-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Tauri and Flatpak system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            flatpak \
+            flatpak-builder elfutils
+          # Ubuntu 24.04 denies the unprivileged user namespaces bubblewrap
+          # (flatpak's sandbox helper) builds in.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true   # absent on kernels without the knob
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-flatpak
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Linux .deb
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: --bundles deb
+
+      - name: Repack, checksum and attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEB="$(find target/release/bundle/deb -type f -name '*.deb' -print -quit)"
+          [ -n "$DEB" ] || { echo "::error::tauri build produced no .deb" >&2; exit 1; }
+          ./scripts/build-flatpak.sh "$DEB"
+          for f in dist/*.flatpak; do
+            (cd dist && sha256sum "$(basename "$f")" > "$(basename "$f").sha256")
+          done
+          gh release upload "$GITHUB_REF_NAME" dist/*.flatpak dist/*.flatpak.sha256 --clobber
+
+  # ---------------------------------------------------------------------------
   # Android APK. Signed when an upload keystore is configured via secrets,
   # otherwise the unsigned release APK is attached.
   # ---------------------------------------------------------------------------
