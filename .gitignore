@@ -34,6 +34,12 @@ src-tauri/gen/
 # Server UI build output
 server/ui/dist/
 
+# Local Docker Compose customizations (merged automatically by `docker compose`)
+docker-compose.override.yml
+docker-compose.override.yaml
+compose.override.yml
+compose.override.yaml
+
 # Data
 *.db
 *.db-wal

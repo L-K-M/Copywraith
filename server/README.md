@@ -64,6 +64,19 @@ sudo docker compose up --build
 
 The root compose file exposes port `3742` and persists data in `./copywraith-data`.
 
+Don't edit `docker-compose.yml` for deployment-specific settings: its image tag is bumped on every release, so local edits block `./update.sh` from pulling. Put them in a git-ignored `docker-compose.override.yml` next to it instead; `docker compose` (and `./update.sh`) merge it automatically. For example, to change the host port and data path:
+
+```yaml
+services:
+  copywraith-server:
+    ports: !override
+      - "8080:3742"
+    volumes:
+      - /path/on/host/copywraith-data:/data
+```
+
+`ports` entries are appended, so `!override` (Docker Compose 2.24.4+) is needed to replace the default mapping; `volumes` entries are merged by container path, so the `/data` entry simply replaces the default one. `scripts/redeploy-server-docker.sh` passes an explicit `-f`, which skips the override file.
+
 For repeat deployments, use the helper script:
 
 ```bash
