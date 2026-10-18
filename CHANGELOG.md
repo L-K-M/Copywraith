@@ -83,3 +83,8 @@ Earlier history lives in the commit log and any GitHub releases.
 - argon2 0.6 on the server; Vite 8.3 and Vitest 5 for the admin UI; Vite 8.3
   and @types/node 26.6 for the popup; actions/setup-java 6.0.1. CI, releases
   and the Docker UI build stage use Node 22. (#163)
+- @lkmc/system7-ui 0.3.0 for the popup and the admin UI. Dialog title bars
+  keep their full height instead of being squashed when a dialog is taller
+  than the window, and the shaded popup is 39px tall so the title bar is not
+  clipped. Dialogs keep their 12px margin and Android toasts their position
+  through the library's new safe-area and toast offset tokens.

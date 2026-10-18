@@ -764,13 +764,12 @@
 	}
 
 	/*
-	 * The library pins toasts 20px above the viewport bottom, which on a phone
-	 * covers the status bar and its Sync button. Lift them clear of the bar and
-	 * the gesture area; the toast's fade only animates opacity, so a transform
-	 * does not fight it, and the inline per-toast stacking offsets still apply.
+	 * The library stacks toasts 20px above the bottom safe area, which on a
+	 * phone covers the status bar and its Sync button. Raise the stack by the
+	 * bar's height as well; the library adds the safe-area inset itself.
 	 */
-	.window-frame.mobile :global(.notification) {
-		transform: translateY(calc(-1 * (var(--safe-area-bottom, 0px) + 44px)));
+	.window-frame.mobile {
+		--system7-notification-offset-bottom: 64px;
 	}
 
 	.mobile-header {
