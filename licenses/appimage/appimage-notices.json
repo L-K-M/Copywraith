@@ -33,11 +33,15 @@
       "reason": "Written by linuxdeploy at build time: sources apprun-hooks/ and starts AppRun.wrapped"
     },
     {
-      "path": "usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+      "path": "usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache",
       "reason": "Generated at build time by linuxdeploy-plugin-gtk from the bundled gdk-pixbuf loaders; lists their paths only"
     },
     {
-      "path": "usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
+      "path": "usr/lib/gio/modules/giomodule.cache",
+      "reason": "Generated at build time by linuxdeploy-plugin-gtk (gio-querymodules) from the bundled GIO modules; lists their names only"
+    },
+    {
+      "path": "usr/lib/gtk-3.0/3.0.0/immodules.cache",
       "reason": "Generated at build time by linuxdeploy-plugin-gtk from the bundled GTK input-method modules; lists their paths only"
     },
     {

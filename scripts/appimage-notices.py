@@ -553,6 +553,10 @@ def annotate(appdir, package, overrides, base, root, template, runtime=None, rep
         for ref in sorted(set(re.findall(r"/usr/share/common-licenses/([A-Za-z0-9][A-Za-z0-9.+_-]*)", pkg["text"]))):
             ref = ref.rstrip(".")
             path = resolve(root, f"/usr/share/common-licenses/{ref}")
+            # Some copyright files (Debian's pango1.0) name GPL-2.0 or GPL-3.0, where base-files ships
+            # GPL-2 and GPL-3. Ship that text under the referenced name so the pointer resolves.
+            if (not path or not os.path.isfile(in_root(root, path))) and ref.endswith(".0"):
+                path = resolve(root, f"/usr/share/common-licenses/{ref[:-2]}")
             if not path or not os.path.isfile(in_root(root, path)):
                 errors.append(f"{pkg['name']}: references /usr/share/common-licenses/{ref}, which the build host lacks")
                 continue
