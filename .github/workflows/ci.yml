@@ -29,6 +29,33 @@ jobs:
           node-version: 22
           cache: npm
 
+      # LICENSE is the Unlicense; manifests and packaging metadata must say so.
+      - name: Check license statements
+        run: |
+          node -e '
+            const fs = require("fs");
+            const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+            const statements = {
+              "package.json": read("package.json").license,
+              "package-lock.json": read("package-lock.json").packages[""].license,
+              "server/ui/package.json": read("server/ui/package.json").license,
+              "server/ui/package-lock.json": read("server/ui/package-lock.json").packages[""].license,
+              "src-tauri/tauri.conf.json bundle.license": read("src-tauri/tauri.conf.json").bundle.license
+            };
+            for (const [where, license] of Object.entries(statements)) {
+              if (license !== "Unlicense") {
+                console.error(`::error::${where} says ${license}, but LICENSE is the Unlicense`);
+                process.exitCode = 1;
+              }
+            }
+          '
+          grep -A2 '^\[workspace.package\]' Cargo.toml | grep -qx 'license = "Unlicense"' ||
+            { echo '::error::Cargo.toml [workspace.package] does not declare license = "Unlicense"'; exit 1; }
+          for manifest in crates/*/Cargo.toml server/Cargo.toml src-tauri/Cargo.toml; do
+            grep -qx 'license.workspace = true' "$manifest" ||
+              { echo "::error::$manifest does not inherit the workspace license"; exit 1; }
+          done
+
       - name: Install dependencies (popup frontend)
         run: npm ci
 
