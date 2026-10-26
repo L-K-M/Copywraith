@@ -289,6 +289,15 @@ build_desktop() {
   npm run tauri -- build "${args[@]+"${args[@]}"}" \
     || { FAILED+=("desktop: tauri build failed"); err "desktop: build failed"; return 1; }
   if [ "$(uname -s)" = Linux ] && [ "$DEBUG" -eq 0 ]; then
+    # As in CI: add the bundled system libraries' notices to the AppImage
+    # (needs dpkg and squashfs-tools); check-linux-bundle.sh requires them.
+    local appimage
+    for appimage in target/release/bundle/appimage/*.AppImage; do
+      [ -e "$appimage" ] || continue
+      python3 scripts/appimage-notices.py appimage "$appimage" --package copywraith \
+        --overrides licenses/appimage/appimage-notices.json \
+        || FAILED+=("desktop: appimage-notices.py failed for $appimage (see above)")
+    done
     ./scripts/check-linux-bundle.sh \
       || FAILED+=("desktop: check-linux-bundle.sh failed (see above)")
   fi

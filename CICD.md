@@ -71,6 +71,8 @@ cargo test --workspace
 # Linux bundle (needs the Tauri system dependencies below)
 npm ci
 npm run tauri -- build --bundles deb,appimage
+python3 scripts/appimage-notices.py appimage target/release/bundle/appimage/*.AppImage \
+  --package copywraith --overrides licenses/appimage/appimage-notices.json
 ./scripts/check-linux-bundle.sh
 ```
 
