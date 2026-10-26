@@ -10,10 +10,25 @@ set -euo pipefail
 
 BUNDLE_DIR="${1:-target/release/bundle}"
 EXPECTED_BIN="copywraith"
+# Third-party notices (Tauri bundle files in src-tauri/tauri.conf.json): the
+# deb package name is the doc directory.
+DOC_DIR="usr/share/doc/copywraith"
 
 fail() {
 	echo "::error::$1"
 	exit 1
+}
+
+# The aggregated notices name a crate and the OFL fonts that are certain to ship;
+# Rust-Licenses.html is the toolchain's COPYRIGHT-library.html.
+check_notices() {
+	local root="$1" what="$2"
+	local notices="$root/$DOC_DIR/Third-Party-Notices.txt" std="$root/$DOC_DIR/Rust-Licenses.html"
+	[ -s "$notices" ] || fail "$what does not ship /$DOC_DIR/Third-Party-Notices.txt"
+	[ -s "$std" ] || fail "$what does not ship /$DOC_DIR/Rust-Licenses.html"
+	grep -q '^tauri [0-9]' "$notices" || fail "$what: Third-Party-Notices.txt lists no tauri crate"
+	grep -q 'SIL OPEN FONT LICENSE Version 1.1' "$notices" || fail "$what: Third-Party-Notices.txt lacks the fonts' OFL text"
+	grep -q 'Copyright notices for The Rust Standard Library' "$std" || fail "$what: Rust-Licenses.html is not the Rust standard library notices"
 }
 
 deb=$(find "$BUNDLE_DIR/deb" -name '*.deb' | head -n1)
@@ -35,6 +50,7 @@ desktop=$(find "$workdir/usr/share/applications" -name '*.desktop' | head -n1)
 [ -n "$desktop" ] || fail "The .deb does not ship a .desktop entry"
 grep -qx "Exec=$EXPECTED_BIN" "$desktop" ||
 	fail "The .desktop entry does not exec \`$EXPECTED_BIN\`: $(grep '^Exec=' "$desktop")"
+check_notices "$workdir" "The .deb"
 
 appimage=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage' 2>/dev/null | head -n1 || true)
 if [ -n "$appimage" ]; then

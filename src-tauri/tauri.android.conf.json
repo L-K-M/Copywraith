@@ -1,0 +1,6 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"build": {
+		"beforeBuildCommand": "npm run build && python3 scripts/rust-notices.py -p copywraith-tauri --target aarch64-linux-android --target armv7-linux-androideabi --target i686-linux-android --target x86_64-linux-android --title Copywraith --overrides licenses/rust-overrides.json --out node_modules/.cache/rust-notices.txt --rust-std build/Rust-Licenses.html && npm run notices:app && mkdir -p src-tauri/gen/android/app/src/main/assets/licenses && cp build/Third-Party-Notices.txt build/Rust-Licenses.html src-tauri/gen/android/app/src/main/assets/licenses/"
+	}
+}

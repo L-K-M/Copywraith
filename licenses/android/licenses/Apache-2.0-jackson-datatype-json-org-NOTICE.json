@@ -1,0 +1,8 @@
+{
+  "_comment": "META-INF/NOTICE inside jackson-datatype-json-org 2.15.3; AGP strips it from the APK",
+  "hash": "Apache-2.0-jackson-datatype-json-org-NOTICE",
+  "spdxId": "Apache-2.0",
+  "name": "com.fasterxml.jackson.datatype:jackson-datatype-json-org NOTICE",
+  "url": "",
+  "content": "NOTICE file of com.fasterxml.jackson.datatype:jackson-datatype-json-org:\n\n# Jackson JSON processor\n\nJackson is a high-performance, Free/Open Source JSON processing library.\nIt was originally written by Tatu Saloranta (tatu.saloranta@iki.fi), and has\nbeen in development since 2007.\nIt is currently developed by a community of developers.\n\n## Licensing\n\nJackson components are licensed under Apache (Software) License, version 2.0,\nas per accompanying LICENSE file.\n\n## Credits\n\nA list of contributors may be found from CREDITS file, which is included\nin some artifacts (usually source distributions); but is always available\nfrom the source code management (SCM) system project uses.\n"
+}

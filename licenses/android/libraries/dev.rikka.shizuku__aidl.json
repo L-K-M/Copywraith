@@ -1,0 +1,7 @@
+{
+  "_comment": "Shizuku-API LICENSE (unchanged since ffb074f10cf615ca96f2153b1aee604a50503be0, so it covers 13.1.5); the 13.1.5 POM names it and the aars embed no license file",
+  "uniqueId": "dev.rikka.shizuku:aidl",
+  "licenses": [
+    "MIT-shizuku"
+  ]
+}

@@ -54,9 +54,10 @@ cp -a "$WORK/debroot/usr/." "$WORK/stage/"
 # flatpak exports the desktop file and icons only when they are named after
 # the app id; the bundler names them after the binary instead.
 # Shipped text files (wrappers, launchers, python) hardcode /usr; inside flatpak the prefix is /app.
+# share/doc stays verbatim: license texts must not be rewritten.
 while IFS= read -r f; do
   sed -i '/^#!/!s|/usr/|/app/|g' "$f"
-done < <(grep -rIl '/usr/' "$WORK/stage" 2>/dev/null || true)
+done < <(find "$WORK/stage" -path "$WORK/stage/share/doc" -prune -o -type f -exec grep -Il '/usr/' {} + 2>/dev/null || true)
 while IFS= read -r f; do
   sed -i -e 's|Exec=/usr/bin/|Exec=|g' -e 's|Exec=/opt/[^/]*/bin/|Exec=|g' -e 's|Exec=/app/bin/|Exec=|g' -e '/^TryExec=/d' "$f"
 done < <(find "$WORK/stage/share/applications" -type f -name '*.desktop' 2>/dev/null)
@@ -85,11 +86,11 @@ flatpak-builder --user --install-deps-from=flathub --force-clean \
 
 # Smoke check: the staged tree must leave an executable under
 # /app/bin — catches a failed /usr->/app remap before the bundle
-# ships.
+# ships — and the deb's third-party notices under /app/share/doc.
 COMMAND_NAME="$(sed -n '/^command:[[:space:]]*/{s///;p;q}' "$MANIFEST")"
 [ -n "$COMMAND_NAME" ] || die "no command: key in $MANIFEST"
 flatpak-builder --run "$WORK/build" "$MANIFEST" \
-  sh -c 'bin="/app/bin/$1"; test -x "$bin" || { echo "missing $bin" >&2; ls -l /app/bin >&2; exit 1; }; bad="$(ldd "$bin" 2>/dev/null | grep "not found" || true)"; [ -z "$bad" ] || { printf "unresolved libraries:\n%s\n" "$bad" >&2; exit 1; }' _ "$COMMAND_NAME"
+  sh -c 'bin="/app/bin/$1"; test -x "$bin" || { echo "missing $bin" >&2; ls -l /app/bin >&2; exit 1; }; bad="$(ldd "$bin" 2>/dev/null | grep "not found" || true)"; [ -z "$bad" ] || { printf "unresolved libraries:\n%s\n" "$bad" >&2; exit 1; }; for f in Third-Party-Notices.txt Rust-Licenses.html; do test -s "/app/share/doc/copywraith/$f" || { echo "missing /app/share/doc/copywraith/$f" >&2; exit 1; }; done' _ "$COMMAND_NAME"
 
 VERSION="$(dpkg-deb -f "$DEB" Version)"
 BUNDLE="$ROOT/dist/Copywraith-$VERSION-linux.flatpak"
