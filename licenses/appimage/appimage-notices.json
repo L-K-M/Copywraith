@@ -1,0 +1,99 @@
+{
+  "_comment": [
+    "Overrides for scripts/appimage-notices.py, which adds the notices and source pointers of the",
+    "system libraries Tauri's linuxdeploy step copies into the AppImage. Paths in 'own' and 'files'",
+    "are AppDir-relative fnmatch patterns; license_files are relative to this file. Every other",
+    "bundled file must belong to a package installed on the build runner, or the step fails.",
+    "Text provenance (SHA-256): type2-runtime-LICENSE.txt AppImage/type2-runtime LICENSE at 75849dce7cc37e4319b633df1f116ca895c71a12 (aa154fc9...);",
+    "libfuse-LGPL2.txt libfuse LGPL2.txt at fuse-3.15.0 (dc626520...); squashfuse-LICENSE.txt vasi/squashfuse LICENSE at 0.5.2 (9e909cc8...);",
+    "zstd-LICENSE.txt facebook/zstd LICENSE at v1.5.6 (70552664...); zlib-LICENSE.txt madler/zlib LICENSE at v1.3.2 (e32ff4e0...);",
+    "musl-COPYRIGHT.txt musl COPYRIGHT at v1.2.5 (f9bc4423...); AppImageKit-LICENSE.txt AppImage/AppImageKit LICENSE at",
+    "c7289b6e91331d30959c3ee7f33f0048db29bde1 (9cb22a08...); linuxdeploy-plugin-gtk-LICENSE.txt tauri-apps/linuxdeploy-plugin-gtk",
+    "LICENSE.txt at dda522bce37387f1b853d9095713bfaa924c8423 (0718f6ca...)."
+  ],
+  "own": [
+    {
+      "path": "usr/bin/copywraith",
+      "reason": "Copywraith's own executable; the Rust crates, Rust standard library, npm packages and fonts it embeds are listed in usr/share/doc/copywraith/Third-Party-Notices.txt and Rust-Licenses.html"
+    },
+    {
+      "path": "usr/share/applications/Copywraith.desktop",
+      "reason": "Copywraith's own desktop entry, written by the Tauri bundler"
+    },
+    {
+      "path": "usr/share/icons/hicolor/*/apps/copywraith.png",
+      "reason": "Copywraith's own icons (src-tauri/icons)"
+    },
+    {
+      "path": "Copywraith.png",
+      "reason": "Copywraith's own icon, copied to the AppDir root by linuxdeploy"
+    },
+    {
+      "path": "AppRun",
+      "reason": "Written by linuxdeploy at build time: sources apprun-hooks/ and starts AppRun.wrapped"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+      "reason": "Generated at build time by linuxdeploy-plugin-gtk from the bundled gdk-pixbuf loaders; lists their paths only"
+    },
+    {
+      "path": "usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
+      "reason": "Generated at build time by linuxdeploy-plugin-gtk from the bundled GTK input-method modules; lists their paths only"
+    },
+    {
+      "path": "usr/share/glib-2.0/schemas/gschemas.compiled",
+      "reason": "Compiled at build time by linuxdeploy-plugin-gtk from the bundled GSettings schema files, which are attributed to their packages"
+    }
+  ],
+  "files": [
+    {
+      "path": "AppRun.wrapped",
+      "extra": "AppImageKit AppRun",
+      "reason": "The Tauri bundler downloads AppImageKit's prebuilt AppRun (tauri-apps/binary-releases tag apprun-old) and linuxdeploy keeps it as AppRun.wrapped"
+    },
+    {
+      "path": "apprun-hooks/linuxdeploy-plugin-gtk.sh",
+      "extra": "linuxdeploy-plugin-gtk (Tauri fork)",
+      "reason": "Hook script written by the linuxdeploy-plugin-gtk copy embedded in the Tauri bundler"
+    }
+  ],
+  "packages": [],
+  "extra": [
+    {
+      "name": "AppImage type2-runtime",
+      "version": "{runtime_commit}",
+      "appimage_runtime": true,
+      "license": "MIT AND LGPL-2.1-only AND BSD-2-Clause AND BSD-3-Clause AND Zlib",
+      "source_url": "https://github.com/AppImage/type2-runtime/commit/{runtime_commit}",
+      "sources": [
+        "Statically links libfuse {libfuse_version} (LGPL-2.1, patched by patches/libfuse in the runtime source): https://github.com/libfuse/libfuse/releases/tag/fuse-{libfuse_version}",
+        "Statically links squashfuse {squashfuse_version} (BSD-2-Clause): https://github.com/vasi/squashfuse/releases/tag/{squashfuse_version}",
+        "Statically links musl (MIT), zstd {zstd_version} (BSD-3-Clause) and zlib {zlib_version} (Zlib) from the Alpine Linux release named in the runtime source's scripts/chroot/chroot_build.sh"
+      ],
+      "license_files": [
+        "type2-runtime-LICENSE.txt",
+        "musl-COPYRIGHT.txt",
+        "libfuse-LGPL2.txt",
+        "squashfuse-LICENSE.txt",
+        "zstd-LICENSE.txt",
+        "zlib-LICENSE.txt"
+      ],
+      "reason": "The runtime is the AppImage's ELF header, outside the squashfs, so no host package owns it. The texts match runtime 75849dc, which the v0.3.1 AppImage embeds; the runtime commit pins the exact sources."
+    },
+    {
+      "name": "AppImageKit AppRun",
+      "version": "continuous build mirrored 2021-08-10",
+      "license": "MIT",
+      "source_url": "https://github.com/AppImage/AppImageKit/tree/c7289b6e91331d30959c3ee7f33f0048db29bde1/src",
+      "license_files": ["AppImageKit-LICENSE.txt"],
+      "reason": "AppRun-x86_64 from https://github.com/tauri-apps/binary-releases/releases/tag/apprun-old, a mirror of AppImageKit's continuous release; AppImageKit's LICENSE last changed in c7289b6e"
+    },
+    {
+      "name": "linuxdeploy-plugin-gtk (Tauri fork)",
+      "license": "MIT",
+      "source_url": "https://github.com/tauri-apps/linuxdeploy-plugin-gtk",
+      "license_files": ["linuxdeploy-plugin-gtk-LICENSE.txt"],
+      "reason": "The hook script comes from the plugin copy in the Tauri bundler, forked from linuxdeploy/linuxdeploy-plugin-gtk; LICENSE.txt is unchanged since 2019"
+    }
+  ]
+}

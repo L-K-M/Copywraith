@@ -95,7 +95,8 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            squashfs-tools
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -167,11 +168,28 @@ jobs:
           grep -q 'Microsoft WebView2 SDK loader' target/release/Third-Party-Notices.txt
           7z l target/release/bundle/nsis/*-setup.exe | grep -q 'Third-Party-Notices.txt'
 
+      # linuxdeploy copies GTK, WebKitGTK and other system libraries (many
+      # LGPL) into the AppImage; add their copyright files, exact source
+      # packages and the AppImage runtime's notices. Runs on the build host.
+      - name: Add the AppImage's system library notices
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          for appimage in target/release/bundle/appimage/*.AppImage; do
+            python3 scripts/appimage-notices.py appimage "$appimage" --package copywraith \
+              --overrides licenses/appimage/appimage-notices.json
+          done
+
       # Guards the binary name the Linux shortcut docs depend on, and the
-      # third-party notices in the deb.
+      # third-party notices in the deb and the AppImage.
       - name: Verify the Linux bundle contents
         if: matrix.platform == 'ubuntu-22.04'
         run: ./scripts/check-linux-bundle.sh
+
+      - name: Replace the release AppImage with the annotated one
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/appimage/*.AppImage --clobber
 
       - name: Install and exercise the release deb
         if: matrix.platform == 'ubuntu-22.04'

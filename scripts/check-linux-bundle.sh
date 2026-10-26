@@ -56,6 +56,19 @@ appimage=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage' 2>/dev/null | head -n1
 if [ -n "$appimage" ]; then
 	echo "Checking $appimage"
 	[ -x "$appimage" ] || fail "The AppImage is not executable"
+	# scripts/appimage-notices.py adds the bundled system libraries' copyright
+	# files, their source packages (SOURCES.txt) and the AppImage runtime.
+	appimage_path=$(readlink -f "$appimage")
+	(cd "$workdir" && "$appimage_path" --appimage-extract >/dev/null) ||
+		fail "The AppImage could not be extracted"
+	check_notices "$workdir/squashfs-root" "The AppImage"
+	grep -q 'Bundled system libraries' "$workdir/squashfs-root/$DOC_DIR/Third-Party-Notices.txt" ||
+		fail "The AppImage's notices lack the bundled system libraries; run scripts/appimage-notices.py"
+	grep -q 'type2-runtime' "$workdir/squashfs-root/$DOC_DIR/Third-Party-Notices.txt" ||
+		fail "The AppImage's notices do not describe the AppImage runtime"
+	[ -s "$workdir/squashfs-root/$DOC_DIR/SOURCES.txt" ] || fail "The AppImage does not ship /$DOC_DIR/SOURCES.txt"
+	[ -s "$workdir/squashfs-root/usr/share/doc/libwebkit2gtk-4.1-0/copyright" ] ||
+		fail "The AppImage does not ship WebKitGTK's copyright file"
 fi
 
 echo "Linux bundle checks passed."
