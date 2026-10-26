@@ -201,6 +201,7 @@ pub fn run() {
             commands::reset_sync_cursor,
             commands::shizuku_clipboard_status,
             commands::set_shizuku_clipboard_enabled,
+            commands::open_licenses,
             commands::get_platform,
             commands::hide_popup,
             commands::get_capture_pause,

@@ -10,6 +10,11 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
+        <!-- Settings > Open-source licenses: Maven and Rust/npm notices. -->
+        <activity
+            android:name="ch.lkmc.copywraith.share.LicensesActivity"
+            android:exported="false" />
+
         <activity
             android:name="${applicationId}.MainActivity"
             tools:node="merge">

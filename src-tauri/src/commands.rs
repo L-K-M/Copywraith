@@ -899,6 +899,26 @@ pub async fn shizuku_clipboard_status(
     }
 }
 
+/// Android only: opens the native licenses screen, which also lists the
+/// Maven libraries. Desktop builds show the bundled notices in the web UI.
+#[tauri::command]
+pub async fn open_licenses(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        use copywraith_share_target::ShareTargetExt;
+
+        app.share_target()
+            .open_licenses()
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("The licenses screen is only available on Android.".to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn set_shizuku_clipboard_enabled(
     app: tauri::AppHandle,

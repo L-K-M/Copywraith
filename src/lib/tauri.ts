@@ -144,6 +144,11 @@ export class TauriService {
 		return await invoke('set_shizuku_clipboard_enabled', { enabled });
 	}
 
+	/** Android: open the native open-source licenses screen. */
+	static async openLicenses(): Promise<void> {
+		await invoke('open_licenses');
+	}
+
 	/** Listen for Android Shizuku-staged clipboard entries. */
 	static async onShizukuClipboardStaged(
 		callback: (event: ShizukuClipboardStagedEvent) => void

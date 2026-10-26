@@ -175,6 +175,12 @@ class CopywraithSharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   @Command
+  fun openLicenses(invoke: Invoke) {
+    activity.startActivity(Intent(activity, LicensesActivity::class.java))
+    invoke.resolve()
+  }
+
+  @Command
   fun readShizukuClipboard(invoke: Invoke) {
     val text = try {
       shizukuService?.readCurrentText(activity.packageName).orEmpty()

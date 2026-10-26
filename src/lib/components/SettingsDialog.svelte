@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Button, MovableDialog } from '@lkmc/system7-ui';
+	import LicensesDialog from '$lib/components/LicensesDialog.svelte';
 	import { TauriService } from '$lib/tauri';
 	import { isMobile } from '$lib/util/platform';
 	import { notify } from '$lib/util/notifications';
@@ -28,6 +29,7 @@
 	// How the backend actually bound the shortcuts. Only interesting when it is
 	// not the usual in-process grab (i.e. on a Wayland session).
 	let shortcutStatus = $state<ShortcutStatus | null>(null);
+	let showLicenses = $state(false);
 
 	onMount(() => {
 		void loadSettings();
@@ -164,6 +166,20 @@
 						? `UID ${status.backend_uid}`
 						: null;
 		return backend ? `${status.message} Backend: ${backend}.` : status.message;
+	}
+
+	// Android has a native screen that also lists the Maven libraries; desktop
+	// builds show the notices bundled with the frontend.
+	async function handleOpenLicenses() {
+		if (!$isMobile) {
+			showLicenses = true;
+			return;
+		}
+		try {
+			await TauriService.openLicenses();
+		} catch (e) {
+			notify('error', `Failed to open the licenses screen: ${e}`);
+		}
 	}
 
 	async function handleResetSyncCursor() {
@@ -367,6 +383,16 @@
 			{/if}
 		{/if}
 
+		<div class="section-divider"></div>
+		<div class="section-label">About</div>
+		<div class="field-hint">
+			Copywraith's own code is public domain (Unlicense). Bundled third-party components keep
+			their own licenses.
+		</div>
+		<div class="settings-actions inline-actions">
+			<Button onclick={handleOpenLicenses}>Open-Source Licenses</Button>
+		</div>
+
 		<div class="settings-actions s7-actions">
 			<Button onclick={onclose}>Cancel</Button>
 			<Button variant="primary" onclick={handleSave} disabled={isSaving}>
@@ -392,6 +418,10 @@
 		{@render settingsForm()}
 	{/if}
 </MovableDialog>
+
+{#if showLicenses}
+	<LicensesDialog onclose={() => (showLicenses = false)} />
+{/if}
 
 <style>
 	.settings-form {
