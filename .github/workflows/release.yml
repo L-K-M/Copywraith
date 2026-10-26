@@ -412,6 +412,31 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
+      # Check the image before pushing it; the push below reuses this build's cache.
+      - name: Build the image for checks
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: server/Dockerfile
+          load: true
+          tags: copywraith-server:check
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image's third-party notices
+        run: |
+          docker run --rm --entrypoint sh copywraith-server:check -c '
+            set -e
+            doc=/usr/share/doc/copywraith-server
+            for f in Third-Party-Notices.txt Rust-Licenses.html LICENSE; do test -s "$doc/$f"; done
+            grep -q "^axum [0-9]" "$doc/Third-Party-Notices.txt"
+            grep -q "Third-party notices for Copywraith server UI" "$doc/Third-Party-Notices.txt"
+            grep -q "SIL OPEN FONT LICENSE Version 1.1" "$doc/Third-Party-Notices.txt"
+            grep -q "Copyright notices for The Rust Standard Library" "$doc/Rust-Licenses.html"
+            test -s /ui/dist/Third-Party-Notices.txt
+          '
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:

@@ -276,6 +276,40 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Build the server image like the release does (without pushing) and check
+  # the notices inside it.
+  server-image:
+    name: Server Docker image
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the server image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: server/Dockerfile
+          load: true
+          tags: copywraith-server:check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image's third-party notices
+        run: |
+          docker run --rm --entrypoint sh copywraith-server:check -c '
+            set -e
+            doc=/usr/share/doc/copywraith-server
+            for f in Third-Party-Notices.txt Rust-Licenses.html LICENSE; do test -s "$doc/$f"; done
+            grep -q "^axum [0-9]" "$doc/Third-Party-Notices.txt"
+            grep -q "Third-party notices for Copywraith server UI" "$doc/Third-Party-Notices.txt"
+            grep -q "SIL OPEN FONT LICENSE Version 1.1" "$doc/Third-Party-Notices.txt"
+            grep -q "Copyright notices for The Rust Standard Library" "$doc/Rust-Licenses.html"
+            test -s /ui/dist/Third-Party-Notices.txt
+          '
+
   # Repack the same .deb as a Flatpak bundle — identical files under /app,
   # so this exercises the packaging path without a second toolchain build.
   linux-flatpak:

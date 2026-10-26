@@ -5,12 +5,16 @@ WORKDIR /build/server/ui
 COPY server/ui/package*.json ./
 RUN npm ci
 
+# The UI build writes dist/Third-Party-Notices.txt with the shared generator
+# and font license texts from the repository root.
+COPY scripts/bundled-modules.mjs scripts/third-party-notices.mjs /build/scripts/
+COPY licenses/fonts/ /build/licenses/fonts/
 COPY server/ui/ ./
 RUN npm run build
 
 FROM rust:1.98-slim-bookworm AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev python3 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
@@ -26,7 +30,17 @@ COPY src-tauri/Cargo.toml src-tauri/Cargo.toml
 COPY src-tauri/src/lib.rs src-tauri/src/lib.rs
 
 # Build only the server (skip src-tauri which needs Tauri dependencies)
-RUN cargo build --release --package copywraith-server
+RUN cargo build --release --locked --package copywraith-server
+
+# Third-party notices for the image: the server's Rust crates, then the UI
+# bundle's npm packages and fonts, plus the Rust standard library's notices.
+COPY scripts/rust-notices.py scripts/
+COPY licenses/ licenses/
+COPY --from=ui-builder /build/server/ui/dist/Third-Party-Notices.txt /tmp/ui-notices.txt
+RUN python3 scripts/rust-notices.py -p copywraith-server --target host --title "Copywraith server" \
+      --overrides licenses/rust-overrides.json --append /tmp/ui-notices.txt \
+      --out /notices/Third-Party-Notices.txt --rust-std /notices/Rust-Licenses.html \
+ && test -s /notices/Third-Party-Notices.txt && test -s /notices/Rust-Licenses.html
 
 FROM debian:bookworm-slim
 
@@ -34,6 +48,9 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 COPY --from=builder /build/target/release/copywraith-server /usr/local/bin/copywraith-server
 COPY --from=ui-builder /build/server/ui/dist /ui/dist
+# Debian packages keep their notices in /usr/share/doc/*/copyright.
+COPY --from=builder /notices/ /usr/share/doc/copywraith-server/
+COPY LICENSE /usr/share/doc/copywraith-server/LICENSE
 
 ENV COPYWRAITH_DATA_DIR=/data
 ENV PORT=3742
