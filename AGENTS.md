@@ -170,3 +170,20 @@ may waive review; report that waiver rather than claiming review passed.
 
 <!-- shared-rules:end -->
 
+## Licensing
+
+- Copywraith's own code is the Unlicense (`LICENSE`). Keep license
+  statements in the Cargo and npm manifests, `src-tauri/tauri.conf.json` and
+  the README consistent with it; the CI `frontend` and `rust` jobs check them.
+- Before adding a dependency, vendored file or bundled asset (fonts, images,
+  icons, data), confirm its license allows redistribution in our artifacts.
+  Never vendor third-party code without its license file.
+- Every artifact ships `Third-Party-Notices.txt` and `Rust-Licenses.html`,
+  built from the real dependency set: `scripts/rust-notices.py` (crates,
+  overrides in `licenses/rust-overrides.json`), `scripts/third-party-notices.mjs`
+  (npm packages and fonts, `third-party-notices.jsonc` and
+  `server/ui/third-party-notices.jsonc`), AboutLibraries via
+  `scripts/add-android-notices.sh` (Maven, texts in `licenses/android/`) and
+  `scripts/appimage-notices.py` (AppImage system libraries). Each fails on a
+  component without license text; record gaps as explicit overrides with a
+  reason. Keep the notices checks in `ci.yml` and `release.yml` passing.
