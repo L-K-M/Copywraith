@@ -77,6 +77,14 @@ impl<R: Runtime> ShareTarget<R> {
         }
     }
 
+    /// Opens the Android open-source licenses screen (LicensesActivity).
+    #[cfg(target_os = "android")]
+    pub fn open_licenses(&self) -> tauri::Result<()> {
+        self.handle
+            .run_mobile_plugin("openLicenses", ())
+            .map_err(Into::into)
+    }
+
     pub fn stop_shizuku_clipboard_listener(&self) -> tauri::Result<ShizukuClipboardStatus> {
         #[cfg(target_os = "android")]
         {

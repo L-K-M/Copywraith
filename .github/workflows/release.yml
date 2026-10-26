@@ -95,7 +95,9 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            squashfs-tools \
+            libarchive-tools
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -133,10 +135,62 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
-      # Guards the binary name the Linux shortcut docs depend on.
+      # The release is still a draft: tauri-action uploaded the bundles above,
+      # and publish-release waits for these checks.
+      - name: Verify bundled notices (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          bundle="target/${{ matrix.rust-targets }}/release/bundle"
+          app="$bundle/macos/Copywraith.app"
+          test -s "$app/Contents/Resources/Third-Party-Notices.txt"
+          test -s "$app/Contents/Resources/Rust-Licenses.html"
+          grep -q '^tauri [0-9]' "$app/Contents/Resources/Third-Party-Notices.txt"
+          grep -q 'SIL OPEN FONT LICENSE Version 1.1' "$app/Contents/Resources/Third-Party-Notices.txt"
+          grep -q 'Copyright notices for The Rust Standard Library' "$app/Contents/Resources/Rust-Licenses.html"
+          # tauri-action uploads the .app as a tarball when it made one.
+          for archive in "$bundle"/macos/*.app.tar.gz; do
+            [ -e "$archive" ] || continue
+            tar -tzf "$archive" | grep -q 'Copywraith.app/Contents/Resources/Third-Party-Notices.txt'
+          done
+          mnt="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$bundle"/dmg/*.dmg >/dev/null
+          test -s "$mnt/Copywraith.app/Contents/Resources/Third-Party-Notices.txt"
+          hdiutil detach "$mnt" >/dev/null
+
+      # tauri-build stages bundle.resources next to the binary for the MSI and
+      # NSIS installers (src-tauri/tauri.windows.conf.json).
+      - name: Verify bundled notices (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          test -s target/release/Third-Party-Notices.txt
+          test -s target/release/Rust-Licenses.html
+          grep -q '^webview2-com-sys [0-9]' target/release/Third-Party-Notices.txt
+          grep -q 'Microsoft WebView2 SDK loader' target/release/Third-Party-Notices.txt
+          7z l target/release/bundle/nsis/*-setup.exe | grep -q 'Third-Party-Notices.txt'
+
+      # linuxdeploy copies GTK, WebKitGTK and other system libraries (many
+      # LGPL) into the AppImage; add their copyright files, exact source
+      # packages and the AppImage runtime's notices. Runs on the build host.
+      - name: Add the AppImage's system library notices
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          for appimage in target/release/bundle/appimage/*.AppImage; do
+            python3 scripts/appimage-notices.py appimage "$appimage" --package copywraith \
+              --overrides licenses/appimage/appimage-notices.json
+          done
+
+      # Guards the binary name the Linux shortcut docs depend on, and the
+      # third-party notices in the deb, the rpm and the AppImage.
       - name: Verify the Linux bundle contents
         if: matrix.platform == 'ubuntu-22.04'
         run: ./scripts/check-linux-bundle.sh
+
+      - name: Replace the release AppImage with the annotated one
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/appimage/*.AppImage --clobber
 
       - name: Install and exercise the release deb
         if: matrix.platform == 'ubuntu-22.04'
@@ -246,6 +300,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
+      # scripts/android_notices.py needs Python 3.11+ (tomllib); ubuntu-22.04 has 3.10.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
       - name: Install Android NDK
         run: bash scripts/install-android-ndk.sh
 
@@ -264,6 +324,10 @@ jobs:
 
       - name: Initialize Android project
         run: npm run tauri -- android init --ci
+
+      # gen/android is regenerated above, so add the license plugin each time.
+      - name: Add the Android notices plugin
+        run: bash scripts/add-android-notices.sh
 
       - name: Build Android APK
         run: npm run tauri -- android build --ci --apk --target aarch64 armv7 i686 x86_64
@@ -303,6 +367,20 @@ jobs:
           rm -f keystore.jks "$ALIGNED"
           echo "apk=$OUT" >> "$GITHUB_OUTPUT"
 
+      # Maven library definitions (res/raw/aboutlibraries.json) and the Rust,
+      # npm and font notices (assets/licenses) must be inside the published
+      # APK. scan reads the resolved jars and aars from this job's Gradle cache
+      # and downloads the ones a restored cache lacks from the build's repositories.
+      - name: Check third-party notices in the APK
+        env:
+          APK: ${{ steps.sign.outputs.apk }}
+        run: |
+          python3 -I scripts/android_notices.py check "$APK" --config licenses/android/android-notices.toml \
+            --text-entry assets/licenses/Third-Party-Notices.txt
+          python3 -I scripts/android_notices.py scan "$APK" --config licenses/android/android-notices.toml \
+            --fetch-from https://dl.google.com/dl/android/maven2 \
+            --fetch-from https://repo.maven.apache.org/maven2
+
       - name: Upload APK to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -337,6 +415,31 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      # Check the image before pushing it; the push below reuses this build's cache.
+      - name: Build the image for checks
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: server/Dockerfile
+          load: true
+          tags: copywraith-server:check
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image's third-party notices
+        run: |
+          docker run --rm --entrypoint sh copywraith-server:check -c '
+            set -e
+            doc=/usr/share/doc/copywraith-server
+            for f in Third-Party-Notices.txt Rust-Licenses.html LICENSE; do test -s "$doc/$f"; done
+            grep -q "^axum [0-9]" "$doc/Third-Party-Notices.txt"
+            grep -q "Third-party notices for Copywraith server UI" "$doc/Third-Party-Notices.txt"
+            grep -q "SIL OPEN FONT LICENSE Version 1.1" "$doc/Third-Party-Notices.txt"
+            grep -q "Copyright notices for The Rust Standard Library" "$doc/Rust-Licenses.html"
+            test -s /ui/dist/Third-Party-Notices.txt
+          '
 
       - name: Build and push
         uses: docker/build-push-action@v7

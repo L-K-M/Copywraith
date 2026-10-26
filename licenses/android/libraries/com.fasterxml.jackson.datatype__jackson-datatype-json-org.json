@@ -1,0 +1,7 @@
+{
+  "_comment": "META-INF/NOTICE inside jackson-datatype-json-org 2.15.3; AGP strips it from the APK",
+  "uniqueId": "com.fasterxml.jackson.datatype:jackson-datatype-json-org",
+  "licenses": [
+    "Apache-2.0-jackson-datatype-json-org-NOTICE"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "_comment": "META-INF/NOTICE inside jackson-core 2.15.3; AGP strips it from the APK; META-INF/FastDoubleParser-NOTICE inside jackson-core 2.15.3 (shaded FastDoubleParser); AGP strips it from the APK; META-INF/bigint-LICENSE inside jackson-core 2.15.3: the shaded FastDoubleParser includes Tim Buktu's bigint code (BSD-2-Clause); AGP strips the file from the APK",
+  "uniqueId": "com.fasterxml.jackson.core:jackson-core",
+  "licenses": [
+    "Apache-2.0-jackson-core-FastDoubleParser-NOTICE",
+    "Apache-2.0-jackson-core-NOTICE",
+    "BSD-2-Clause-jackson-core-bigint"
+  ]
+}

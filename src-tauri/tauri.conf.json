@@ -7,7 +7,7 @@
 	"build": {
 		"beforeDevCommand": "npm run dev",
 		"devUrl": "http://localhost:1420",
-		"beforeBuildCommand": "npm run build",
+		"beforeBuildCommand": "npm run build && npm run notices:rust && npm run notices:app",
 		"frontendDist": "../build"
 	},
 	"app": {
@@ -39,13 +39,26 @@
 			"icons/icon.ico"
 		],
 		"category": "Utility",
+		"license": "Unlicense",
+		"copyright": "Public domain (Unlicense). Bundled components keep their own licenses.",
 		"shortDescription": "Local-first clipboard manager",
 		"longDescription": "Copywraith is a local-first clipboard manager with optional encrypted sync across devices. On KDE/Linux it lives in the system tray, captures clipboard history, and pastes entries back (via ydotool on Wayland, with a copy-and-notify fallback).",
 		"android": {
 			"minSdkVersion": 24
 		},
+		"macOS": {
+			"files": {
+				"Resources/Third-Party-Notices.txt": "../build/Third-Party-Notices.txt",
+				"Resources/Rust-Licenses.html": "../build/Rust-Licenses.html"
+			}
+		},
 		"linux": {
 			"deb": {
+				"files": {
+					"/usr/share/doc/copywraith/copyright": "../node_modules/.cache/copyright",
+					"/usr/share/doc/copywraith/Third-Party-Notices.txt": "../build/Third-Party-Notices.txt",
+					"/usr/share/doc/copywraith/Rust-Licenses.html": "../build/Rust-Licenses.html"
+				},
 				"depends": [
 					"libwebkit2gtk-4.1-0",
 					"libgtk-3-0",
@@ -55,6 +68,19 @@
 					"ydotool",
 					"libnotify-bin"
 				]
+			},
+			"rpm": {
+				"files": {
+					"/usr/share/doc/copywraith/Third-Party-Notices.txt": "../build/Third-Party-Notices.txt",
+					"/usr/share/doc/copywraith/Rust-Licenses.html": "../build/Rust-Licenses.html"
+				}
+			},
+			"appimage": {
+				"files": {
+					"/usr/share/doc/copywraith/copyright": "../node_modules/.cache/copyright",
+					"/usr/share/doc/copywraith/Third-Party-Notices.txt": "../build/Third-Party-Notices.txt",
+					"/usr/share/doc/copywraith/Rust-Licenses.html": "../build/Rust-Licenses.html"
+				}
 			}
 		}
 	}

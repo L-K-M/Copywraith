@@ -1,0 +1,176 @@
+{
+  "comment": "Overrides for scripts/rust-notices.py: crates that publish no license text (or no license field) and code outside the crate graph. Every copyright line was checked against the upstream repository; canonical texts in spdx/ are SPDX License List v3.29.0. Where a crate offers several licenses and publishes none, Apache-2.0 is chosen because its text needs no copyright line. Target-specific entries print 'matched no crate' notes on other targets.",
+  "spdx_dir": "spdx",
+  "crates": [
+    {
+      "name": "alloc-stdlib",
+      "version": "0.3.0",
+      "spdx": "BSD-3-Clause",
+      "copyright": ["Copyright (c) 2016 Dropbox, Inc.", "All rights reserved."],
+      "reason": "Crate publishes no license file; Cargo.toml says BSD-3-Clause; copyright lines from LICENSE at the root of github.com/dropbox/rust-alloc-no-stdlib, which holds this crate"
+    },
+    {
+      "name": "dlopen2",
+      "version": "0.8.2",
+      "spdx": "MIT",
+      "copyright": [
+        "Copyright (c) 2017 Szymon Wieloch",
+        "Copyright (C) 2019 Ahmed Masud <ahmed.masud@saf.ai>",
+        "Copyright (C) 2022 OpenByte <development.openbyte@gmail.com>"
+      ],
+      "reason": "Linux only. Crate publishes no license file; Cargo.toml says MIT; copyright lines from LICENSE in github.com/OpenByteDev/dlopen2 (no 0.8.2 tag; its holders match the crate's authors)"
+    },
+    {
+      "name": "fax",
+      "version": "0.2.6",
+      "spdx": "MIT",
+      "copyright": "Copyright © 2021 The pdf-rs contributers.",
+      "reason": "Crate publishes no license file; Cargo.toml says MIT; copyright line verbatim from LICENSE in github.com/pdf-rs/fax"
+    },
+    {
+      "name": "siphasher",
+      "version": "1.0.2",
+      "spdx": "MIT",
+      "copyright": ["Copyright 2012-2016 The Rust Project Developers.", "Copyright 2016-2026 Frank Denis."],
+      "reason": "The crate's COPYING only points at the MIT and Apache-2.0 texts it does not publish; MIT chosen; both copyright lines from that COPYING file (1.0.4 publishes the texts)"
+    },
+    {
+      "name": "libappindicator-sys",
+      "spdx": "Apache-2.0",
+      "reason": "Linux only. Crate publishes no license file; 'Apache-2.0 OR MIT' per Cargo.toml; Apache-2.0 chosen"
+    },
+    {
+      "name": "profiling",
+      "spdx": "Apache-2.0",
+      "reason": "Crate publishes no license file; 'MIT OR Apache-2.0' per Cargo.toml; Apache-2.0 chosen"
+    },
+    {
+      "name": "zune-inflate",
+      "spdx": "Apache-2.0",
+      "reason": "Crate publishes no license file; 'MIT OR Apache-2.0 OR Zlib' per Cargo.toml; Apache-2.0 chosen"
+    },
+    {
+      "name": "tauri-nspanel",
+      "license": "MIT OR Apache-2.0",
+      "reason": "macOS only. Git dependency without a license field; its repository root holds LICENSE_MIT and LICENSE_APACHE-2.0 (collected automatically) and its README says 'MIT or MIT/Apache 2.0'"
+    },
+    {
+      "name": "block",
+      "version": "0.1.6",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Steven Sheldon",
+      "reason": "macOS only. Crate and github.com/SSheldon/rust-block publish no license file; Cargo.toml says MIT; holder from the crate's authors"
+    },
+    {
+      "name": "malloc_buf",
+      "version": "0.0.6",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2020 Steven Sheldon",
+      "reason": "macOS only. Crate publishes no license file; Cargo.toml says MIT; copyright line from LICENSE in github.com/SSheldon/malloc_buf"
+    },
+    {
+      "name": "objc-foundation",
+      "version": "0.1.1",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Steven Sheldon",
+      "reason": "macOS only. Crate and github.com/SSheldon/rust-objc-foundation publish no license file; Cargo.toml says MIT; holder from the crate's authors"
+    },
+    {
+      "name": "objc_id",
+      "version": "0.1.1",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Steven Sheldon",
+      "reason": "macOS only. Crate and github.com/SSheldon/rust-objc-id publish no license file; Cargo.toml says MIT; holder from the crate's authors"
+    },
+    {
+      "name": "objc2",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Mads Marquart",
+      "reason": "macOS only. Crate publishes no license file; MIT per Cargo.toml and LICENSE.md in github.com/madsmtm/objc2; holder from the crate's authors and that repository's later LICENSE-MIT.txt"
+    },
+    {
+      "name": "objc2-encode",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Mads Marquart",
+      "reason": "macOS only. As objc2: MIT-only per LICENSE.md in github.com/madsmtm/objc2; holder from the crate's authors"
+    },
+    {
+      "name": "objc2-foundation",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Mads Marquart",
+      "reason": "macOS only. As objc2: MIT-only per LICENSE.md in github.com/madsmtm/objc2; holder from that repository's LICENSE-MIT.txt"
+    },
+    {
+      "name": "block2",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) Mads Marquart",
+      "reason": "macOS only. As objc2: MIT-only per LICENSE.md in github.com/madsmtm/objc2; holder from the crate's authors"
+    },
+    {
+      "name": "objc2-[acqw]*",
+      "spdx": "Apache-2.0",
+      "note": "Generated from Apple SDK headers; see the 'Apple SDKs' section of LICENSE.md in github.com/madsmtm/objc2.",
+      "reason": "macOS only. objc2-app-kit, -cloud-kit, -core-*, -quartz-core and -web-kit publish no license file; all are 'Zlib OR Apache-2.0 OR MIT' per Cargo.toml and the upstream LICENSE.md; Apache-2.0 chosen"
+    },
+    {
+      "name": "objc2-exception-helper",
+      "spdx": "Apache-2.0",
+      "reason": "macOS only. Crate publishes no license file; 'Zlib OR Apache-2.0 OR MIT'; Apache-2.0 chosen"
+    },
+    {
+      "name": "dispatch2",
+      "spdx": "Apache-2.0",
+      "reason": "macOS only. Crate publishes no license file; 'Zlib OR Apache-2.0 OR MIT'; Apache-2.0 chosen"
+    },
+    {
+      "name": "clipboard-win",
+      "spdx": "BSL-1.0",
+      "reason": "Windows only. Crate publishes no license file; BSL-1.0 per Cargo.toml and LICENSE in github.com/DoumanAsh/clipboard-win, whose text has no copyright line"
+    },
+    {
+      "name": "webview2-com",
+      "version": "0.39.1",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2021 Bill Avery",
+      "reason": "Windows only. Crate publishes no license file; Cargo.toml says MIT; copyright line from LICENSE in github.com/wravery/webview2-rs"
+    },
+    {
+      "name": "webview2-com-sys",
+      "version": "0.39.1",
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2021 Bill Avery",
+      "reason": "Windows only. As webview2-com. The crate also links Microsoft's prebuilt WebView2LoaderStatic.lib, listed under extra"
+    },
+    {
+      "name": "ndk",
+      "spdx": "Apache-2.0",
+      "reason": "Android only. Crate publishes no license file; 'MIT OR Apache-2.0' per Cargo.toml; Apache-2.0 chosen"
+    },
+    {
+      "name": "ndk-context",
+      "spdx": "Apache-2.0",
+      "reason": "Android only. Crate publishes no license file; 'MIT OR Apache-2.0' per Cargo.toml; Apache-2.0 chosen"
+    },
+    {
+      "name": "ndk-sys",
+      "spdx": "Apache-2.0",
+      "reason": "Android only. Crate publishes no license file; 'MIT OR Apache-2.0' per Cargo.toml; Apache-2.0 chosen"
+    },
+    {
+      "name": "selectors",
+      "spdx": "MPL-2.0",
+      "reason": "Android only (wry -> dom_query). Crate publishes no license file; MPL-2.0 per Cargo.toml. The Source Code Form line is generated from the crates.io source"
+    }
+  ],
+  "extra": [
+    {
+      "name": "Microsoft WebView2 SDK loader (WebView2LoaderStatic.lib)",
+      "version": "1.0.3800.47",
+      "license": "BSD-3-Clause",
+      "targets": ["*-pc-windows-msvc"],
+      "files": ["webview2/LICENSE.txt", "webview2/NOTICE.txt"],
+      "source_url": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47",
+      "reason": "webview2-com-sys 0.39.1 statically links Microsoft's prebuilt WebView2LoaderStatic.lib (src/lib.rs, kind = \"static\") from the Microsoft.Web.WebView2 1.0.3800.47 NuGet package (WEBVIEW2_VERSION in its update-bindings tool). LICENSE.txt and NOTICE.txt are copied verbatim from that package (nupkg sha256 56c9f26bdd07916a2d1949fb58a5c7e434dfa1173577dca879206050c4e718db)"
+    }
+  ]
+}

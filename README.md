@@ -76,3 +76,32 @@ scripts/                  Android setup helpers and server deployment scripts
 - [Encryption design](ENCRYPTION.md)
 - [API notes](API.md)
 - [Sensitive data notes](SENSITIVE.md)
+
+## License
+
+Copywraith's own code is released under the [Unlicense](LICENSE). The builds
+bundle third-party code that keeps its own licenses: the desktop and Android
+apps bundle Tauri and other Rust crates, the Rust standard library, Svelte,
+markdown-it and other npm packages, and the Geneva 9.1 and Sysfont fonts
+(SIL Open Font License 1.1). The Windows app adds Microsoft's WebView2 loader;
+the Android app adds AndroidX, Material Components, Kotlin, Jackson and Shizuku
+libraries; the AppImage adds GTK, WebKitGTK, GLib and other Ubuntu system
+libraries, many of them under the LGPL. The server image bundles the server's
+Rust crates, the Rust standard library, and the admin UI's npm packages and
+fonts. Their notices ship inside each artifact as `Third-Party-Notices.txt` and
+`Rust-Licenses.html`:
+
+- macOS: `Copywraith.app/Contents/Resources/`
+- Linux packages: `/usr/share/doc/copywraith/` (Flatpak:
+  `/app/share/doc/copywraith/`), next to a Debian `copyright` file in the deb,
+  Flatpak and AppImage. The AppImage also carries each bundled system
+  library's `copyright` file and `SOURCES.txt`, which names the exact Ubuntu
+  source packages.
+- Windows: the installation directory
+- Desktop and Android apps: Settings > Open-Source Licenses
+- Docker image: `/usr/share/doc/copywraith-server/`, with
+  `Third-Party-Notices.txt` also served at the admin UI's root. System packages
+  from the base image keep their notices in `/usr/share/doc/*/copyright`.
+
+MPL-2.0 crates (option-ext, plus cssparser, selectors and dtoa-short on
+Android) are used unmodified; the notices give the location of their source.

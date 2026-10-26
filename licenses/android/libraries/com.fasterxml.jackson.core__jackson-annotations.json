@@ -1,0 +1,7 @@
+{
+  "_comment": "META-INF/NOTICE inside jackson-annotations 2.15.3; AGP strips it from the APK",
+  "uniqueId": "com.fasterxml.jackson.core:jackson-annotations",
+  "licenses": [
+    "Apache-2.0-jackson-annotations-NOTICE"
+  ]
+}

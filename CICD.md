@@ -19,7 +19,8 @@ Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Inst
 
 - `npm ci`, `npm run check` (TS7), and `npm run check:ts6` in both frontends.
 - `npm run test:frontend` at the root and `npm test` in `server/ui`.
-- `npm run build` in both frontends.
+- `npm run build` in both frontends. Each build also writes `Third-Party-Notices.txt` (see "Third-party notices" below); the job checks it and the banner comment in every emitted chunk.
+- Checks that the manifests and Tauri bundle metadata declare the Unlicense, like `LICENSE`.
 
 **Native clipboard (`clipboard.yml`)** — runs the display-dependent `native_clipboard` tests in `copywraith-server` with `--ignored`. Linux uses `xvfb-run`; macOS and Windows use the disposable runner's native clipboard. These tests cover the adapter, not the full desktop application.
 
@@ -28,15 +29,19 @@ Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Inst
 - Installs Tauri's Linux system dependencies (`libwebkit2gtk-4.1-dev`, `build-essential`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, and others) — the desktop backend in `src-tauri` links against the system webview and GTK.
 - Builds the frontend first (`npm ci && npm run build`) because `src-tauri` embeds it via `tauri::generate_context!`, so `build/` must exist before any cargo command.
 - `cargo fmt --all --check` — formatting must be clean.
+- `scripts/rust-notices.py --check` for every target the release ships (desktop, Android, server) — every linked crate needs its license text, and the workspace members must declare the Unlicense.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clippy warnings are treated as errors.
 - `cargo test --workspace` — run the test suite.
 
-**Linux bundle (deb + AppImage)** — builds the desktop bundle the release workflow ships, using the same `tauri-apps/tauri-action@v1` action, so packaging breakage surfaces on a pull request instead of at tag time:
+**Linux bundle (deb, rpm, AppImage)** — builds the desktop bundles the release workflow ships, using the same `tauri-apps/tauri-action@v1` action, so packaging breakage surfaces on a pull request instead of at tag time:
 
 - Installs the same Tauri system dependencies as the Rust job.
-- `tauri build --bundles deb,appimage` (the action runs `npm run build` first via `beforeBuildCommand`).
-- `scripts/check-linux-bundle.sh` — asserts the `.deb` installs `/usr/bin/copywraith`, ships a `copywraith.png` icon, and execs `copywraith` from its desktop entry. The Ubuntu and KDE docs tell users to bind `copywraith --toggle` to a global shortcut, and the app writes `Icon=copywraith` into its autostart entry, so a renamed binary would silently break both. The binary name comes from `mainBinaryName` in `src-tauri/tauri.conf.json`.
+- `tauri build --bundles deb,rpm,appimage` (the action runs `npm run build` and the notices scripts first via `beforeBuildCommand`).
+- `scripts/appimage-notices.py` adds the copyright files and exact source packages of the system libraries linuxdeploy copied into the AppImage, plus the AppImage runtime's notices.
+- `scripts/check-linux-bundle.sh` — asserts the `.deb` installs `/usr/bin/copywraith`, ships a `copywraith.png` icon, execs `copywraith` from its desktop entry, and that the `.deb`, `.rpm` and AppImage ship the third-party notices (the `.rpm` is unpacked with `bsdtar` from `libarchive-tools`). The Ubuntu and KDE docs tell users to bind `copywraith --toggle` to a global shortcut, and the app writes `Icon=copywraith` into its autostart entry, so a renamed binary would silently break both. The binary name comes from `mainBinaryName` in `src-tauri/tauri.conf.json`.
 - Uploads the `.deb` and AppImage as a build artifact (7-day retention).
+
+**Server Docker image** — builds `server/Dockerfile` like the release (without pushing) and checks the notices in `/usr/share/doc/copywraith-server/`.
 
 **Linux Flatpak bundle** — repacks the `linux-bundle` job's `.deb` under flatpak's `/app` prefix via `scripts/build-flatpak.sh` (GNOME runtime; X11 socket, not Wayland, because clipboard capture / global shortcut / XTest paste are X11 protocols). Uploads `Copywraith-<version>-linux.flatpak` plus a `.sha256` (7-day retention). The release workflow builds its own `.deb` and attaches the same bundle to the GitHub Release. Known sandbox limitation: the tray's "start on login" toggle writes `~/.config/autostart/copywraith.desktop`, which the sandbox redirects to `~/.var/app/ch.lkmc.copywraith/config/` — and its `Exec=copywraith` would not resolve on the host regardless. Autostart does not work in the Flatpak build; the host session never sees the entry.
 
@@ -66,6 +71,8 @@ cargo test --workspace
 # Linux bundle (needs the Tauri system dependencies below)
 npm ci
 npm run tauri -- build --bundles deb,appimage
+python3 scripts/appimage-notices.py appimage target/release/bundle/appimage/*.AppImage \
+  --package copywraith --overrides licenses/appimage/appimage-notices.json
 ./scripts/check-linux-bundle.sh
 ```
 
@@ -111,6 +118,12 @@ The workflow first runs CI (including Ubuntu runtime checks) and validates that 
 3. **Android APK** — sets up JDK 17, the Android SDK, NDK `26.1.10909125`, and the four Android Rust targets, then runs `tauri android init` / `android build` to produce a universal APK. The APK is **signed only when an upload keystore is provided via secrets**; otherwise the unsigned release APK is attached and a warning is logged. The asset is named `copywraith-<tag>-android-universal.apk` (or `…-unsigned.apk`) and uploaded with `gh release upload`.
 4. **Server Docker image** — builds `server/Dockerfile` and pushes to GHCR at `ghcr.io/<owner>/copywraith-server`, tagged with the semver `{{version}}`, `{{major}}.{{minor}}`, and `latest` (the `latest` tag is skipped for prereleases).
 5. **Publish release** — once all build jobs succeed, the draft is flipped to published.
+
+Every build job checks the third-party notices inside what it publishes before the draft can be published: the macOS `.app` and `.dmg`, the Windows installer resources, the deb, rpm and AppImage (the annotated AppImage replaces the one `tauri-action` uploaded), the APK (`scripts/add-android-notices.sh` adds the AboutLibraries plugin after `tauri android init`; `scripts/android_notices.py` checks the APK), and the server image before it is pushed.
+
+### Third-party notices
+
+Every artifact ships `Third-Party-Notices.txt` and `Rust-Licenses.html` (see the README's License section for where). `src-tauri/tauri.conf.json`'s `beforeBuildCommand` writes them into `build/` after the frontend build: `scripts/rust-notices.py` for the crates of the target being built and the toolchain's `COPYRIGHT-library.html`, then `scripts/third-party-notices.mjs` for the bundled npm packages and fonts. `tauri.windows.conf.json` and `tauri.android.conf.json` adjust the command per platform; `tauri.linux.conf.json` adds `npm run notices:deb`, which writes the Debian `copyright` file (DEP-5) for the deb and the AppImage with `scripts/deb-copyright.py` from `licenses/linux/copyright.json`. The generators fail on a component without license text; overrides live in `licenses/`.
 
 **Signing/notarization caveats:** the **macOS bundles are unsigned and un-notarized by design** — `release.yml` deliberately does not pass any `APPLE_*` secrets to `tauri-action`. macOS will warn on first launch. Users approve the app under **System Settings → Privacy & Security → Open Anyway** (which appears for about an hour after the first blocked launch attempt), or clear the quarantine attribute. The older Control-click → Open bypass no longer works — Apple removed it in macOS Sequoia (15) — so don't document it; see [`README.mac.md`](README.mac.md) for the steps given to users.
 

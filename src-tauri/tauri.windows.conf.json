@@ -1,0 +1,12 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"build": {
+		"beforeBuildCommand": "npm run build && python scripts/rust-notices.py -p copywraith-tauri --title Copywraith --overrides licenses/rust-overrides.json --out node_modules/.cache/rust-notices.txt --rust-std build/Rust-Licenses.html && npm run notices:app"
+	},
+	"bundle": {
+		"resources": {
+			"../build/Third-Party-Notices.txt": "Third-Party-Notices.txt",
+			"../build/Rust-Licenses.html": "Rust-Licenses.html"
+		}
+	}
+}

@@ -1,0 +1,24 @@
+{
+  // Overrides for scripts/third-party-notices.mjs (frontend notices). Paths are
+  // relative to this file; every entry needs a reason.
+  "packages": {
+    "@lkmc/system7-ui": {
+      "reason": "The UI kit's LICENSE (Unlicense) covers its code only. Its two fonts, which Vite emits into the build, are OFL-1.1 per their name tables and upstream pages; the kit's README says they keep their own licenses. OFL texts: the canonical template from https://openfontlicense.org/documents/OFL.txt with each font's copyright line from its name table.",
+      "fonts": true,
+      "files": ["licenses/fonts/Geneva91-OFL.txt", "licenses/fonts/Sysfont-OFL.txt"],
+      "note": "Fonts: Geneva 9.1 (Kelsey Higham, OFL-1.1, https://fontstruct.com/fontstructions/show/1304775/geneva-9) and Sysfont (Alina Sava, OFL-1.1, https://fontsarena.com)."
+    }
+  },
+  // Code the bundler injects without an installed package.
+  "components": [
+    {
+      "name": "@oxc-project/runtime (helpers injected by Rolldown)",
+      "version": "0.148.0",
+      "license": "MIT",
+      "url": "https://github.com/oxc-project/oxc/tree/main/npm/runtime",
+      "files": ["licenses/js/oxc-project-runtime-LICENSE", "licenses/js/babel-runtime-LICENSE"],
+      "modules": ["@oxc-project+runtime@"],
+      "reason": "Rolldown's native binding embeds @oxc-project/runtime's helpers and inlines them when it lowers newer syntax for the desktop targets; no package is installed. LICENSE from the @oxc-project/runtime 0.148.0 npm tarball; its README says the helpers are copied from @babel/runtime, so Babel's LICENSE (from the @babel/runtime 8.0.8 tarball, unchanged MIT text) is included."
+    }
+  ]
+}

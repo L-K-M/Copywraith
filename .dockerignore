@@ -5,6 +5,14 @@
 
 !Cargo.toml
 !Cargo.lock
+!LICENSE
+
+# Third-party notices: generators and the license texts they read.
+!licenses/
+!licenses/**
+!scripts/bundled-modules.mjs
+!scripts/rust-notices.py
+!scripts/third-party-notices.mjs
 
 !crates/
 !crates/**
@@ -19,6 +27,7 @@
 !server/ui/index.html
 !server/ui/package.json
 !server/ui/package-lock.json
+!server/ui/third-party-notices.jsonc
 !server/ui/vite.config.js
 !server/ui/public/
 !server/ui/public/**

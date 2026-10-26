@@ -1,0 +1,12 @@
+# Overrides for scripts/android_notices.py, which checks the APK the release
+# workflow publishes (android recipe). Every entry needs a reason.
+
+# Libraries that must always be listed: the Kotlin runtime and the Shizuku
+# provider that crates/copywraith-share-target/android declares.
+require = ["org.jetbrains.kotlin:kotlin-stdlib", "dev.rikka.shizuku:provider"]
+
+[[claim]]
+paths = ["lib/*/libcopywraith_tauri_lib.so"]
+requires_entries = ["assets/licenses/Third-Party-Notices.txt", "assets/licenses/Rust-Licenses.html"]
+requires_text = ["Third-party notices: Rust crates in Copywraith", "SIL OPEN FONT LICENSE Version 1.1"]
+reason = "Copywraith's Rust library: its crates, the embedded frontend's npm packages and OFL fonts are in assets/licenses/Third-Party-Notices.txt, the Rust standard library's notices in Rust-Licenses.html (src-tauri/tauri.android.conf.json writes both)"

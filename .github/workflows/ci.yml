@@ -29,6 +29,33 @@ jobs:
           node-version: 22
           cache: npm
 
+      # LICENSE is the Unlicense; manifests and packaging metadata must say so.
+      - name: Check license statements
+        run: |
+          node - <<'EOF'
+            const fs = require("fs");
+            const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+            const statements = {
+              "package.json": read("package.json").license,
+              "package-lock.json": read("package-lock.json").packages[""].license,
+              "server/ui/package.json": read("server/ui/package.json").license,
+              "server/ui/package-lock.json": read("server/ui/package-lock.json").packages[""].license,
+              "src-tauri/tauri.conf.json bundle.license": read("src-tauri/tauri.conf.json").bundle.license
+            };
+            for (const [where, license] of Object.entries(statements)) {
+              if (license !== "Unlicense") {
+                console.error(`::error::${where} says ${license}, but LICENSE is the Unlicense`);
+                process.exitCode = 1;
+              }
+            }
+          EOF
+          grep -A2 '^\[workspace.package\]' Cargo.toml | grep -qx 'license = "Unlicense"' ||
+            { echo '::error::Cargo.toml [workspace.package] does not declare license = "Unlicense"'; exit 1; }
+          for manifest in crates/*/Cargo.toml server/Cargo.toml src-tauri/Cargo.toml; do
+            grep -qx 'license.workspace = true' "$manifest" ||
+              { echo "::error::$manifest does not inherit the workspace license"; exit 1; }
+          done
+
       - name: Install dependencies (popup frontend)
         run: npm ci
 
@@ -46,6 +73,15 @@ jobs:
       - name: Build popup frontend
         run: npm run build
 
+      # The build fails when a bundled package has no license text; check the
+      # notices it wrote and the banner in every emitted chunk.
+      - name: Check popup frontend notices
+        run: |
+          test -s build/Third-Party-Notices.txt
+          grep -q 'SIL OPEN FONT LICENSE Version 1.1' build/Third-Party-Notices.txt
+          test -n "$(find build/_app/immutable -name '*.js' -print -quit)"
+          if grep -rL --include='*.js' 'Third-Party-Notices.txt' build/_app/immutable | grep .; then exit 1; fi
+
       - name: Install dependencies (server UI)
         run: npm ci
         working-directory: server/ui
@@ -62,6 +98,14 @@ jobs:
 
       - name: Build server UI
         run: npm run build
+        working-directory: server/ui
+
+      - name: Check server UI notices
+        run: |
+          test -s dist/Third-Party-Notices.txt
+          grep -q 'SIL OPEN FONT LICENSE Version 1.1' dist/Third-Party-Notices.txt
+          test -n "$(find dist/assets -name '*.js' -print -quit)"
+          if grep -rL --include='*.js' 'Third-Party-Notices.txt' dist/assets | grep .; then exit 1; fi
         working-directory: server/ui
 
   rust:
@@ -110,6 +154,22 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # Every shipped Rust binary needs its crates' license texts, and the
+      # workspace members must declare the Unlicense. cargo tree resolves the
+      # macOS, Windows and Android targets here without their toolchains.
+      - name: Check Rust license notices
+        run: |
+          check() {
+            python3 scripts/rust-notices.py --overrides licenses/rust-overrides.json \
+              --own-license Unlicense --check "$@"
+          }
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            check -p copywraith-tauri --target "$target"
+          done
+          check -p copywraith-tauri --target aarch64-linux-android --target armv7-linux-androideabi \
+            --target i686-linux-android --target x86_64-linux-android
+          check -p copywraith-server --target x86_64-unknown-linux-gnu --rust-std Rust-Licenses.html
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -149,7 +209,7 @@ jobs:
   # it here too — packaging breakage (a renamed binary, a missing icon, an
   # AppImage that will not assemble) otherwise only surfaces at tag time.
   linux-bundle:
-    name: Linux bundle (deb + AppImage)
+    name: Linux bundle (deb, rpm, AppImage)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -166,7 +226,9 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            squashfs-tools \
+            libarchive-tools
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -190,7 +252,17 @@ jobs:
       - name: Build Linux bundles
         uses: tauri-apps/tauri-action@v1
         with:
-          args: --bundles deb,appimage
+          args: --bundles deb,rpm,appimage
+
+      # linuxdeploy copies GTK, WebKitGTK and other system libraries (many
+      # LGPL) into the AppImage; add their copyright files, exact source
+      # packages and the AppImage runtime's notices. Runs on the build host.
+      - name: Add the AppImage's system library notices
+        run: |
+          for appimage in target/release/bundle/appimage/*.AppImage; do
+            python3 scripts/appimage-notices.py appimage "$appimage" --package copywraith \
+              --overrides licenses/appimage/appimage-notices.json
+          done
 
       - name: Verify the bundle contents
         run: ./scripts/check-linux-bundle.sh
@@ -204,6 +276,40 @@ jobs:
             target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 7
+
+  # Build the server image like the release does (without pushing) and check
+  # the notices inside it.
+  server-image:
+    name: Server Docker image
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the server image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: server/Dockerfile
+          load: true
+          tags: copywraith-server:check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image's third-party notices
+        run: |
+          docker run --rm --entrypoint sh copywraith-server:check -c '
+            set -e
+            doc=/usr/share/doc/copywraith-server
+            for f in Third-Party-Notices.txt Rust-Licenses.html LICENSE; do test -s "$doc/$f"; done
+            grep -q "^axum [0-9]" "$doc/Third-Party-Notices.txt"
+            grep -q "Third-party notices for Copywraith server UI" "$doc/Third-Party-Notices.txt"
+            grep -q "SIL OPEN FONT LICENSE Version 1.1" "$doc/Third-Party-Notices.txt"
+            grep -q "Copyright notices for The Rust Standard Library" "$doc/Rust-Licenses.html"
+            test -s /ui/dist/Third-Party-Notices.txt
+          '
 
   # Repack the same .deb as a Flatpak bundle — identical files under /app,
   # so this exercises the packaging path without a second toolchain build.
