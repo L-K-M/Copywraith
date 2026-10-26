@@ -20,12 +20,18 @@ fail() {
 }
 
 # The aggregated notices name a crate and the OFL fonts that are certain to ship;
-# Rust-Licenses.html is the toolchain's COPYRIGHT-library.html.
+# Rust-Licenses.html is the toolchain's COPYRIGHT-library.html; copyright is the
+# DEP-5 file from scripts/deb-copyright.py.
 check_notices() {
 	local root="$1" what="$2"
 	local notices="$root/$DOC_DIR/Third-Party-Notices.txt" std="$root/$DOC_DIR/Rust-Licenses.html"
+	local copyright="$root/$DOC_DIR/copyright"
 	[ -s "$notices" ] || fail "$what does not ship /$DOC_DIR/Third-Party-Notices.txt"
 	[ -s "$std" ] || fail "$what does not ship /$DOC_DIR/Rust-Licenses.html"
+	[ -s "$copyright" ] || fail "$what does not ship /$DOC_DIR/copyright"
+	grep -qx 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/' "$copyright" ||
+		fail "$what: /$DOC_DIR/copyright is not a DEP-5 file"
+	grep -qx 'License: Unlicense' "$copyright" || fail "$what: /$DOC_DIR/copyright does not state the Unlicense"
 	grep -q '^tauri [0-9]' "$notices" || fail "$what: Third-Party-Notices.txt lists no tauri crate"
 	grep -q 'SIL OPEN FONT LICENSE Version 1.1' "$notices" || fail "$what: Third-Party-Notices.txt lacks the fonts' OFL text"
 	grep -q 'Copyright notices for The Rust Standard Library' "$std" || fail "$what: Rust-Licenses.html is not the Rust standard library notices"

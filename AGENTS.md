@@ -183,7 +183,9 @@ may waive review; report that waiver rather than claiming review passed.
   overrides in `licenses/rust-overrides.json`), `scripts/third-party-notices.mjs`
   (npm packages and fonts, `third-party-notices.jsonc` and
   `server/ui/third-party-notices.jsonc`), AboutLibraries via
-  `scripts/add-android-notices.sh` (Maven, texts in `licenses/android/`) and
-  `scripts/appimage-notices.py` (AppImage system libraries). Each fails on a
-  component without license text; record gaps as explicit overrides with a
-  reason. Keep the notices checks in `ci.yml` and `release.yml` passing.
+  `scripts/add-android-notices.sh` (Maven, texts in `licenses/android/`),
+  `scripts/appimage-notices.py` (AppImage system libraries) and
+  `scripts/deb-copyright.py` (the deb and AppImage `copyright` file, spec in
+  `licenses/linux/copyright.json`). Each fails on a component without
+  license text; record gaps as explicit overrides with a reason. Keep the
+  notices checks in `ci.yml` and `release.yml` passing.

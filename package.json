@@ -9,6 +9,7 @@
     "build": "vite build && node scripts/third-party-notices.mjs --config third-party-notices.jsonc --modules node_modules/.cache/bundled-modules --check-assets build --title Copywraith --out build/Third-Party-Notices.txt",
     "notices:rust": "python3 scripts/rust-notices.py -p copywraith-tauri --title Copywraith --overrides licenses/rust-overrides.json --out node_modules/.cache/rust-notices.txt --rust-std build/Rust-Licenses.html",
     "notices:app": "node scripts/third-party-notices.mjs --config third-party-notices.jsonc --modules node_modules/.cache/bundled-modules --check-assets build --title Copywraith --include node_modules/.cache/rust-notices.txt --out build/Third-Party-Notices.txt",
+    "notices:deb": "RUST_DOC=\"$(rustc --print sysroot)/share/doc/rust\" RUSTC_VERSION=\"$(rustc --version | cut -d' ' -f2)\" python3 scripts/deb-copyright.py generate licenses/linux/copyright.json --copyright-out node_modules/.cache/copyright",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --tsgo",
     "test": "cargo test --workspace",

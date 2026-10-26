@@ -93,7 +93,8 @@ fonts. Their notices ship inside each artifact as `Third-Party-Notices.txt` and
 
 - macOS: `Copywraith.app/Contents/Resources/`
 - Linux packages: `/usr/share/doc/copywraith/` (Flatpak:
-  `/app/share/doc/copywraith/`). The AppImage also carries each bundled system
+  `/app/share/doc/copywraith/`), next to a Debian `copyright` file in the deb,
+  Flatpak and AppImage. The AppImage also carries each bundled system
   library's `copyright` file and `SOURCES.txt`, which names the exact Ubuntu
   source packages.
 - Windows: the installation directory

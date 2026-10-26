@@ -55,6 +55,7 @@
 		"linux": {
 			"deb": {
 				"files": {
+					"/usr/share/doc/copywraith/copyright": "../node_modules/.cache/copyright",
 					"/usr/share/doc/copywraith/Third-Party-Notices.txt": "../build/Third-Party-Notices.txt",
 					"/usr/share/doc/copywraith/Rust-Licenses.html": "../build/Rust-Licenses.html"
 				},
@@ -76,6 +77,7 @@
 			},
 			"appimage": {
 				"files": {
+					"/usr/share/doc/copywraith/copyright": "../node_modules/.cache/copyright",
 					"/usr/share/doc/copywraith/Third-Party-Notices.txt": "../build/Third-Party-Notices.txt",
 					"/usr/share/doc/copywraith/Rust-Licenses.html": "../build/Rust-Licenses.html"
 				}

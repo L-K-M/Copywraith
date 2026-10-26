@@ -10,3 +10,4 @@ origin is recorded next to where it is used.
 | `js/` | `scripts/third-party-notices.mjs` | `LICENSE` files from the npm tarballs named in `third-party-notices.jsonc`. |
 | `android/` | AboutLibraries (`scripts/add-android-notices.sh`), `scripts/android_notices.py` | License and NOTICE texts; each JSON file's `_comment` names its source. |
 | `appimage/` | `scripts/appimage-notices.py` | Upstream texts listed in `appimage-notices.json`. |
+| `linux/` | `scripts/deb-copyright.py` | Spec for the DEP-5 `copyright` file; it reads `LICENSE` and the building toolchain's Rust license texts. |
