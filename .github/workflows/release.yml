@@ -368,14 +368,17 @@ jobs:
 
       # Maven library definitions (res/raw/aboutlibraries.json) and the Rust,
       # npm and font notices (assets/licenses) must be inside the published
-      # APK. scan reads the resolved jars and aars from this job's Gradle cache.
+      # APK. scan reads the resolved jars and aars from this job's Gradle cache
+      # and downloads the ones a restored cache lacks from the build's repositories.
       - name: Check third-party notices in the APK
         env:
           APK: ${{ steps.sign.outputs.apk }}
         run: |
           python3 -I scripts/android_notices.py check "$APK" --config licenses/android/android-notices.toml \
             --text-entry assets/licenses/Third-Party-Notices.txt
-          python3 -I scripts/android_notices.py scan "$APK" --config licenses/android/android-notices.toml
+          python3 -I scripts/android_notices.py scan "$APK" --config licenses/android/android-notices.toml \
+            --fetch-from https://dl.google.com/dl/android/maven2 \
+            --fetch-from https://repo.maven.apache.org/maven2
 
       - name: Upload APK to release
         env:
