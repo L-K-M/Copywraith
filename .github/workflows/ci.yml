@@ -32,7 +32,7 @@ jobs:
       # LICENSE is the Unlicense; manifests and packaging metadata must say so.
       - name: Check license statements
         run: |
-          node -e '
+          node - <<'EOF'
             const fs = require("fs");
             const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
             const statements = {
@@ -48,7 +48,7 @@ jobs:
                 process.exitCode = 1;
               }
             }
-          '
+          EOF
           grep -A2 '^\[workspace.package\]' Cargo.toml | grep -qx 'license = "Unlicense"' ||
             { echo '::error::Cargo.toml [workspace.package] does not declare license = "Unlicense"'; exit 1; }
           for manifest in crates/*/Cargo.toml server/Cargo.toml src-tauri/Cargo.toml; do
@@ -73,6 +73,15 @@ jobs:
       - name: Build popup frontend
         run: npm run build
 
+      # The build fails when a bundled package has no license text; check the
+      # notices it wrote and the banner in every emitted chunk.
+      - name: Check popup frontend notices
+        run: |
+          test -s build/Third-Party-Notices.txt
+          grep -q 'SIL OPEN FONT LICENSE Version 1.1' build/Third-Party-Notices.txt
+          test -n "$(find build/_app/immutable -name '*.js' -print -quit)"
+          if grep -rL --include='*.js' 'Third-Party-Notices.txt' build/_app/immutable | grep .; then exit 1; fi
+
       - name: Install dependencies (server UI)
         run: npm ci
         working-directory: server/ui
@@ -89,6 +98,14 @@ jobs:
 
       - name: Build server UI
         run: npm run build
+        working-directory: server/ui
+
+      - name: Check server UI notices
+        run: |
+          test -s dist/Third-Party-Notices.txt
+          grep -q 'SIL OPEN FONT LICENSE Version 1.1' dist/Third-Party-Notices.txt
+          test -n "$(find dist/assets -name '*.js' -print -quit)"
+          if grep -rL --include='*.js' 'Third-Party-Notices.txt' dist/assets | grep .; then exit 1; fi
         working-directory: server/ui
 
   rust:
@@ -136,6 +153,22 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check
+
+      # Every shipped Rust binary needs its crates' license texts, and the
+      # workspace members must declare the Unlicense. cargo tree resolves the
+      # macOS, Windows and Android targets here without their toolchains.
+      - name: Check Rust license notices
+        run: |
+          check() {
+            python3 scripts/rust-notices.py --overrides licenses/rust-overrides.json \
+              --own-license Unlicense --check "$@"
+          }
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            check -p copywraith-tauri --target "$target"
+          done
+          check -p copywraith-tauri --target aarch64-linux-android --target armv7-linux-androideabi \
+            --target i686-linux-android --target x86_64-linux-android
+          check -p copywraith-server --target x86_64-unknown-linux-gnu --rust-std Rust-Licenses.html
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

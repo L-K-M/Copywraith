@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node ../../scripts/third-party-notices.mjs --config third-party-notices.jsonc --modules node_modules/.cache/bundled-modules --check-assets dist --title \"Copywraith server UI\" --out dist/Third-Party-Notices.txt",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json --tsgo",
     "test": "vitest run",

@@ -1,0 +1,13 @@
+{
+  // Overrides for ../../scripts/third-party-notices.mjs (server UI notices).
+  // Paths are relative to this file; every entry needs a reason. The texts are
+  // shared with the app's third-party-notices.jsonc in the repository root.
+  "packages": {
+    "@lkmc/system7-ui": {
+      "reason": "The UI kit's LICENSE (Unlicense) covers its code only. Its two fonts, which Vite emits into dist, are OFL-1.1 per their name tables and upstream pages; the kit's README says they keep their own licenses. OFL texts: the canonical template from https://openfontlicense.org/documents/OFL.txt with each font's copyright line from its name table.",
+      "fonts": true,
+      "files": ["../../licenses/fonts/Geneva91-OFL.txt", "../../licenses/fonts/Sysfont-OFL.txt"],
+      "note": "Fonts: Geneva 9.1 (Kelsey Higham, OFL-1.1, https://fontstruct.com/fontstructions/show/1304775/geneva-9) and Sysfont (Alina Sava, OFL-1.1, https://fontsarena.com)."
+    }
+  }
+}
