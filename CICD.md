@@ -33,12 +33,12 @@ Frontend, Rust, and Linux packaging jobs run in parallel on `ubuntu-22.04`. Inst
 - `cargo clippy --workspace --all-targets -- -D warnings` — clippy warnings are treated as errors.
 - `cargo test --workspace` — run the test suite.
 
-**Linux bundle (deb + AppImage)** — builds the desktop bundle the release workflow ships, using the same `tauri-apps/tauri-action@v1` action, so packaging breakage surfaces on a pull request instead of at tag time:
+**Linux bundle (deb, rpm, AppImage)** — builds the desktop bundles the release workflow ships, using the same `tauri-apps/tauri-action@v1` action, so packaging breakage surfaces on a pull request instead of at tag time:
 
 - Installs the same Tauri system dependencies as the Rust job.
-- `tauri build --bundles deb,appimage` (the action runs `npm run build` and the notices scripts first via `beforeBuildCommand`).
+- `tauri build --bundles deb,rpm,appimage` (the action runs `npm run build` and the notices scripts first via `beforeBuildCommand`).
 - `scripts/appimage-notices.py` adds the copyright files and exact source packages of the system libraries linuxdeploy copied into the AppImage, plus the AppImage runtime's notices.
-- `scripts/check-linux-bundle.sh` — asserts the `.deb` installs `/usr/bin/copywraith`, ships a `copywraith.png` icon, execs `copywraith` from its desktop entry, and that the `.deb` and AppImage ship the third-party notices. The Ubuntu and KDE docs tell users to bind `copywraith --toggle` to a global shortcut, and the app writes `Icon=copywraith` into its autostart entry, so a renamed binary would silently break both. The binary name comes from `mainBinaryName` in `src-tauri/tauri.conf.json`.
+- `scripts/check-linux-bundle.sh` — asserts the `.deb` installs `/usr/bin/copywraith`, ships a `copywraith.png` icon, execs `copywraith` from its desktop entry, and that the `.deb`, `.rpm` and AppImage ship the third-party notices (the `.rpm` is unpacked with `bsdtar` from `libarchive-tools`). The Ubuntu and KDE docs tell users to bind `copywraith --toggle` to a global shortcut, and the app writes `Icon=copywraith` into its autostart entry, so a renamed binary would silently break both. The binary name comes from `mainBinaryName` in `src-tauri/tauri.conf.json`.
 - Uploads the `.deb` and AppImage as a build artifact (7-day retention).
 
 **Server Docker image** — builds `server/Dockerfile` like the release (without pushing) and checks the notices in `/usr/share/doc/copywraith-server/`.
@@ -117,7 +117,7 @@ The workflow first runs CI (including Ubuntu runtime checks) and validates that 
 4. **Server Docker image** — builds `server/Dockerfile` and pushes to GHCR at `ghcr.io/<owner>/copywraith-server`, tagged with the semver `{{version}}`, `{{major}}.{{minor}}`, and `latest` (the `latest` tag is skipped for prereleases).
 5. **Publish release** — once all build jobs succeed, the draft is flipped to published.
 
-Every build job checks the third-party notices inside what it publishes before the draft can be published: the macOS `.app` and `.dmg`, the Windows installer resources, the deb and AppImage (the annotated AppImage replaces the one `tauri-action` uploaded), the APK (`scripts/add-android-notices.sh` adds the AboutLibraries plugin after `tauri android init`; `scripts/android_notices.py` checks the APK), and the server image before it is pushed.
+Every build job checks the third-party notices inside what it publishes before the draft can be published: the macOS `.app` and `.dmg`, the Windows installer resources, the deb, rpm and AppImage (the annotated AppImage replaces the one `tauri-action` uploaded), the APK (`scripts/add-android-notices.sh` adds the AboutLibraries plugin after `tauri android init`; `scripts/android_notices.py` checks the APK), and the server image before it is pushed.
 
 ### Third-party notices
 
