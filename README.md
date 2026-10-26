@@ -76,6 +76,7 @@ scripts/                  Android setup helpers and server deployment scripts
 - [Encryption design](ENCRYPTION.md)
 - [API notes](API.md)
 - [Sensitive data notes](SENSITIVE.md)
+
 ## License
 
 Copywraith's own code is released under the [Unlicense](LICENSE). The builds
