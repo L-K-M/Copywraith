@@ -302,7 +302,7 @@ jobs:
 
       # scripts/android_notices.py needs Python 3.11+ (tomllib); ubuntu-22.04 has 3.10.
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
