@@ -456,11 +456,19 @@ fn read_consistent<T>(
 fn clear_if_owned(context: &ClipboardContext, owner: &[u8]) -> Result<()> {
     if context
         .get_buffer(OWNER_FORMAT)
-        .is_ok_and(|current| current == owner)
+        .is_ok_and(|current| owner_matches(&current, owner))
     {
         context.clear().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn owner_matches(current: &[u8], expected: &[u8]) -> bool {
+    // Win32 may return a larger zero-initialized allocation for custom data.
+    // Only padding may follow the complete token, never a different write ID.
+    current
+        .strip_prefix(expected)
+        .is_some_and(|padding| padding.iter().all(|byte| *byte == 0))
 }
 
 fn nonempty(text: String) -> Option<String> {
@@ -596,6 +604,17 @@ fn read_text_flavors(
 #[cfg(test)]
 mod read_tests {
     use super::*;
+
+    #[test]
+    fn expiry_owner_accepts_native_padding_but_not_another_write() {
+        // Win32 GlobalSize can exceed the requested allocation. clipboard-win
+        // returns that entire zero-initialized block for custom formats.
+        assert!(owner_matches(b"instance/write\0\0\0", b"instance/write"));
+        assert!(owner_matches(b"instance/write", b"instance/write"));
+        assert!(!owner_matches(b"instance/write2", b"instance/write"));
+        assert!(!owner_matches(b"instance/writ", b"instance/write"));
+        assert!(!owner_matches(b"other/write\0", b"instance/write"));
+    }
 
     #[test]
     fn changed_clipboard_discards_payload_and_rechecks_privacy() {
