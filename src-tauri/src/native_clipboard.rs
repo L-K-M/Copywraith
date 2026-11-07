@@ -672,7 +672,9 @@ mod read_tests {
     #[test]
     #[ignore = "requires an isolated native clipboard"]
     fn expiry_clears_only_the_exact_write_that_scheduled_it() {
-        let _guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+        let _guard = NATIVE_CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let adapter = NativeClipboard::new().unwrap();
         let peer = ClipboardContext::new().unwrap();
         adapter
