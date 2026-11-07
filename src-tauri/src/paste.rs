@@ -330,11 +330,10 @@ fn preferred_paste_target(app: &tauri::AppHandle) -> Option<String> {
     let remembered = {
         let state = app.state::<crate::AppState>();
         let lock_result = state.last_focused_app.lock();
-        let remembered_value = match lock_result {
+        match lock_result {
             Ok(slot) => slot.clone(),
             Err(_) => None,
-        };
-        remembered_value
+        }
     };
 
     // Keep this path fast: avoid synchronous osascript fallback while handling
