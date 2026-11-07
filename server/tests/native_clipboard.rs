@@ -10,9 +10,9 @@ use clipboard_rs::{
     common::RustImage, Clipboard, ClipboardContent, ClipboardContext, RustImageData,
 };
 use copywraith_core::models::ClipboardFlavors;
-use native_clipboard::{ClipboardPayload, MonitorStatus, NativeClipboard};
+use native_clipboard::{ClipboardPayload, ClipboardSensitivity, MonitorStatus, NativeClipboard};
 
-static NATIVE_CLIPBOARD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use native_clipboard::NATIVE_CLIPBOARD_TEST_LOCK;
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 // Upstream exposes no subscription-ready notification. This is a startup grace
@@ -47,8 +47,10 @@ fn native_clipboard_roundtrip_events_and_cleanup() {
 
     peer.set_text("external plain".into()).unwrap();
     expect_flavors(&receiver, "external plain", None, None);
-    adapter.write_text("app plain").unwrap();
-    expect_flavors(&receiver, "app plain", None, None);
+    adapter
+        .write_text("app plain", ClipboardSensitivity::Ordinary)
+        .unwrap();
+    expect_own_write(&receiver);
     assert_eq!(peer.get_text().unwrap(), "app plain");
 
     // Windows CF_HTML adds context around fragments; a full document roundtrips
@@ -63,14 +65,17 @@ fn native_clipboard_roundtrip_events_and_cleanup() {
     .unwrap();
     expect_flavors(&receiver, "rich text", Some(html), Some(rtf));
     adapter
-        .write_flavors(&ClipboardFlavors {
-            text_plain: Some("app rich".into()),
-            text_html: Some(html.into()),
-            text_rtf: Some(rtf.into()),
-            file_list: None,
-        })
+        .write_flavors(
+            &ClipboardFlavors {
+                text_plain: Some("app rich".into()),
+                text_html: Some(html.into()),
+                text_rtf: Some(rtf.into()),
+                file_list: None,
+            },
+            ClipboardSensitivity::Ordinary,
+        )
         .unwrap();
-    expect_flavors(&receiver, "app rich", Some(html), Some(rtf));
+    expect_own_write(&receiver);
     assert_eq!(peer.get_html().unwrap(), html);
     assert_eq!(peer.get_rich_text().unwrap(), rtf);
     assert_eq!(peer.get_text().unwrap(), "app rich");
@@ -79,22 +84,32 @@ fn native_clipboard_roundtrip_events_and_cleanup() {
     let file = dir.path().join("clipboard file.txt");
     std::fs::write(&file, "file payload").unwrap();
     let path = file.to_string_lossy().into_owned();
-    adapter.write_files(std::slice::from_ref(&path)).unwrap();
-    expect_files(&receiver, &path);
+    adapter
+        .write_files(std::slice::from_ref(&path), ClipboardSensitivity::Ordinary)
+        .unwrap();
+    expect_own_write(&receiver);
     let native_files = peer.get_files().unwrap();
     peer.set_files(native_files).unwrap();
     expect_files(&receiver, &path);
 
-    adapter.write_image(PNG).unwrap();
-    expect_image(&receiver);
+    adapter
+        .write_image(PNG, ClipboardSensitivity::Ordinary)
+        .unwrap();
+    expect_own_write(&receiver);
     let image = peer.get_image().unwrap();
     assert_pixels(&image);
     peer.set_image(RustImageData::from_bytes(PNG).unwrap())
         .unwrap();
     expect_image(&receiver);
-    assert!(adapter.write_image(b"not an image").is_err());
-    assert!(adapter.write_flavors(&ClipboardFlavors::default()).is_err());
-    assert!(adapter.write_files(&[]).is_err());
+    assert!(adapter
+        .write_image(b"not an image", ClipboardSensitivity::Ordinary)
+        .is_err());
+    assert!(adapter
+        .write_flavors(&ClipboardFlavors::default(), ClipboardSensitivity::Ordinary)
+        .is_err());
+    assert!(adapter
+        .write_files(&[], ClipboardSensitivity::Ordinary)
+        .is_err());
 
     adapter.stop_monitor().unwrap();
     assert_eq!(adapter.monitor_status(), MonitorStatus::Stopped);
@@ -357,13 +372,120 @@ fn file_manager_uris_are_decoded_and_written_back_encoded() {
     // Pasting writes a valid URI again, for new decoded rows and for rows
     // stored encoded before decoding existed.
     for stored in [&path, &encoded] {
-        adapter.write_files(std::slice::from_ref(stored)).unwrap();
+        adapter
+            .write_files(std::slice::from_ref(stored), ClipboardSensitivity::Ordinary)
+            .unwrap();
         let native = peer.get_files().unwrap();
         assert_eq!(native.len(), 1);
         assert!(!native[0].contains(' '), "{native:?}");
+        assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Empty));
+        peer.set_files(native).unwrap();
         let ClipboardPayload::Files(files) = adapter.read().unwrap() else {
             panic!("expected files")
         };
         assert_eq!(files, std::slice::from_ref(&path), "stored as {stored:?}");
+    }
+}
+
+#[test]
+#[ignore = "requires an isolated native clipboard (Xvfb on Linux)"]
+fn own_writes_are_ignored_without_losing_external_copies() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    adapter
+        .write_text("restored history", ClipboardSensitivity::Ordinary)
+        .unwrap();
+    // Read well after the old 500 ms suppression deadline.
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Empty));
+    // A user can immediately copy even exactly the same text again.
+    peer.set_text("restored history".into()).unwrap();
+    assert!(matches!(
+        adapter.read().unwrap(),
+        ClipboardPayload::Flavors(_)
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires an isolated native clipboard"]
+fn sensitive_history_writes_publish_concealed_and_source_together() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK.lock().unwrap();
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first file.txt");
+    let second = dir.path().join("second file.txt");
+    std::fs::write(&first, "dummy").unwrap();
+    std::fs::write(&second, "dummy").unwrap();
+    let files = vec![
+        first.to_string_lossy().into_owned(),
+        second.to_string_lossy().into_owned(),
+    ];
+    for sensitivity in [
+        ClipboardSensitivity::Sensitive,
+        ClipboardSensitivity::Ordinary,
+    ] {
+        let concealed = sensitivity == ClipboardSensitivity::Sensitive;
+        adapter.write_text("dummy secret", sensitivity).unwrap();
+        assert_eq!(peer.get_text().unwrap(), "dummy secret");
+        assert_macos_metadata(concealed, 1);
+        adapter
+            .write_flavors(
+                &ClipboardFlavors {
+                    text_plain: Some("dummy secret".into()),
+                    text_html: Some("<b>dummy secret</b>".into()),
+                    text_rtf: Some("{\\rtf1 dummy secret}".into()),
+                    file_list: None,
+                },
+                sensitivity,
+            )
+            .unwrap();
+        assert_eq!(peer.get_html().unwrap(), "<b>dummy secret</b>");
+        assert_macos_metadata(concealed, 1);
+        adapter.write_image(PNG, sensitivity).unwrap();
+        assert_pixels(&peer.get_image().unwrap());
+        assert_macos_metadata(concealed, 1);
+        adapter.write_files(&files, sensitivity).unwrap();
+        assert_eq!(peer.get_files().unwrap(), files);
+        assert_macos_metadata(concealed, 2);
+    }
+}
+
+fn expect_own_write(receiver: &mpsc::Receiver<Result<ClipboardPayload, String>>) {
+    assert!(matches!(
+        receiver.recv_timeout(EVENT_TIMEOUT).unwrap().unwrap(),
+        ClipboardPayload::Empty
+    ));
+}
+
+#[cfg(target_os = "macos")]
+fn assert_macos_metadata(concealed: bool, item_count: usize) {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+    let board = NSPasteboard::generalPasteboard();
+    let items = board.pasteboardItems().unwrap();
+    assert_eq!(items.len(), item_count);
+    for item in items {
+        let types = item.types();
+        assert_eq!(
+            types
+                .iter()
+                .any(|format| format.to_string() == "org.nspasteboard.ConcealedType"),
+            concealed
+        );
+        assert!(!types
+            .iter()
+            .any(|format| format.to_string() == "org.nspasteboard.TransientType"));
+        assert_eq!(
+            item.stringForType(&NSString::from_str("org.nspasteboard.source"))
+                .unwrap()
+                .to_string(),
+            ""
+        );
+        assert!(item
+            .dataForType(&NSString::from_str("ch.lkmc.copywraith.clipboard-owner"))
+            .is_some());
     }
 }

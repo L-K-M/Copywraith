@@ -21,11 +21,6 @@ pub fn start_monitoring(
     if let Err(error) = clipboard.start_monitor(
         move || {
             let state = callback_app.state::<crate::AppState>();
-            if let Ok(guard) = state.suppress_monitor_until.lock() {
-                if guard.is_some_and(|deadline| std::time::Instant::now() < deadline) {
-                    return;
-                }
-            }
             // Paused: do not even read the clipboard.
             if state
                 .capture_pause
