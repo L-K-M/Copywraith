@@ -29,12 +29,6 @@ pub struct AppState {
     pub last_popup_toggle_at: std::sync::Mutex<Option<std::time::Instant>>,
     #[cfg(desktop)]
     pub last_popup_opened_at: std::sync::Mutex<Option<std::time::Instant>>,
-    /// When set, all clipboard-monitor events whose arrival time is before this
-    /// instant are suppressed.  This handles multiple rapid monitor events from a
-    /// single paste write (e.g. duplicate system notifications) without requiring
-    /// per-event counter management.
-    #[cfg(desktop)]
-    pub suppress_monitor_until: std::sync::Mutex<Option<std::time::Instant>>,
     /// How the global shortcuts ended up bound, surfaced in the Settings dialog.
     #[cfg(desktop)]
     pub shortcut_status: std::sync::Mutex<models::ShortcutStatus>,
@@ -109,8 +103,6 @@ pub fn run() {
                 last_popup_toggle_at: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
                 last_popup_opened_at: std::sync::Mutex::new(None),
-                #[cfg(desktop)]
-                suppress_monitor_until: std::sync::Mutex::new(None),
                 #[cfg(desktop)]
                 shortcut_status: std::sync::Mutex::new(models::ShortcutStatus::default()),
                 #[cfg(target_os = "macos")]
