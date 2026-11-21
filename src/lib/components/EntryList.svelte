@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import type { ClipboardEntry } from '$lib/types';
+	import type { ClipboardEntry } from '#lib/types.ts';
 	import {
 		entries,
 		isLoading,
@@ -8,12 +8,12 @@
 		loadMoreEntries,
 		selectedEntryId,
 		selectEntry
-	} from '$lib/util/clipboardStore';
+	} from '#lib/util/clipboardStore.ts';
 	import { DataTable } from '@lkmc/system7-ui';
 	import EntryRow from './EntryRow.svelte';
 
-	import { QUICK_PASTE_SLOTS } from '$lib/util/keyboard';
-	import { isMobile } from '$lib/util/platform';
+	import { QUICK_PASTE_SLOTS } from '#lib/util/keyboard.ts';
+	import { isMobile } from '#lib/util/platform.ts';
 
 	let {
 		onpreview,

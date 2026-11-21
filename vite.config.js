@@ -1,4 +1,6 @@
+import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
 import bundledModules from './scripts/bundled-modules.mjs';
 
@@ -16,7 +18,13 @@ const banner =
 const keepFontFiles = (file) => (/\.(?:woff2?|ttf|otf|eot)$/i.test(file) ? false : undefined);
 
 export default defineConfig({
-	plugins: [sveltekit(), bundledModules()],
+	plugins: [
+		sveltekit({
+			preprocess: vitePreprocess(),
+			adapter: adapter({ fallback: 'index.html' })
+		}),
+		bundledModules()
+	],
 	clearScreen: false,
 	build: {
 		target: desktopTargets,

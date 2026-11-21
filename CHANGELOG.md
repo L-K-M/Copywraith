@@ -15,6 +15,9 @@ Earlier history lives in the commit log and any GitHub releases.
 
 ### Changed
 
+- The desktop popup moves to SvelteKit 3 and adapter-static 4, with the
+  SvelteKit config in `vite.config.js` and `#lib` subpath imports. The desktop
+  Node minimum is now 22.17.
 - The Android app is laid out for a phone. It has a System 7 title bar,
   copied text uses the same 24px font as the desktop popup, and the type,
   age and action columns are only as wide as their contents, so the text

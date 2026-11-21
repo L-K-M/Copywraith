@@ -3,14 +3,14 @@
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { TitleBar, Notification, ErrorBanner, ModalDialog, ProgressBar } from '@lkmc/system7-ui';
-	import { WindowManager, WindowActivitySource } from '$lib/windowManager';
-	import { windowFocused } from '$lib/util/windowState';
-	import { notifications } from '$lib/util/notifications';
-	import { platform, isMobile } from '$lib/util/platform';
+	import { WindowManager, WindowActivitySource } from '#lib/windowManager.ts';
+	import { windowFocused } from '#lib/util/windowState.ts';
+	import { notifications } from '#lib/util/notifications.ts';
+	import { platform, isMobile } from '#lib/util/platform.ts';
 	import {
 		setSyncEndpointStatus,
 		type SyncEndpointStatusInput
-	} from '$lib/util/syncStatusStore';
+	} from '#lib/util/syncStatusStore.ts';
 	import {
 		loadEntries,
 		moveSelection,
@@ -25,16 +25,16 @@
 		pasteEntryPlaintext,
 		toggleStar,
 		deleteEntry
-	} from '$lib/util/clipboardStore';
-	import { isModKey, resolveShortcut, type ShortcutAction } from '$lib/util/keyboard';
-	import { notify } from '$lib/util/notifications';
-	import { TauriService } from '$lib/tauri';
+	} from '#lib/util/clipboardStore.ts';
+	import { isModKey, resolveShortcut, type ShortcutAction } from '#lib/util/keyboard.ts';
+	import { notify } from '#lib/util/notifications.ts';
+	import { TauriService } from '#lib/tauri.ts';
 
-	import FilterBar from '$lib/components/FilterBar.svelte';
-	import EntryList from '$lib/components/EntryList.svelte';
-	import EntryPreview from '$lib/components/EntryPreview.svelte';
-	import StatusBar from '$lib/components/StatusBar.svelte';
-	import SettingsDialog from '$lib/components/SettingsDialog.svelte';
+	import FilterBar from '#lib/components/FilterBar.svelte';
+	import EntryList from '#lib/components/EntryList.svelte';
+	import EntryPreview from '#lib/components/EntryPreview.svelte';
+	import StatusBar from '#lib/components/StatusBar.svelte';
+	import SettingsDialog from '#lib/components/SettingsDialog.svelte';
 
 	const appWindow = getCurrentWindow();
 	const windowManager = new WindowManager();

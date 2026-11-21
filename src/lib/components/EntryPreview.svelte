@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { ClipboardEntry } from '$lib/types';
-	import { pasteEntry, pasteEntryPlaintext, toggleStar, deleteEntry } from '$lib/util/clipboardStore';
+	import type { ClipboardEntry } from '#lib/types.ts';
+	import { pasteEntry, pasteEntryPlaintext, toggleStar, deleteEntry } from '#lib/util/clipboardStore.ts';
 	import { MovableDialog, Button } from '@lkmc/system7-ui';
-	import { TauriService } from '$lib/tauri';
-	import { isMobile } from '$lib/util/platform';
+	import { TauriService } from '#lib/tauri.ts';
+	import { isMobile } from '#lib/util/platform.ts';
 
 	let { entry, onclose }: { entry: ClipboardEntry; onclose: () => void } = $props();
 

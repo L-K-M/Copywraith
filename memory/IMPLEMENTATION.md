@@ -8,8 +8,7 @@
 
 ### 1.2 Initialize SvelteKit Frontend
 - `package.json` with `@lkmc/system7-ui`, `@tauri-apps/api`, Svelte 5, SvelteKit
-- `svelte.config.js` with `adapter-static`
-- `vite.config.js` for Tauri/SvelteKit dev server integration
+- `vite.config.js` with the SvelteKit plugin (`adapter-static`) and Tauri dev server integration
 - `tsconfig.json`
 - Root layout with system7-ui CSS import and SSR disabled
 

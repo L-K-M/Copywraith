@@ -65,16 +65,16 @@ function popup(t, platformName = 'linux') {
 			state.activityQueries++;
 			return state.nativeActive;
 		} },
-		'$lib/tauri': { TauriService },
-		'$lib/util/windowState': { windowFocused: { set: (active) => { state.active = active; } } },
-		'$lib/util/platform': { platform: { set() {} } },
-		'$lib/util/syncStatusStore': { setSyncEndpointStatus() {} },
-		'$lib/util/clipboardStore': { loadEntries: async () => {} },
-		'$lib/util/notifications': { notify() {} },
+		'#lib/tauri.ts': { TauriService },
+		'#lib/util/windowState.ts': { windowFocused: { set: (active) => { state.active = active; } } },
+		'#lib/util/platform.ts': { platform: { set() {} } },
+		'#lib/util/syncStatusStore.ts': { setSyncEndpointStatus() {} },
+		'#lib/util/clipboardStore.ts': { loadEntries: async () => {} },
+		'#lib/util/notifications.ts': { notify() {} },
 		svelte: { onMount: (callback) => mounts.push(callback), onDestroy: (callback) => destroys.push(callback) }
 	};
-	modules['$lib/windowManager'] = load(manager, modules);
-	modules['$lib/util/keyboard'] = load(keyboard, modules);
+	modules['#lib/windowManager.ts'] = load(manager, modules);
+	modules['#lib/util/keyboard.ts'] = load(keyboard, modules);
 	const handlers = load(`${script}\nexport { handleWindowDrag };`, modules, {
 		$state: (value) => value,
 		$derived: (value) => value,
@@ -166,7 +166,7 @@ function activitySubscription(t) {
 			state.queries++;
 			return snapshot.promise;
 		} },
-		'$lib/tauri': { TauriService: {} }
+		'#lib/tauri.ts': { TauriService: {} }
 	});
 	const stop = new WindowManager().subscribeActivity((active) => updates.push(active));
 	t.after(() => { if (!state.removed) stop(); });

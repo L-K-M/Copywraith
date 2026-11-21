@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { listen } from '@tauri-apps/api/event';
-	import { TauriService } from '$lib/tauri';
-	import { now } from '$lib/util/clock';
-	import { notify } from '$lib/util/notifications';
+	import { TauriService } from '#lib/tauri.ts';
+	import { now } from '#lib/util/clock.ts';
+	import { notify } from '#lib/util/notifications.ts';
 	import {
 		NOT_PAUSED,
 		PAUSE_CHOICES,
 		isPausedAt,
 		pauseLabel,
 		type CapturePauseStatus
-	} from '$lib/util/capturePause';
+	} from '#lib/util/capturePause.ts';
 
 	let status: CapturePauseStatus = $state(NOT_PAUSED);
 	let menuOpen = $state(false);

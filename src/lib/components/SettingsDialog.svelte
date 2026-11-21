@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { Button, MovableDialog } from '@lkmc/system7-ui';
-	import LicensesDialog from '$lib/components/LicensesDialog.svelte';
-	import { TauriService } from '$lib/tauri';
-	import { isMobile } from '$lib/util/platform';
-	import { notify } from '$lib/util/notifications';
+	import LicensesDialog from '#lib/components/LicensesDialog.svelte';
+	import { TauriService } from '#lib/tauri.ts';
+	import { isMobile } from '#lib/util/platform.ts';
+	import { notify } from '#lib/util/notifications.ts';
 	import { onMount } from 'svelte';
-	import type { ShortcutStatus } from '$lib/types';
-	import { bearerPasswordProblem } from '$lib/util/password';
+	import type { ShortcutStatus } from '#lib/types.ts';
+	import { bearerPasswordProblem } from '#lib/util/password.ts';
 
 	let { onclose }: { onclose: () => void } = $props();
 

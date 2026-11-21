@@ -1,10 +1,10 @@
 <script lang="ts">
-	import type { ClipboardEntry } from '$lib/types';
-	import { toggleStar, pasteEntry, pasteEntryPlaintext, deleteEntry } from '$lib/util/clipboardStore';
-	import { isMobile } from '$lib/util/platform';
+	import type { ClipboardEntry } from '#lib/types.ts';
+	import { toggleStar, pasteEntry, pasteEntryPlaintext, deleteEntry } from '#lib/util/clipboardStore.ts';
+	import { isMobile } from '#lib/util/platform.ts';
 	import { BalloonHelp } from '@lkmc/system7-ui';
-	import { TauriService } from '$lib/tauri';
-	import { now, formatRelativeTime, imageMimeFromBase64, RelativeTimeStyle } from '$lib/util/clock';
+	import { TauriService } from '#lib/tauri.ts';
+	import { now, formatRelativeTime, imageMimeFromBase64, RelativeTimeStyle } from '#lib/util/clock.ts';
 
 	/**
 	 * Start fetching a row's image this far outside the viewport.

@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { Button, MovableDialog, ProgressBar } from '@lkmc/system7-ui';
 	import { onMount } from 'svelte';
-	import { TauriService } from '$lib/tauri';
-	import { entries, starredOnly } from '$lib/util/clipboardStore';
-	import { isMobile, platform } from '$lib/util/platform';
-	import { setSyncEndpointStatus, syncEndpointStatus } from '$lib/util/syncStatusStore';
+	import { TauriService } from '#lib/tauri.ts';
+	import { entries, starredOnly } from '#lib/util/clipboardStore.ts';
+	import { isMobile, platform } from '#lib/util/platform.ts';
+	import { setSyncEndpointStatus, syncEndpointStatus } from '#lib/util/syncStatusStore.ts';
 	import CapturePauseControl from './CapturePauseControl.svelte';
 
 	let {
