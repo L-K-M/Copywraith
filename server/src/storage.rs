@@ -10,6 +10,9 @@ use ulid::Ulid;
 
 use crate::crypto;
 
+#[path = "storage/sync.rs"]
+mod sync;
+
 pub struct Storage {
     db: Mutex<Connection>,
     blob_dir: PathBuf,
@@ -325,7 +328,7 @@ impl Storage {
         let blob_dir = data_dir.join("blobs");
         std::fs::create_dir_all(&blob_dir)?;
 
-        let conn = Connection::open(&db_path)?;
+        let mut conn = Connection::open(&db_path)?;
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
@@ -400,6 +403,7 @@ impl Storage {
 
         ensure_flavor_columns_backfilled(&conn)?;
         ensure_entries_fts_schema(&conn)?;
+        sync::initialize(&mut conn)?;
 
         Ok(Self {
             db: Mutex::new(conn),
@@ -418,8 +422,37 @@ impl Storage {
         content_hash: &str,
         dek: Option<&[u8; 32]>,
     ) -> anyhow::Result<(ClipboardEntry, bool)> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        if sync::legacy_create_is_retired(&tx, content_hash)? {
+            return Err(copywraith_core::sync_protocol::SyncProtocolError::LegacyRecreation.into());
+        }
+        let result = self.create_entry_in(
+            &tx,
+            content_type,
+            flavors,
+            blob_base64,
+            source_app,
+            starred,
+            content_hash,
+            dek,
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    fn create_entry_in(
+        &self,
+        db: &Connection,
+        content_type: ContentType,
+        flavors: &ClipboardFlavors,
+        blob_base64: Option<&str>,
+        source_app: Option<&str>,
+        starred: Option<bool>,
+        content_hash: &str,
+        dek: Option<&[u8; 32]>,
+    ) -> anyhow::Result<(ClipboardEntry, bool)> {
         // Check for existing entry with same content hash
         let existing: Option<ClipboardEntry> = db
             .query_row(
@@ -750,9 +783,16 @@ impl Storage {
     }
 
     pub fn delete_entry(&self, id: &str) -> anyhow::Result<bool> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let (deleted, blob_hash) = self.delete_entry_in(&tx, id)?;
+        tx.commit()?;
+        self.remove_unreferenced_blob(&db, blob_hash.as_deref())?;
+        Ok(deleted)
+    }
 
-        // Get blob_hash before deleting to clean up blob file
+    fn delete_entry_in(&self, db: &Connection, id: &str) -> anyhow::Result<(bool, Option<String>)> {
+        // Payload deletion and the trigger's retained generation commit together.
         let blob_hash: Option<String> = db
             .query_row(
                 "SELECT blob_hash FROM entries WHERE id = ?1",
@@ -764,20 +804,24 @@ impl Storage {
 
         let rows = db.execute("DELETE FROM entries WHERE id = ?1", params![id])?;
 
-        // Clean up blob file if no other entries reference it
-        if let Some(hash) = blob_hash {
+        Ok((rows > 0, blob_hash))
+    }
+
+    fn remove_unreferenced_blob(&self, db: &Connection, hash: Option<&str>) -> anyhow::Result<()> {
+        // Reclaim only after commit, holding the same lock as blob creation.
+        if let Some(hash) = hash {
             let count: i64 = db.query_row(
                 "SELECT COUNT(*) FROM entries WHERE blob_hash = ?1",
                 params![hash],
                 |row| row.get(0),
             )?;
             if count == 0 {
-                let blob_path = self.blob_dir.join(&hash);
+                let blob_path = self.blob_dir.join(hash);
                 let _ = std::fs::remove_file(blob_path);
             }
         }
 
-        Ok(rows > 0)
+        Ok(())
     }
 
     pub fn get_blob(&self, hash: &str) -> anyhow::Result<Option<Vec<u8>>> {
