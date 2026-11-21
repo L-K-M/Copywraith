@@ -215,18 +215,22 @@ pub async fn paste_entry(
             ContentType::Image => {
                 if let Some(hash) = &entry.blob_hash {
                     if let Some(data) = state.storage.get_blob(hash).map_err(|e| e.to_string())? {
-                        paste::write_and_paste_image(&app, &data);
+                        paste::write_and_paste_image(&app, &data, entry.sensitive.into())?;
                     }
                 }
             }
             ContentType::File => {
                 let flavors = entry.resolved_flavors();
                 if let Some(files) = flavors.file_list.as_deref() {
-                    paste::write_and_paste_files(&app, files);
+                    paste::write_and_paste_files(&app, files, entry.sensitive.into())?;
                 }
             }
             _ => {
-                paste::write_and_paste_flavors(&app, &entry.resolved_flavors());
+                paste::write_and_paste_flavors(
+                    &app,
+                    &entry.resolved_flavors(),
+                    entry.sensitive.into(),
+                )?;
             }
         }
     }
@@ -255,7 +259,7 @@ pub async fn paste_entry_plaintext(
     #[cfg(desktop)]
     {
         if let Some(plaintext) = entry.plain_text_for_paste() {
-            paste::write_and_paste_text(&app, &plaintext);
+            paste::write_and_paste_text(&app, &plaintext, entry.sensitive.into())?;
         }
     }
 
