@@ -15,12 +15,6 @@ Earlier history lives in the commit log and any GitHub releases.
 
 ### Changed
 
-- Pasting sensitive history marks the clipboard confidential, limits macOS
-  copies to this device, and clears the copy after 60 seconds if it still
-  belongs to that write. macOS capture discards reads spanning clipboard
-  changes. Desktop capture ignores its own writes without suppressing new
-  copies from other apps.
-
 - The Android app is laid out for a phone. It has a System 7 title bar,
   copied text uses the same 24px font as the desktop popup, and the type,
   age and action columns are only as wide as their contents, so the text
@@ -32,6 +26,11 @@ Earlier history lives in the commit log and any GitHub releases.
   at readable sizes. Preview's buttons are a 2x2 grid labelled Copy and
   Copy as Text, and Settings keeps Cancel and Save pinned below its
   scrolling form.
+- Pasting sensitive history marks the clipboard confidential, limits macOS
+  copies to this device, and clears the copy after 60 seconds if it still
+  belongs to that write. macOS capture discards reads spanning clipboard
+  changes. Desktop capture ignores its own writes without suppressing new
+  copies from other apps.
 - Content that a password manager marks as concealed, transient or
   auto-generated is no longer captured or synced. (#147)
 - The sync status reports a rejected password or a server error instead of
