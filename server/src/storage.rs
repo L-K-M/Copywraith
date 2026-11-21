@@ -436,9 +436,9 @@ impl Storage {
             starred,
             content_hash,
             dek,
-        );
+        )?;
         tx.commit()?;
-        result
+        Ok(result)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -533,3 +533,51 @@ fn sync_changes_checks_server_and_cursor() {
     assert!(!empty.has_more);
     assert_eq!(empty.cursor, second_sequence);
 }
+
+#[test]
+fn failed_duplicate_create_rolls_back_its_star_and_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::new(dir.path()).unwrap();
+    let text = flavors("encrypted duplicate");
+    let hash = text.payload_hash(ContentType::Text, None);
+    let (entry, _) = storage
+        .create_entry(
+            ContentType::Text,
+            &text,
+            None,
+            None,
+            Some(false),
+            &hash,
+            Some(&DEK),
+        )
+        .unwrap();
+    let server = storage.sync_info().unwrap();
+    let original = storage
+        .sync_changes(&server.server_id, 0, 100, &DEK)
+        .unwrap();
+
+    let wrong_key = [2; 32];
+    assert!(storage
+        .create_entry(
+            ContentType::Text,
+            &text,
+            None,
+            None,
+            Some(true),
+            &hash,
+            Some(&wrong_key)
+        )
+        .is_err());
+    assert!(
+        !storage
+            .get_entry(&entry.id, Some(&DEK))
+            .unwrap()
+            .unwrap()
+            .starred
+    );
+    assert!(storage
+        .sync_changes(&server.server_id, original.cursor, 100, &DEK)
+        .unwrap()
+        .changes
+        .is_empty());
+}
