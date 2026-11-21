@@ -42,6 +42,9 @@ clipboard-rs = "0.3.5"
 # Preserve the image decoders previously enabled by the desktop plugin.
 image = "0.25.8"
 
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4.1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 dbus = "0.9"

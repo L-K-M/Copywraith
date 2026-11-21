@@ -302,6 +302,95 @@ fn windows_clipboard_history_opt_out_is_honoured() {
     }
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "requires an isolated native clipboard"]
+fn sensitive_writes_publish_owner_and_concealment_for_every_payload() {
+    let _clipboard_guard = NATIVE_CLIPBOARD_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let adapter = NativeClipboard::new().unwrap();
+    let peer = ClipboardContext::new().unwrap();
+    const OWNER_FORMAT: &str = "ch.lkmc.copywraith.clipboard-owner";
+    const CONCEALED_FORMAT: &str = "ExcludeClipboardContentFromMonitorProcessing";
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first file.txt");
+    let second = dir.path().join("second file.txt");
+    std::fs::write(&first, "dummy").unwrap();
+    std::fs::write(&second, "dummy").unwrap();
+    let files = vec![
+        first.to_string_lossy().into_owned(),
+        second.to_string_lossy().into_owned(),
+    ];
+
+    for sensitivity in [
+        ClipboardSensitivity::Sensitive,
+        ClipboardSensitivity::Ordinary,
+    ] {
+        let concealed = sensitivity == ClipboardSensitivity::Sensitive;
+        adapter.write_text("dummy secret", sensitivity).unwrap();
+        assert_owner_and_marker(&peer, OWNER_FORMAT, CONCEALED_FORMAT, concealed);
+        assert_not_captured(&adapter, concealed);
+
+        adapter
+            .write_flavors(
+                &ClipboardFlavors {
+                    text_plain: Some("dummy secret".into()),
+                    text_html: Some("<b>dummy secret</b>".into()),
+                    text_rtf: Some("{\\rtf1 dummy secret}".into()),
+                    file_list: None,
+                },
+                sensitivity,
+            )
+            .unwrap();
+        assert_owner_and_marker(&peer, OWNER_FORMAT, CONCEALED_FORMAT, concealed);
+        assert_not_captured(&adapter, concealed);
+
+        adapter.write_image(PNG, sensitivity).unwrap();
+        assert_owner_and_marker(&peer, OWNER_FORMAT, CONCEALED_FORMAT, concealed);
+        assert_not_captured(&adapter, concealed);
+        assert_pixels(&peer.get_image().unwrap());
+
+        adapter.write_files(&files, sensitivity).unwrap();
+        assert_owner_and_marker(&peer, OWNER_FORMAT, CONCEALED_FORMAT, concealed);
+        assert_not_captured(&adapter, concealed);
+    }
+}
+
+/// Sensitive writes carry the concealment marker, so the adapter treats its
+/// own paste as private; ordinary writes are recognized by ownership alone.
+#[cfg(target_os = "windows")]
+fn assert_not_captured(adapter: &NativeClipboard, concealed: bool) {
+    if concealed {
+        assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Private));
+    } else {
+        assert!(matches!(adapter.read().unwrap(), ClipboardPayload::Empty));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn assert_owner_and_marker(
+    peer: &ClipboardContext,
+    owner_format: &str,
+    concealed_format: &str,
+    concealed: bool,
+) {
+    assert!(
+        peer.get_buffer(owner_format)
+            .is_ok_and(|owner| !owner.is_empty()),
+        "ownership token was not published"
+    );
+    let marker = peer.get_buffer(concealed_format);
+    assert_eq!(
+        marker.is_ok(),
+        concealed,
+        "confidentiality marker mismatch: {marker:?}"
+    );
+    if concealed {
+        assert_eq!(marker.unwrap(), b"secret");
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires an isolated X11 clipboard (Xvfb)"]

@@ -13,6 +13,10 @@ use copywraith_core::models::ClipboardFlavors;
 #[path = "native_clipboard_macos.rs"]
 mod macos;
 
+#[cfg(target_os = "windows")]
+#[path = "native_clipboard_windows.rs"]
+mod windows;
+
 type Result<T> = std::result::Result<T, String>;
 
 /// Formats whose mere presence marks clipboard content as private.
@@ -286,17 +290,20 @@ impl NativeClipboard {
         let owner = format!("{}{}", self.owner_prefix, ulid::Ulid::generate()).into_bytes();
         contents.push(ClipboardContent::Other(OWNER_FORMAT.into(), owner.clone()));
         let context = self.context()?;
-        #[cfg(target_os = "macos")]
-        macos::write(&contents, sensitivity)?;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         {
-            if sensitivity == ClipboardSensitivity::Sensitive {
-                contents.push(ClipboardContent::Other(
-                    PRIVATE_CONTENT_MARKERS[0].into(),
-                    b"secret".to_vec(),
-                ));
+            push_sensitive_marker(&mut contents, sensitivity);
+            windows::write(&contents)?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            #[cfg(target_os = "macos")]
+            macos::write(&contents, sensitivity)?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                push_sensitive_marker(&mut contents, sensitivity);
+                context.set(contents).map_err(|e| e.to_string())?;
             }
-            context.set(contents).map_err(|e| e.to_string())?;
         }
         drop(context);
 
@@ -473,6 +480,18 @@ fn owner_matches(current: &[u8], expected: &[u8]) -> bool {
 
 fn nonempty(text: String) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
+}
+
+/// Windows and X11/Wayland password managers read this marker's presence.
+/// macOS publishes its own concealed type in the AppKit writer.
+#[cfg(not(target_os = "macos"))]
+fn push_sensitive_marker(contents: &mut Vec<ClipboardContent>, sensitivity: ClipboardSensitivity) {
+    if sensitivity == ClipboardSensitivity::Sensitive {
+        contents.push(ClipboardContent::Other(
+            PRIVATE_CONTENT_MARKERS[0].into(),
+            b"secret".to_vec(),
+        ));
+    }
 }
 
 fn is_marked_private(context: &ClipboardContext) -> bool {
