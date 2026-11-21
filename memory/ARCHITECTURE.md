@@ -225,7 +225,6 @@ Copywraith/
 ├── LICENSE
 ├── Cargo.toml                    # Rust workspace root
 ├── package.json                  # Node project root
-├── svelte.config.js
 ├── vite.config.js
 ├── tsconfig.json
 ├── src/                          # SvelteKit frontend

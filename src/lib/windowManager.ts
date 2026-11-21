@@ -1,7 +1,7 @@
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import { TauriService } from '$lib/tauri';
+import { TauriService } from '#lib/tauri.ts';
 
 type ResizeDirection =
 	| 'East'

@@ -5,9 +5,9 @@
 		debouncedLoad,
 		moveSelection,
 		pasteSelectedEntry
-	} from '$lib/util/clipboardStore';
+	} from '#lib/util/clipboardStore.ts';
 	import { Button, Checkbox } from '@lkmc/system7-ui';
-	import { isMobile } from '$lib/util/platform';
+	import { isMobile } from '#lib/util/platform.ts';
 
 	let { onsettings }: { onsettings?: () => void } = $props();
 

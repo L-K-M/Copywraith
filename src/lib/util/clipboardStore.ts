@@ -1,8 +1,8 @@
 import { writable, get } from 'svelte/store';
-import { TauriService } from '$lib/tauri';
-import { isMobile } from '$lib/util/platform';
-import { notify } from '$lib/util/notifications';
-import type { ClipboardEntry } from '$lib/types';
+import { TauriService } from '#lib/tauri.ts';
+import { isMobile } from '#lib/util/platform.ts';
+import { notify } from '#lib/util/notifications.ts';
+import type { ClipboardEntry } from '#lib/types.ts';
 
 export const entries = writable<ClipboardEntry[]>([]);
 export const isLoading = writable(false);
