@@ -1,5 +1,5 @@
 #[cfg(desktop)]
-use crate::native_clipboard::NativeClipboard;
+use crate::native_clipboard::{ClipboardSensitivity, NativeClipboard};
 use copywraith_core::models::ClipboardFlavors;
 use tauri::Manager;
 
@@ -84,111 +84,67 @@ pub fn paste_most_recent_plaintext(app: &tauri::AppHandle) {
     if let Ok(Some(entry)) = state.storage.get_most_recent_entry() {
         if let Some(text) = entry.plain_text_for_paste() {
             // Write plaintext to clipboard and simulate paste
-            write_and_paste_text(app, &text);
+            if let Err(error) = write_and_paste_text(app, &text, entry.sensitive.into()) {
+                log::error!("Failed to paste most recent entry: {error}");
+            }
         }
     }
 }
 
 /// Write multiple text flavors (plain/html/rtf) in one transaction and paste.
-pub fn write_and_paste_flavors(app: &tauri::AppHandle, flavors: &ClipboardFlavors) {
+pub(crate) fn write_and_paste_flavors(
+    app: &tauri::AppHandle,
+    flavors: &ClipboardFlavors,
+    sensitivity: ClipboardSensitivity,
+) -> Result<(), String> {
     let target_app = preferred_paste_target(app);
-
-    let state = app.state::<crate::AppState>();
-    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
-    }
-
     let clipboard = app.state::<NativeClipboard>();
-    let write_result = clipboard.write_flavors(flavors);
-
-    if let Err(e) = write_result {
-        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-            *guard = None;
-        }
-        log::error!("Failed to write flavors to clipboard: {}", e);
-        return;
-    }
-
+    clipboard.write_flavors(flavors, sensitivity)?;
     crate::hide_popup_window_for_paste(app);
     simulate_paste(app.clone(), target_app);
+    Ok(())
 }
 
 /// Write file-list clipboard content and simulate paste.
-pub fn write_and_paste_files(app: &tauri::AppHandle, files: &[String]) {
-    if files.is_empty() {
-        return;
-    }
-
+pub(crate) fn write_and_paste_files(
+    app: &tauri::AppHandle,
+    files: &[String],
+    sensitivity: ClipboardSensitivity,
+) -> Result<(), String> {
     let target_app = preferred_paste_target(app);
-
-    let state = app.state::<crate::AppState>();
-    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
-    }
-
     let clipboard = app.state::<NativeClipboard>();
-    if let Err(e) = clipboard.write_files(files) {
-        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-            *guard = None;
-        }
-        log::error!("Failed to write files to clipboard: {}", e);
-        return;
-    }
-
+    clipboard.write_files(files, sensitivity)?;
     crate::hide_popup_window_for_paste(app);
     simulate_paste(app.clone(), target_app);
+    Ok(())
 }
 
 /// Write text to clipboard and simulate Cmd+V / Ctrl+V
-pub fn write_and_paste_text(app: &tauri::AppHandle, text: &str) {
+pub(crate) fn write_and_paste_text(
+    app: &tauri::AppHandle,
+    text: &str,
+    sensitivity: ClipboardSensitivity,
+) -> Result<(), String> {
     let target_app = preferred_paste_target(app);
-
-    let state = app.state::<crate::AppState>();
-
-    // Suppress the clipboard monitor for a 500ms window starting NOW.
-    // The window approach handles multiple rapid monitor events from a single
-    // paste write (e.g. duplicate system notifications) — every event that
-    // arrives before the deadline is suppressed.
-    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
-    }
-
     let clipboard = app.state::<NativeClipboard>();
-    if let Err(e) = clipboard.write_text(text) {
-        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-            *guard = None;
-        }
-        log::error!("Failed to write to clipboard: {}", e);
-        return;
-    }
-
+    clipboard.write_text(text, sensitivity)?;
     crate::hide_popup_window_for_paste(app);
-
     simulate_paste(app.clone(), target_app);
+    Ok(())
 }
 
 /// Write image data to clipboard and simulate paste
-pub fn write_and_paste_image(app: &tauri::AppHandle, image_data: &[u8]) {
+pub(crate) fn write_and_paste_image(
+    app: &tauri::AppHandle,
+    image_data: &[u8],
+    sensitivity: ClipboardSensitivity,
+) -> Result<(), String> {
     let target_app = preferred_paste_target(app);
-
-    let state = app.state::<crate::AppState>();
-
-    if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-        *guard = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
-    }
-
     let clipboard = app.state::<NativeClipboard>();
-    if let Err(e) = clipboard.write_image(image_data) {
-        if let Ok(mut guard) = state.suppress_monitor_until.lock() {
-            *guard = None;
-        }
-        log::error!("Failed to write image to clipboard: {}", e);
-        return;
-    }
-
+    clipboard.write_image(image_data, sensitivity)?;
     crate::hide_popup_window_for_paste(app);
-
     simulate_paste(app.clone(), target_app);
+    Ok(())
 }
 
 /// Simulate a paste keystroke.
@@ -374,11 +330,10 @@ fn preferred_paste_target(app: &tauri::AppHandle) -> Option<String> {
     let remembered = {
         let state = app.state::<crate::AppState>();
         let lock_result = state.last_focused_app.lock();
-        let remembered_value = match lock_result {
+        match lock_result {
             Ok(slot) => slot.clone(),
             Err(_) => None,
-        };
-        remembered_value
+        }
     };
 
     // Keep this path fast: avoid synchronous osascript fallback while handling
