@@ -1,6 +1,6 @@
-//! clipboard-win writes because clipboard-rs 0.3.5's Windows `set` opens the
-//! clipboard again for images, closes it early, clears on each representation,
-//! and reports success even when every format fails.
+//! Keep one Windows clipboard handle open while publishing the payload and
+//! its markers. clipboard-rs 0.3.5 reopens and clears the clipboard for
+//! images and ignores errors from individual format writes.
 use clipboard_rs::common::RustImage;
 use clipboard_rs::{ClipboardContent, RustImageData};
 use clipboard_win::formats::{Html, CF_DIB};
