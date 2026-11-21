@@ -175,7 +175,7 @@ fn store_entry(
         source_app,
     ) {
         Ok(Some(entry)) => {
-            let _ = app.emit("clipboard-updated", &entry);
+            let _ = app.emit("clipboard-updated", ());
             // Trigger background sync
             let sync = sync_client.clone();
             let storage = storage.clone();

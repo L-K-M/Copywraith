@@ -10,7 +10,6 @@ use axum::routing::get;
 use axum::Router;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::CompressionLayer;
-use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -30,26 +29,16 @@ const FALLBACK_HTML: &str = r#"<!DOCTYPE html>
 </body>
 </html>"#;
 
-/// Swagger UI shell that loads OpenAPI JSON from /api-docs/openapi.json.
+/// API documentation without third-party scripts running in the admin origin.
 const SWAGGER_UI_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Copywraith API Docs</title>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
 </head>
 <body>
-  <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script>
-    window.ui = SwaggerUIBundle({
-      url: '/api-docs/openapi.json',
-      dom_id: '#swagger-ui',
-      deepLinking: true,
-      presets: [SwaggerUIBundle.presets.apis],
-    });
-  </script>
+  <p>Download the <a href="/api-docs/openapi.json">OpenAPI specification</a>.</p>
 </body>
 </html>"#;
 
@@ -118,11 +107,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn build_app(state: Arc<AppState>, ui_dir: Option<&std::path::Path>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let router = Router::new()
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -140,8 +124,12 @@ fn build_app(state: Arc<AppState>, ui_dir: Option<&std::path::Path>) -> Router {
 
     router
         .layer(compression_layer())
-        .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                // Search queries can contain clipboard secrets.
+                tracing::info_span!("http_request", method = %request.method(), path = request.uri().path())
+            },
+        ))
         .with_state(state)
 }
 
@@ -227,6 +215,24 @@ mod tests {
             .headers()
             .get(header::CONTENT_ENCODING)
             .map(|value| value.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn foreign_origin_cannot_read_api_responses() {
+        let (_dir, app) = test_app();
+        let response = app
+            .oneshot(
+                Request::get("/api/auth/status")
+                    .header(header::ORIGIN, "https://attacker.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
     }
 
     #[tokio::test]

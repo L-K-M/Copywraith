@@ -405,18 +405,9 @@ fn skip_rtf_fallback_chars(chars: &[char], mut i: usize, count: usize) -> usize 
     i
 }
 
-/// Mask sensitive text: show first 3 characters, replace the rest with bullets.
-pub fn mask_sensitive(text: &str, max_len: usize) -> String {
-    let trimmed = text.trim();
-    let chars: Vec<char> = trimmed.chars().collect();
-    let visible = 3.min(chars.len());
-    let prefix: String = chars[..visible].iter().collect();
-    let remaining = chars
-        .len()
-        .saturating_sub(visible)
-        .min(max_len.saturating_sub(visible));
-    let bullets: String = "\u{2022}".repeat(remaining);
-    format!("{}{}", prefix, bullets)
+/// Show no characters or length information from a sensitive value.
+pub fn mask_sensitive(_text: &str, _max_len: usize) -> String {
+    "[Sensitive]".to_string()
 }
 
 /// Detect image format from first bytes
@@ -590,19 +581,17 @@ mod tests {
 
     #[test]
     fn test_mask_sensitive() {
-        assert_eq!(
-            mask_sensitive("sk-1234567890", 20),
-            "sk-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
-        );
+        assert_eq!(mask_sensitive("sk-1234567890", 20), "[Sensitive]");
+        assert_eq!(mask_sensitive("other-secret", 3), "[Sensitive]");
     }
 
     #[test]
     fn test_mask_sensitive_short() {
-        assert_eq!(mask_sensitive("ab", 20), "ab");
+        assert_eq!(mask_sensitive("ab", 20), "[Sensitive]");
     }
 
     #[test]
     fn test_mask_sensitive_empty() {
-        assert_eq!(mask_sensitive("", 20), "");
+        assert_eq!(mask_sensitive("", 20), "[Sensitive]");
     }
 }

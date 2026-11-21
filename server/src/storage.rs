@@ -4,7 +4,6 @@ use std::sync::Mutex;
 use chrono::Utc;
 use copywraith_core::content::{base64_to_bytes, hash_bytes};
 use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
-use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection, OptionalExtension};
 use ulid::Ulid;
 
@@ -306,6 +305,7 @@ fn decrypt_entry_text_fields(entry: &mut ClipboardEntry, dek: &[u8; 32]) -> anyh
     entry.flavors.text_plain = decrypt_optional_text(dek, entry.flavors.text_plain.take())?;
     entry.flavors.text_html = decrypt_optional_text(dek, entry.flavors.text_html.take())?;
     entry.flavors.text_rtf = decrypt_optional_text(dek, entry.flavors.text_rtf.take())?;
+    entry.sensitive |= entry.resolved_flavors().contains_sensitive_data();
 
     entry.flavors = entry
         .flavors
@@ -324,8 +324,19 @@ impl Storage {
         let db_path = data_dir.join("copywraith.db");
         let blob_dir = data_dir.join("blobs");
         std::fs::create_dir_all(&blob_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::set_permissions(&blob_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
 
         let conn = Connection::open(&db_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600))?;
+        }
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
@@ -482,10 +493,7 @@ impl Storage {
         let id = Ulid::generate().to_string();
         let starred = starred.unwrap_or(false);
 
-        let sensitive = search_text
-            .as_ref()
-            .map(|t| contains_sensitive_data(t))
-            .unwrap_or(false);
+        let sensitive = resolved_flavors.contains_sensitive_data();
 
         // Encrypt text fields if DEK is available
         let (

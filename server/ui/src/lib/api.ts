@@ -15,20 +15,16 @@ function apiUrl(path: string): string {
 }
 
 function resolveBlobUrl(blobUrl: string): string {
-	if (blobUrl.startsWith('http://') || blobUrl.startsWith('https://')) {
-		return blobUrl;
-	}
-
 	if (blobUrl.startsWith('/api/')) {
 		const apiSuffix = blobUrl.slice('/api'.length);
 		return `${normalizeBase(API_BASE)}${apiSuffix}`;
 	}
 
-	if (blobUrl.startsWith('/')) {
-		return blobUrl;
+	if (!blobUrl.startsWith('/') && !blobUrl.includes(':') && !blobUrl.startsWith('//')) {
+		return apiUrl(blobUrl);
 	}
 
-	return apiUrl(blobUrl);
+	throw new Error('Invalid blob URL');
 }
 
 function candidateApiBases(): string[] {

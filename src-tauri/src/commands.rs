@@ -350,7 +350,7 @@ pub async fn capture_clipboard(
             .insert_entry(ContentType::Text, &flavors, None, &content_hash, None)
         {
             Ok(Some(entry)) => {
-                let _ = app.emit("clipboard-updated", entry.clone());
+                let _ = app.emit("clipboard-updated", ());
                 // Trigger background sync for the new entry
                 let sync = state.sync_client.clone();
                 let storage = state.storage.clone();
@@ -593,7 +593,7 @@ fn import_pending_share_file(
         match import_pending_share_item(state, &item) {
             Ok(Some(entry)) => {
                 imported += 1;
-                let _ = app.emit("clipboard-updated", &entry);
+                let _ = app.emit("clipboard-updated", ());
                 let sync = state.sync_client.clone();
                 let storage = state.storage.clone();
                 tauri::async_runtime::spawn(async move {

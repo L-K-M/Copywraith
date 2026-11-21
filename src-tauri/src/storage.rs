@@ -3,7 +3,6 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use copywraith_core::models::{ClipboardEntry, ClipboardFlavors, ContentType};
-use copywraith_core::sensitive::contains_sensitive_data;
 use rusqlite::{params, Connection, OptionalExtension};
 use ulid::Ulid;
 
@@ -49,6 +48,7 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
         file_list: None,
     }
     .merge_legacy(content_type, legacy_text_content.as_deref());
+    let sensitive = row.get::<_, i32>(10)? != 0 || flavors.contains_sensitive_data();
 
     Ok(ClipboardEntry {
         id: row.get(0)?,
@@ -59,7 +59,7 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<ClipboardEntry> {
         source_app: row.get(8)?,
         flavors,
         starred: row.get::<_, i32>(9)? != 0,
-        sensitive: row.get::<_, i32>(10)? != 0,
+        sensitive,
         created_at: row
             .get::<_, String>(11)?
             .parse()
@@ -159,8 +159,19 @@ impl LocalStorage {
         let db_path = data_dir.join("copywraith.db");
         let blob_dir = data_dir.join("blobs");
         std::fs::create_dir_all(&blob_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::set_permissions(&blob_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
 
         let conn = Connection::open(&db_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600))?;
+        }
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
@@ -254,10 +265,7 @@ impl LocalStorage {
         let now = Utc::now();
         let id = Ulid::generate().to_string();
 
-        let sensitive = search_text
-            .as_ref()
-            .map(|t| contains_sensitive_data(t))
-            .unwrap_or(false);
+        let sensitive = resolved_flavors.contains_sensitive_data();
 
         db.execute(
             "INSERT INTO entries (id, content_type, text_content, text_plain, text_html, text_rtf, search_text, blob_hash, blob_size, content_hash, source_app, starred, sensitive, synced, created_at, updated_at)
@@ -322,10 +330,7 @@ impl LocalStorage {
         let resolved_flavors = flavors.clone().merge_legacy(content_type, None);
         let legacy_text_content = resolved_flavors.to_legacy_text_content(content_type);
         let search_text = resolved_flavors.best_plain_text();
-        let sensitive = search_text
-            .as_ref()
-            .map(|t| contains_sensitive_data(t))
-            .unwrap_or(false);
+        let sensitive = resolved_flavors.contains_sensitive_data();
 
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;

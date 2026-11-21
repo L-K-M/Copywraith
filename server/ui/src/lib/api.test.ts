@@ -114,7 +114,7 @@ it('preserves blob bytes and MIME type when creating an object URL', async () =>
 	}
 });
 
-it('discovers a reverse-proxy prefix and resolves each supported blob URL form', async () => {
+it('discovers a reverse-proxy prefix and keeps blob requests on its API', async () => {
 	vi.stubGlobal('window', { location: { pathname: '/clipboard/index.html' } });
 	fetchMock.mockResolvedValueOnce(new Response(null, { status: HTTP.ERROR })).mockResolvedValueOnce(Response.json({ initialized: true, unlocked: true }));
 	await api.fetchAuthStatus();
@@ -122,14 +122,16 @@ it('discovers a reverse-proxy prefix and resolves each supported blob URL form',
 	fetchMock.mockImplementation(async () => new Response('blob'));
 	for (const [input, expected] of [
 		['/api/entries/a/blob', '/clipboard/api/entries/a/blob'],
-		['entries/a/blob', '/clipboard/api/entries/a/blob'],
-		['/other/blob', '/other/blob'],
-		['https://example.com/blob', 'https://example.com/blob'],
-		['http://example.com/blob', 'http://example.com/blob']
+		['entries/a/blob', '/clipboard/api/entries/a/blob']
 	]) {
 		await api.fetchBlob(input);
 		expect(fetchMock.mock.lastCall?.[0]).toBe(expected);
 	}
+	const requests = fetchMock.mock.calls.length;
+	for (const url of ['/other/blob', '//example.com/blob', 'https://example.com/blob', 'http://example.com/blob']) {
+		await expect(api.fetchBlob(url)).rejects.toThrow('Invalid blob URL');
+	}
+	expect(fetchMock.mock.calls.length).toBe(requests);
 });
 
 it('keeps health unauthorized errors distinct from data unauthorized errors', async () => {

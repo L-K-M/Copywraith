@@ -59,6 +59,24 @@ pub struct ClipboardFlavors {
 }
 
 impl ClipboardFlavors {
+    /// Check every representation: a benign plain-text preview can accompany
+    /// an HTML or RTF representation containing a secret.
+    pub fn contains_sensitive_data(&self) -> bool {
+        [
+            self.text_plain.as_deref(),
+            self.text_html.as_deref(),
+            self.text_rtf.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(crate::sensitive::contains_sensitive_data)
+            || self.file_list.as_ref().is_some_and(|files| {
+                files
+                    .iter()
+                    .any(|path| crate::sensitive::contains_sensitive_data(path))
+            })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text_plain.is_none()
             && self.text_html.is_none()
@@ -343,7 +361,7 @@ impl ClipboardEntry {
     /// Returns a short preview of the content for display.
     /// `max_len` is measured in characters, not bytes.
     /// HTML and RTF content is stripped to plain text.
-    /// Sensitive entries show first 3 chars + bullet characters.
+    /// Sensitive entries show a fixed placeholder.
     pub fn preview(&self, max_len: usize) -> String {
         if self.sensitive {
             if let Some(plain) = self.best_plain_text() {
@@ -378,6 +396,16 @@ impl ClipboardEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_secret_in_a_secondary_flavor_is_sensitive() {
+        let flavors = ClipboardFlavors {
+            text_plain: Some("Open this link".into()),
+            text_html: Some("<a href='https://example.test/?token=abcdefghijklmnopqrstuvwxyz'>Open this link</a>".into()),
+            ..Default::default()
+        };
+        assert!(flavors.contains_sensitive_data());
+    }
 
     #[test]
     fn payload_hash_keeps_legacy_single_text_behavior() {

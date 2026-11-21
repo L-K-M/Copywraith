@@ -341,8 +341,9 @@ impl SyncClient {
             .connect_timeout(Duration::from_secs(10))
             .timeout(DEFAULT_REQUEST_TIMEOUT)
             .read_timeout(STALL_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("static HTTP client settings must be valid");
         Self {
             http,
             wake: tokio::sync::Notify::new(),
@@ -980,13 +981,11 @@ impl SyncClient {
         let timeout = transfer_timeout(remote.entry.blob_size.unwrap_or(MAX_BLOB_BYTES));
 
         for (index, endpoint) in server_urls.iter().enumerate() {
-            let blob_url = remote
-                .blob_url
-                .as_deref()
-                .map(|url| resolve_url(&endpoint.url, url))
-                .unwrap_or_else(|| {
-                    format!("{}/api/entries/{}/blob", endpoint.url, remote.entry.id)
-                });
+            // The server response is untrusted. Never send the bearer password
+            // to a blob URL supplied by it, even when that URL is absolute.
+            let id = ulid::Ulid::from_string(&remote.entry.id)
+                .map_err(|_| anyhow::anyhow!("Invalid remote entry id"))?;
+            let blob_url = format!("{}/api/entries/{id}/blob", endpoint.url);
 
             let mut request = self.http.get(&blob_url).timeout(timeout);
             if !api_key.is_empty() {
@@ -1126,18 +1125,6 @@ fn configured_server_urls(settings: &Settings) -> Vec<ServerEndpoint> {
     }
 
     urls
-}
-
-fn resolve_url(base_url: &str, maybe_relative: &str) -> String {
-    if maybe_relative.starts_with("http://") || maybe_relative.starts_with("https://") {
-        maybe_relative.to_string()
-    } else {
-        format!(
-            "{}/{}",
-            base_url.trim_end_matches('/'),
-            maybe_relative.trim_start_matches('/'),
-        )
-    }
 }
 
 /// Helpers for the tests below that run a fake server on a real socket, so

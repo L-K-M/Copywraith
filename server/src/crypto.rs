@@ -54,6 +54,11 @@ impl CryptoState {
     pub fn load(data_dir: &Path) -> anyhow::Result<Self> {
         let auth_path = data_dir.join("auth.json");
         let auth_config = if auth_path.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))?;
+            }
             let json = std::fs::read_to_string(&auth_path).with_context(|| {
                 format!("Failed to read auth config at {}", auth_path.display())
             })?;
@@ -438,10 +443,19 @@ fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
 /// the write.
 fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let tmp_path = path.with_extension("json.tmp");
     {
-        let mut file = std::fs::File::create(&tmp_path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&tmp_path)?;
+        // A temporary file left by an older version may have broader access.
+        #[cfg(unix)]
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         file.write_all(data)?;
         // Flush to disk before the rename; otherwise a power loss can leave
         // the rename durable but the data truncated.
@@ -454,6 +468,33 @@ fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_config_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = CryptoState::load(dir.path()).unwrap();
+        state.setup_password("fixture-password").unwrap();
+        let mode = std::fs::metadata(dir.path().join("auth.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0);
+
+        std::fs::set_permissions(
+            dir.path().join("auth.json"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        CryptoState::load(dir.path()).unwrap();
+        let mode = std::fs::metadata(dir.path().join("auth.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0);
+    }
 
     const LEGACY_DEK: &[u8; DEK_LEN] = include_bytes!("../tests/fixtures/dek.bin");
     const LEGACY_TEXT: &str = include_str!("../tests/fixtures/text.enc");

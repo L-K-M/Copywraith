@@ -128,7 +128,7 @@ Base path: `/api`
 - `DELETE /entries/{id}`
 - `GET /entries/{id}/blob`
 
-Interactive docs are served at `/swagger-ui/`, and OpenAPI JSON is served at `/api-docs/openapi.json`.
+The `/swagger-ui/` page links to the OpenAPI JSON at `/api-docs/openapi.json`.
 
 `GET /entries` supports `limit`, `offset`, `content_type`, `starred_only`, and `search` query parameters.
 
